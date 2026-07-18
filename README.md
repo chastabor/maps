@@ -13,6 +13,9 @@ The workspace has two parts:
 | `crates/maps-core` | The pure, deterministic generation engine (no I/O; wasm-friendly) |
 | `crates/maps-wasm` | wasm-bindgen wrapper powering the `web/` demo page |
 
+How generation works — the deterministic pipeline and the ruins extension —
+is described in [DESIGN.md](DESIGN.md).
+
 ## Building
 
 ```sh

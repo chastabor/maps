@@ -53,6 +53,15 @@ for (const g of TAG_GROUPS) {
 radioRow($("mode-row"), "mode", MODES, "cave");
 radioRow($("grid-row"), "grid", GRIDS, "hex");
 
+// The level sliders live under their tag family.
+const sliderRows = $("level-sliders").content;
+document.querySelector('.tag-group[data-group="water"]').appendChild(
+  sliderRows.getElementById("water-row"),
+);
+document.querySelector('.tag-group[data-group="ruins"]').appendChild(
+  sliderRows.getElementById("ruins-row"),
+);
+
 const radioValue = (name) =>
   document.querySelector(`input[name="${name}"]:checked`)?.value ?? "";
 const setRadio = (name, value) => {
@@ -77,12 +86,24 @@ function annotateDefaults(defaults) {
     const group = document.querySelector(`.tag-group[data-group="${g.name}"]`);
     group.querySelector(".seed-default").textContent =
       ` · seed: ${defaults[g.name] ?? "—"}`;
-    for (const label of group.querySelectorAll("label")) {
-      label.classList.toggle(
-        "seed-pick",
-        label.dataset.value === (defaults[g.name] ?? ""),
-      );
-    }
+  }
+}
+
+// The family's effective tag: the user's pick, or the seed's roll on auto.
+const effectiveTag = (family, defaults) =>
+  radioValue(family) || defaults[family];
+
+// Level sliders only apply while their family's state is active (wet /
+// ruins); dry and organic are absolute and grey the row out.
+function updateLevelRows(defaults) {
+  for (const [family, active, row, auto, slider] of [
+    ["water", "wet", "water-row", "water-auto", "water"],
+    ["ruins", "ruins", "ruins-row", "ruins-auto", "ruins"],
+  ]) {
+    const on = effectiveTag(family, defaults) === active;
+    $(row).classList.toggle("inactive", !on);
+    $(auto).disabled = !on;
+    $(slider).disabled = !on || $(auto).checked;
   }
 }
 
@@ -97,8 +118,10 @@ function collectOptions(defaults) {
   o.tags = TAG_GROUPS.map((g) => radioValue(g.name) || defaults[g.name])
     .filter(Boolean)
     .join(",");
-  if (!$("water-auto").checked) o.waterLevel = $("water").value / 100;
-  if (!$("ruins-auto").checked) o.ruinsLevel = $("ruins").value / 100;
+  if (!$("water-auto").checked && effectiveTag("water", defaults) === "wet")
+    o.waterLevel = $("water").value / 100;
+  if (!$("ruins-auto").checked && effectiveTag("ruins", defaults) === "ruins")
+    o.ruinsLevel = $("ruins").value / 100;
   const name = $("map-name").value.trim();
   if (name) o.title = name;
   return o;
@@ -107,6 +130,7 @@ function collectOptions(defaults) {
 function render() {
   const defaults = seedDefaults();
   annotateDefaults(defaults);
+  updateLevelRows(defaults);
   $("reroll-name").disabled = $("map-name").value.trim() !== "";
   let out;
   try {
@@ -209,15 +233,16 @@ for (const [auto, slider, label] of [
   ["water-auto", "water", "water-val"],
   ["ruins-auto", "ruins", "ruins-val"],
 ]) {
-  $(auto).onchange = () => {
-    $(slider).disabled = $(auto).checked;
-    render();
-  };
+  $(auto).onchange = render; // render recomputes row/slider disabled states
   $(slider).oninput = () => {
     $(label).textContent = ($(slider).value / 100).toFixed(2);
   };
   $(slider).onchange = render;
 }
+$("zoom").oninput = () => {
+  $("zoom-val").textContent = `${$("zoom").value}%`;
+  $("map-pane").style.setProperty("--zoom", $("zoom").value / 100);
+};
 $("export-svg").onclick = () => {
   if (!state.last) return;
   const blob = new Blob([state.last.svg], { type: "image/svg+xml" });

@@ -20,10 +20,12 @@ body {
 .row.buttons { justify-content: space-between; }
 #seed { flex: 1; min-width: 0; font: 12px monospace; background: #2a251c;
   color: #e7e0cf; border: 1px solid #57503f; border-radius: 4px; padding: 3px 6px; }
-.tag-group { margin: 6px 0; }
-.tag-group b { display: block; font-size: 11px; text-transform: uppercase;
+.tag-group { margin: 6px 0 10px; display: flex; flex-wrap: wrap; gap: 2px 10px; }
+.tag-group b { width: 100%; font-size: 11px; text-transform: uppercase;
   letter-spacing: 1px; color: #a89f8a; }
-.tag-group label { margin-right: 8px; white-space: nowrap; }
+.tag-group label { white-space: nowrap; }
+.tag-group .row.slider { width: 100%; margin: 2px 0 0; }
+.row.slider.inactive { opacity: 0.4; }
 .row.slider {
   display: grid; grid-template-columns: auto 1fr 3em;
   align-items: center; gap: 8px;
@@ -34,12 +36,14 @@ body {
   color: #e7e0cf; border: 1px solid #57503f; border-radius: 4px; padding: 3px 6px; }
 .tag-group .seed-default { font-weight: normal; text-transform: none;
   letter-spacing: 0; color: #8fa382; }
-.tag-group label.seed-pick { color: #b6cf9c; text-decoration: underline dotted; }
 #readout #map-title { font-size: 18px; font-style: italic; }
 #readout #map-tags { color: #a89f8a; }
 #readout code { display: block; font-size: 10px; word-break: break-all;
   color: #a89f8a; margin-top: 6px; user-select: all; }
-#map-pane { flex: 1; overflow: auto; display: grid; place-items: center; }
-#map-pane svg { max-width: 100%; max-height: 100vh; height: auto; }
+#map-pane { flex: 1; overflow: auto; padding: 16px; }
+#map-pane svg {
+  display: block; margin: 0 auto;
+  width: calc(100% * var(--zoom, 1)); height: auto;
+}
 .hint { color: #8a7f6a; }
 input[type="checkbox"], input[type="radio"] { accent-color: #7fa05f; }

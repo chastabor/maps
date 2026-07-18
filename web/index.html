@@ -34,20 +34,25 @@
       <div id="tag-groups"></div>
     </section>
 
-    <section>
-      <div class="row slider">
-        <label><input type="checkbox" id="water-auto" checked> water auto</label>
-        <input id="water" type="range" min="0" max="100" value="40" disabled>
-        <span id="water-val">0.40</span>
+    <template id="level-sliders">
+      <div class="row slider" id="water-row">
+        <label><input type="checkbox" id="water-auto" checked> level auto</label>
+        <input id="water" type="range" min="0" max="100" value="45" disabled>
+        <span id="water-val">0.45</span>
       </div>
-      <div class="row slider">
-        <label><input type="checkbox" id="ruins-auto" checked> ruins auto</label>
+      <div class="row slider" id="ruins-row">
+        <label><input type="checkbox" id="ruins-auto" checked> level auto</label>
         <input id="ruins" type="range" min="0" max="100" value="50" disabled>
         <span id="ruins-val">0.50</span>
       </div>
-    </section>
+    </template>
 
     <section>
+      <div class="row slider">
+        <label>zoom</label>
+        <input id="zoom" type="range" min="25" max="400" value="100">
+        <span id="zoom-val">100%</span>
+      </div>
       <button id="export-svg">Download SVG</button>
     </section>
 

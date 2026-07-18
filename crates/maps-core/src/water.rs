@@ -41,13 +41,15 @@ pub fn build_water<R: Rng>(
     // Draw the noise salt unconditionally so the RNG stream doesn't depend
     // on the water tag or level.
     let salt: u64 = rng.random();
-    let level = level_override
-        .unwrap_or(match tags.water {
-            Some(WaterTag::Dry) => 0.0,
-            Some(WaterTag::Wet) => 0.45,
-            None => 0.15,
-        })
-        .clamp(0.0, 1.0);
+    // The tag picks the state; the level only fine-tunes it: dry always
+    // means no water, while wet/untagged use the override in place of
+    // their default fill fraction.
+    let level = match tags.water {
+        Some(WaterTag::Dry) => 0.0,
+        Some(WaterTag::Wet) => level_override.unwrap_or(0.45),
+        None => level_override.unwrap_or(0.15),
+    }
+    .clamp(0.0, 1.0);
     if level <= 0.0 {
         return Water::default();
     }

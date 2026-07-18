@@ -17,6 +17,9 @@ seed = 42
 #decor_seed = 456   # hatch fans / tree canopies
 #name_seed = 789    # the title
 
+# Use this exact map title instead of generating one from the name seed.
+#title = "The Sunken Palace"
+
 # Generation tags: a comma-separated string or an array of strings.
 #   size:   small | medium | large
 #   layout: hub | chamber | burrow
@@ -35,9 +38,9 @@ output = "cave.svg"
 debug = false
 
 # Water level, 0.0..1.0: the fraction of the terrain that floods, lowest
-# basins first. 0 = no water, 0.5 = lowest half under water, 1 = fully
-# submerged; raise it and pools expand, lower it and they recede. Omit to
-# use the tag default (wet ~0.45, dry 0, else ~0.15).
+# basins first (0.5 = lowest half under water, 1 = fully submerged). This
+# fine-tunes the water tag's default level — wet 0.45, untagged 0.15; the
+# dry tag always means no water and ignores it.
 #water_level = 0.4
 
 # Ruins level, 0.0..1.0: the fraction of areas regrown as geometric ruins.
@@ -46,8 +49,9 @@ debug = false
 # whose reshaping would orphan a door, stay organic). Ruins growing into
 # contact merge into one larger space. Ruin walls carry their own
 # decoration: faded stipple dots in caves, masonry tiles in glades.
-# Omit to use the tag default: ruins ~0.5, organic 0, untagged ~0.1 (the
-# occasional lone ruin), mirroring how wet/dry/untagged set the water level.
+# This fine-tunes the ruins tag's default fraction — ruins 0.5, untagged
+# 0.1 (the occasional lone ruin); the organic tag always means no ruins
+# and ignores it. Mirrors how water_level fine-tunes wet/dry.
 #ruins_level = 0.5
 
 # Outline / smoothing overrides (defaults shown).

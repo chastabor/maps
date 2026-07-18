@@ -72,48 +72,48 @@ pub struct Tags {
 }
 
 impl Tags {
+    /// Roll a full set of defaults: every family gets a concrete tag, so
+    /// the seed always decides the map's complete character and callers
+    /// (`random_tags_for`, the web UI) can report a real per-family default
+    /// — the generator is the single source of truth for what an untouched
+    /// family means. Weighted to keep the flavour variety of the old
+    /// sparse rolls.
     pub fn random<R: Rng>(rng: &mut R) -> Self {
-        let size = rng.random_bool(0.6).then(|| match rng.random_range(0..3) {
-            0 => SizeTag::Small,
-            1 => SizeTag::Medium,
+        let size = Some(match rng.random_range(0..100) {
+            0..=24 => SizeTag::Small,
+            25..=69 => SizeTag::Medium,
             _ => SizeTag::Large,
         });
-        let layout = rng.random_bool(0.5).then(|| match rng.random_range(0..3) {
-            0 => LayoutTag::Hub,
-            1 => LayoutTag::Chamber,
+        let layout = Some(match rng.random_range(0..100) {
+            0..=29 => LayoutTag::Hub,
+            30..=69 => LayoutTag::Chamber,
             _ => LayoutTag::Burrow,
         });
-        let shape = rng.random_bool(0.35).then(|| match rng.random_range(0..3) {
-            0 => ShapeTag::Cavities,
-            1 => ShapeTag::Coral,
+        let shape = Some(match rng.random_range(0..100) {
+            0..=44 => ShapeTag::Cavities,
+            45..=74 => ShapeTag::Coral,
             _ => ShapeTag::Chaotic,
         });
-        let connect = rng.random_bool(0.4).then(|| {
-            if rng.random_bool(0.5) {
-                ConnectTag::Tree
-            } else {
-                ConnectTag::Connected
-            }
+        let connect = Some(if rng.random_bool(0.5) {
+            ConnectTag::Tree
+        } else {
+            ConnectTag::Connected
         });
-        let exits = rng.random_bool(0.4).then(|| match rng.random_range(0..4) {
-            0 => ExitTag::Sealed,
-            1 => ExitTag::Entrance,
-            2 => ExitTag::Passage,
+        let exits = Some(match rng.random_range(0..100) {
+            0..=9 => ExitTag::Sealed,
+            10..=54 => ExitTag::Entrance,
+            55..=84 => ExitTag::Passage,
             _ => ExitTag::Junction,
         });
-        let water = rng.random_bool(0.35).then(|| {
-            if rng.random_bool(0.6) {
-                WaterTag::Wet
-            } else {
-                WaterTag::Dry
-            }
+        let water = Some(if rng.random_bool(0.45) {
+            WaterTag::Wet
+        } else {
+            WaterTag::Dry
         });
-        let ruins = rng.random_bool(0.25).then(|| {
-            if rng.random_bool(0.6) {
-                RuinsTag::Ruins
-            } else {
-                RuinsTag::Organic
-            }
+        let ruins = Some(if rng.random_bool(0.2) {
+            RuinsTag::Ruins
+        } else {
+            RuinsTag::Organic
         });
         Tags {
             size,

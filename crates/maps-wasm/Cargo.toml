@@ -1,0 +1,13 @@
+[package]
+name = "maps-wasm"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+maps-core = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"

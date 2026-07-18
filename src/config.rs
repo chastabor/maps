@@ -36,6 +36,8 @@ pub struct Config {
     pub decor_seed: Option<u64>,
     /// Override the naming sub-seed (the title).
     pub name_seed: Option<u64>,
+    /// Use this exact map title instead of generating one.
+    pub title: Option<String>,
     /// Outline/smoothing overrides.
     pub outline: Option<OutlineConfig>,
 }

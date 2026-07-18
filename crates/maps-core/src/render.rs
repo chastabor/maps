@@ -28,7 +28,6 @@ struct Style {
     /// Fill for ruin masonry tiles (forest mode).
     tile: &'static str,
     title: &'static str,
-    caption: &'static str,
     water: &'static str,
     deep: &'static str,
     mud: &'static str,
@@ -45,7 +44,6 @@ const CAVE_STYLE: Style = Style {
     hatch: "#5a5342",
     tile: "#e7e0cf",
     title: "#3a3226",
-    caption: "#8a7f6a",
     water: "#a8c3cc",
     deep: "#7fa2b3",
     mud: "#e3d5b2",
@@ -62,7 +60,6 @@ const FOREST_STYLE: Style = Style {
     hatch: "#2e4038",
     tile: "#b7b4a2",
     title: "#cfdcb4",
-    caption: "#8fa382",
     water: "#a8c3cc",
     deep: "#7fa2b3",
     mud: "#adaf78",
@@ -330,16 +327,6 @@ pub fn svg(map: &CaveMap) -> String {
         style.title,
         map.title,
     );
-    let _ = write!(
-        s,
-        r##"<text x="{:.1}" y="{:.1}" fill="{}" font-family="Georgia, serif" font-size="12">seed {} &#183; {}</text>"##,
-        vx + 10.0,
-        vy + vh - 10.0,
-        style.caption,
-        map.seed,
-        map.tags,
-    );
-
     s.push_str("</svg>");
     s
 }

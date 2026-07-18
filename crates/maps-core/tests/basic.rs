@@ -63,6 +63,31 @@ fn organic_areas_never_touch() {
 }
 
 #[test]
+fn title_override_is_verbatim() {
+    use maps_core::{GenOptions, Mode, generate_with};
+    let with_title = |title: Option<&str>, mode| {
+        generate_with(
+            9,
+            &GenOptions {
+                mode,
+                title: title.map(String::from),
+                ..GenOptions::default()
+            },
+        )
+    };
+    let plain = with_title(None, Mode::Cave);
+    let named = with_title(Some("The Test Hall"), Mode::Cave);
+    assert_eq!(named.title, "The Test Hall");
+    assert_eq!(plain.outline, named.outline, "override changed the map");
+    // Whitespace-only override falls back to the seeded name.
+    assert_eq!(with_title(Some("  "), Mode::Cave).title, plain.title);
+    assert_eq!(
+        with_title(Some("Elm Grove"), Mode::Forest).title,
+        "Elm Grove"
+    );
+}
+
+#[test]
 fn grid_styles_render_differently() {
     use maps_core::{GenOptions, GridStyle, generate_with};
     let at = |grid| {
@@ -260,9 +285,12 @@ fn water_level_fills_from_the_lowest_basins() {
     use maps_core::{GenOptions, generate_with};
     use std::collections::HashSet;
     let at_level = |seed, level| {
+        // Pin the wet tag: the level fine-tunes an active water state and
+        // is ignored by seeds that roll dry.
         let map = generate_with(
             seed,
             &GenOptions {
+                tags: Some(Tags::parse("wet").unwrap()),
                 water_level: Some(level),
                 ..GenOptions::default()
             },

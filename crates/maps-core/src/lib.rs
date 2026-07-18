@@ -96,11 +96,13 @@ pub struct GenOptions {
     pub outline: OutlineParams,
     /// Water level as a fill fraction in 0..=1: 0 is completely dry, 0.5
     /// floods the lowest half of the terrain, 1 submerges everything.
-    /// `None` uses the tag default (wet ~0.45, dry 0, otherwise ~0.15).
+    /// Fine-tunes the water tag's default (wet 0.45, untagged 0.15); the
+    /// `dry` tag always means no water and ignores this.
     pub water_level: Option<f64>,
     /// Fraction (0..=1) of the non-corridor areas that take on geometric
     /// ruin shapes (rectangles/circles) in place of their organic outline.
-    /// `None` uses the tag default (`ruins` tag = 0.5, otherwise 0).
+    /// Fine-tunes the ruins tag's default (ruins 0.5, untagged 0.1); the
+    /// `organic` tag always means no ruins and ignores this.
     pub ruins_level: Option<f64>,
     /// Override the shape stream (tags, areas, topology, outline, water,
     /// stones). Defaults to a sub-seed derived from the master seed.
@@ -109,6 +111,10 @@ pub struct GenOptions {
     pub decor_seed: Option<u64>,
     /// Override the naming stream (the title).
     pub name_seed: Option<u64>,
+    /// Use this exact title instead of generating one (empty/whitespace is
+    /// ignored). The name stream is left untouched, so seeded naming
+    /// resumes when the override is removed.
+    pub title: Option<String>,
 }
 
 /// Generate a cave map. `tags: None` picks random tags from the seed.
@@ -120,6 +126,14 @@ pub fn generate(seed: u64, tags: Option<Tags>) -> CaveMap {
             ..GenOptions::default()
         },
     )
+}
+
+/// The tags a master seed rolls when none are supplied — the same
+/// derivation `generate_with` uses, exposed so UIs can preview/edit them.
+pub fn random_tags_for(seed: u64) -> Tags {
+    let shape_seed = sub_seed(seed, 0);
+    let mut tag_rng = Pcg64::seed_from_u64(sub_seed(shape_seed, 3));
+    Tags::random(&mut tag_rng)
 }
 
 /// Derive a stream-specific sub-seed from the master seed (splitmix64).
@@ -155,11 +169,14 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     let grid = HexGrid::hexagon(grid_radius(&params));
     let mut areas = grow_areas(&grid, &mut rng, &params);
     let topology = topology::build(&grid, &mut areas, &tags, &mut rng);
-    let ruins_level = opts.ruins_level.unwrap_or(match tags.ruins {
-        Some(tags::RuinsTag::Ruins) => 0.5,
+    // The tag picks the state; the level only fine-tunes it: organic always
+    // means no ruins, while ruins/untagged use the override in place of
+    // their default fraction.
+    let ruins_level = match tags.ruins {
         Some(tags::RuinsTag::Organic) => 0.0,
-        None => 0.1,
-    });
+        Some(tags::RuinsTag::Ruins) => opts.ruins_level.unwrap_or(0.5),
+        None => opts.ruins_level.unwrap_or(0.1),
+    };
     // Reshapes the selected areas' cells to the rasterized geometry, so all
     // downstream layers (outline, water, stones, decor) see the real
     // footprint and touching shapes union at the cell level.
@@ -193,8 +210,13 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         }
     };
 
-    let mut name_rng = Pcg64::seed_from_u64(name_seed);
-    let title = naming::title(&mut name_rng, !w.pools.is_empty(), mode);
+    let title = match opts.title.as_deref().map(str::trim) {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => {
+            let mut name_rng = Pcg64::seed_from_u64(name_seed);
+            naming::title(&mut name_rng, !w.pools.is_empty(), mode)
+        }
+    };
     CaveMap {
         seed,
         grid_style: opts.grid,

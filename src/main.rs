@@ -19,6 +19,7 @@ Options:
       --shape-seed <N> re-roll/pin just the map shape (outline, water, stones)
       --decor-seed <N> re-roll/pin just the hatch fans / tree canopies
       --name-seed <N>  re-roll/pin just the title
+      --title <NAME>   use this exact map title instead of generating one
   -t, --tags <LIST>    comma-separated tags, e.g. large,hub,coral
                        size:   small|medium|large
                        layout: hub|chamber|burrow
@@ -48,6 +49,7 @@ fn main() {
     let mut out: Option<String> = None;
     let mut debug: Option<bool> = None;
     let mut water_level: Option<f64> = None;
+    let mut title: Option<String> = None;
     let mut ruins_level: Option<f64> = None;
     let mut shape_seed: Option<u64> = None;
     let mut decor_seed: Option<u64> = None;
@@ -114,6 +116,7 @@ fn main() {
                 }
                 ruins_level = Some(level);
             }
+            "--title" => title = Some(value("--title")),
             "-o" | "--out" => out = Some(value("--out")),
             "-d" | "--debug" => debug = Some(true),
             "-h" | "--help" => {
@@ -170,6 +173,7 @@ fn main() {
             shape_seed: shape_seed.or(config.shape_seed),
             decor_seed: decor_seed.or(config.decor_seed),
             name_seed: name_seed.or(config.name_seed),
+            title: title.or_else(|| config.title.clone()),
         },
     );
     let rendered = if debug { debug_svg(&map) } else { svg(&map) };

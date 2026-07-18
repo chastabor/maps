@@ -11,6 +11,7 @@ The workspace has two parts:
 |---|---|
 | `maps` (repo root) | The `maps` CLI binary and config handling |
 | `crates/maps-core` | The pure, deterministic generation engine (no I/O; wasm-friendly) |
+| `crates/maps-wasm` | wasm-bindgen wrapper powering the `web/` demo page |
 
 ## Building
 
@@ -47,6 +48,7 @@ maps -s 42 -t large,hub,wet -o my.svg # config-free, flags only
 | `--shape-seed <N>` | Re-roll/pin just the map shape (outline, water, stones) |
 | `--decor-seed <N>` | Re-roll/pin just the hatch fans / tree canopies |
 | `--name-seed <N>` | Re-roll/pin just the title |
+| `--title <NAME>` | Use this exact map title instead of generating one |
 | `-t, --tags <LIST>` | Comma-separated tags (see below) |
 | `-w, --water <LEVEL>` | Water level `0.0..=1.0` (0 = dry, 1 = fully submerged) |
 | `-r, --ruins <LEVEL>` | Ruins level `0.0..=1.0`: fraction of areas that become geometric |
@@ -79,9 +81,10 @@ seed = 42
 tags = "large,hub,wet"        # or: tags = ["large", "hub", "wet"]
 
 # Water level, 0.0..1.0: the fraction of the terrain that floods, lowest
-# basins first. 0 = no water, 0.5 = lowest half under water, 1 = fully
-# submerged. Omit to use the tag default (wet ~0.45, dry 0, else ~0.15).
-# Pools get a darker deep-water band and a mud fringe automatically.
+# basins first (0.5 = lowest half under water, 1 = fully submerged). This
+# fine-tunes the water tag's default level — wet 0.45, untagged 0.15; the
+# dry tag always means no water and ignores it. Pools get a darker
+# deep-water band and a mud fringe automatically.
 water_level = 0.4
 
 # Ruins level, 0.0..1.0: the fraction of areas regrown as geometric ruins.
@@ -89,7 +92,8 @@ water_level = 0.4
 # corridors become straight or arcing halls (ones too contorted to fit, or
 # whose reshaping would orphan a door, stay organic). Ruins growing into
 # contact merge into one larger space, with organic seams between them.
-# Omit to use the tag default (ruins ~0.5, organic 0, untagged ~0.1).
+# This fine-tunes the ruins tag's default fraction — ruins 0.5, untagged
+# 0.1; the organic tag always means no ruins and ignores it.
 #ruins_level = 0.5
 
 # Output SVG path.
@@ -192,6 +196,32 @@ dots; in a forest, as the overgrown foundations of a lost settlement edged
 with courses of masonry tile. Ruins are regrown on the hex grid like any
 other node, so two that grow into contact merge into one larger space —
 joined by full-width, organically decorated seams.
+
+## Web demo
+
+A static page in `web/` drives the generator compiled to WebAssembly:
+generate/re-roll buttons (per randomness stream), radio groups for every tag
+family, mode/grid selectors, water/ruins level sliders, SVG download, and a
+permalink in the URL hash that replicates the exact map anywhere.
+
+Build with the standard toolchain (no wasm-pack needed):
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.126 --locked   # match Cargo.lock
+
+cargo build -p maps-wasm --target wasm32-unknown-unknown --release
+wasm-bindgen target/wasm32-unknown-unknown/release/maps_wasm.wasm \
+  --target web --out-dir web/pkg
+# optional: wasm-opt -Os web/pkg/maps_wasm_bg.wasm -o web/pkg/maps_wasm_bg.wasm
+
+python3 -m http.server -d web   # then open http://localhost:8000
+```
+
+The wasm output is byte-identical to the native CLI for the same seeds
+(pure-Rust PRNG, IEEE f64), so permalinks, config files and the printed
+seed line all describe the same map. Note: seeds are `u64` and cross the
+JS boundary as **strings** — JavaScript numbers corrupt integers above 2^53.
 
 ## Determinism notes
 

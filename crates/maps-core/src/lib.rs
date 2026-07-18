@@ -31,9 +31,22 @@ pub enum Mode {
     Forest,
 }
 
+/// The grid overlay drawn on the floor: the native hex lattice, a square
+/// grid sized so its lines meet the hex centres of every other row, or no
+/// grid at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum GridStyle {
+    #[default]
+    Hex,
+    Square,
+    None,
+}
+
 pub struct CaveMap {
     /// The master seed the sub-seeds were derived from.
     pub seed: u64,
+    /// Grid overlay style for rendering.
+    pub grid_style: GridStyle,
     /// The three effective sub-seeds; quote these to replicate or remix the
     /// map ([`GenOptions::shape_seed`] and friends).
     pub shape_seed: u64,
@@ -76,6 +89,8 @@ pub struct CaveMap {
 #[derive(Clone, Debug, Default)]
 pub struct GenOptions {
     pub mode: Mode,
+    /// Grid overlay style (default: hex).
+    pub grid: GridStyle,
     /// `None` picks random tags from the seed.
     pub tags: Option<Tags>,
     pub outline: OutlineParams,
@@ -182,6 +197,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     let title = naming::title(&mut name_rng, !w.pools.is_empty(), mode);
     CaveMap {
         seed,
+        grid_style: opts.grid,
         shape_seed,
         decor_seed,
         name_seed,

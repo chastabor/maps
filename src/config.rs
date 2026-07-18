@@ -1,8 +1,8 @@
 //! TOML configuration for map generation. Every field is optional; the
 //! defaults match `maps-core`'s own.
 
-use maps_core::Mode;
 use maps_core::outline::OutlineParams;
+use maps_core::{GridStyle, Mode};
 use maps_core::tags::Tags;
 use serde::Deserialize;
 use std::path::Path;
@@ -12,6 +12,8 @@ use std::path::Path;
 pub struct Config {
     /// Map type: "cave" (default) or "forest" (alias "glade").
     pub mode: Option<ModeSpec>,
+    /// Grid overlay: "hex" (default), "square" or "none".
+    pub grid: Option<GridSpec>,
     /// RNG seed; omit for a clock-derived seed.
     pub seed: Option<u64>,
     /// Generation tags, either `"large,hub,wet"` or `["large", "hub", "wet"]`.
@@ -51,6 +53,24 @@ impl From<ModeSpec> for Mode {
         match m {
             ModeSpec::Cave => Mode::Cave,
             ModeSpec::Forest | ModeSpec::Glade => Mode::Forest,
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum GridSpec {
+    Hex,
+    Square,
+    None,
+}
+
+impl From<GridSpec> for GridStyle {
+    fn from(g: GridSpec) -> GridStyle {
+        match g {
+            GridSpec::Hex => GridStyle::Hex,
+            GridSpec::Square => GridStyle::Square,
+            GridSpec::None => GridStyle::None,
         }
     }
 }

@@ -63,6 +63,27 @@ fn organic_areas_never_touch() {
 }
 
 #[test]
+fn grid_styles_render_differently() {
+    use maps_core::{GenOptions, GridStyle, generate_with};
+    let at = |grid| {
+        svg(&generate_with(
+            3,
+            &GenOptions {
+                grid,
+                ..GenOptions::default()
+            },
+        ))
+    };
+    let hex = at(GridStyle::Hex);
+    let square = at(GridStyle::Square);
+    let none = at(GridStyle::None);
+    assert_ne!(hex, square);
+    assert_ne!(square, none);
+    // No grid means less markup than either overlay.
+    assert!(none.len() < hex.len() && none.len() < square.len());
+}
+
+#[test]
 fn ruin_decoration_matches_mode() {
     use maps_core::{GenOptions, Mode, generate_with};
     let opts = |mode| GenOptions {

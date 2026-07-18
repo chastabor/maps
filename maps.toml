@@ -1,6 +1,11 @@
 # maps configuration. Every field is optional; command-line flags override
 # anything set here.
 
+# Grid overlay drawn on the floor: "hex" (default, the native lattice),
+# "square" (lines sized to meet the hex centres of every other row), or
+# "none" (no grid).
+#grid = "hex"
+
 # Master RNG seed; omit for a clock-derived random seed.
 seed = 42
 
@@ -19,7 +24,7 @@ seed = 42
 #   links:  tree | connected
 #   exits:  sealed | entrance | passage | junction
 #   water:  wet | dry
-#   ruins:  ruins (half the areas become geometric; see ruins_level)
+#   ruins:  ruins | organic (see ruins_level)
 # Omit to let the seed pick random tags.
 tags = "large,hub,wet"
 
@@ -41,7 +46,8 @@ debug = false
 # whose reshaping would orphan a door, stay organic). Ruins growing into
 # contact merge into one larger space. Ruin walls carry their own
 # decoration: faded stipple dots in caves, masonry tiles in glades.
-# Omit to use the tag default (ruins tag = 0.5, otherwise 0).
+# Omit to use the tag default: ruins ~0.5, organic 0, untagged ~0.1 (the
+# occasional lone ruin), mirroring how wet/dry/untagged set the water level.
 #ruins_level = 0.5
 
 # Outline / smoothing overrides (defaults shown).

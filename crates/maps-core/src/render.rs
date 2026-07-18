@@ -3,7 +3,7 @@
 
 use crate::grid::Hex;
 use crate::outline::Point;
-use crate::{CaveMap, Mode};
+use crate::{CaveMap, GridStyle, Mode};
 use std::fmt::Write;
 
 /// Colour scheme, chosen per map mode.
@@ -190,18 +190,50 @@ pub fn svg(map: &CaveMap) -> String {
         );
     }
 
-    // Hex grid above the water, visible across the whole floor.
-    let _ = write!(
-        s,
-        r##"<g clip-path="url(#floor)" stroke="{}" stroke-opacity="0.14" stroke-width="0.6" fill="none">"##,
-        style.line
-    );
-    for &h in map.grid.cells() {
-        if near_floor(map, h) {
-            let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(h));
+    // Grid overlay above the water, visible across the whole floor.
+    match map.grid_style {
+        GridStyle::Hex => {
+            let _ = write!(
+                s,
+                r##"<g clip-path="url(#floor)" stroke="{}" stroke-opacity="0.14" stroke-width="0.6" fill="none">"##,
+                style.line
+            );
+            for &h in map.grid.cells() {
+                if near_floor(map, h) {
+                    let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(h));
+                }
+            }
+            s.push_str("</g>");
         }
+        GridStyle::Square => {
+            // Square cells at the hex column spacing (sqrt3 * size), so the
+            // vertical lines meet the hex centres of every other row.
+            let step = 3f64.sqrt() * HEX_SIZE;
+            let mut d = String::new();
+            let (k0, k1) = (
+                (min_x / step).floor() as i64,
+                (max_x / step).ceil() as i64,
+            );
+            for k in k0..=k1 {
+                let x = (k as f64 + 0.5) * step;
+                let _ = write!(d, "M{x:.1} {min_y:.1}L{x:.1} {max_y:.1}");
+            }
+            let (m0, m1) = (
+                (min_y / step).floor() as i64,
+                (max_y / step).ceil() as i64,
+            );
+            for m in m0..=m1 {
+                let y = (m as f64 + 0.5) * step;
+                let _ = write!(d, "M{min_x:.1} {y:.1}L{max_x:.1} {y:.1}");
+            }
+            let _ = write!(
+                s,
+                r##"<g clip-path="url(#floor)"><path d="{d}" stroke="{}" stroke-opacity="0.14" stroke-width="0.6" fill="none"/></g>"##,
+                style.line
+            );
+        }
+        GridStyle::None => {}
     }
-    s.push_str("</g>");
 
     if !map.stones.is_empty() {
         let _ = write!(

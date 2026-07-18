@@ -42,6 +42,7 @@ maps -s 42 -t large,hub,wet -o my.svg # config-free, flags only
 |---|---|
 | `-c, --config <FILE>` | Config file path (same as the positional argument) |
 | `-m, --mode <MODE>` | `cave` (default) or `forest` (alias `glade`) |
+| `-g, --grid <STYLE>` | Grid overlay: `hex` (default), `square`, or `none` |
 | `-s, --seed <N>` | Master RNG seed (default: derived from the clock) |
 | `--shape-seed <N>` | Re-roll/pin just the map shape (outline, water, stones) |
 | `--decor-seed <N>` | Re-roll/pin just the hatch fans / tree canopies |
@@ -61,6 +62,10 @@ repo root for a commented example, and `examples/` for ready-to-run configs.
 ```toml
 # Map type: "cave" (default) or "forest" (alias "glade").
 mode = "cave"
+
+# Grid overlay on the floor: "hex" (default, the native lattice), "square"
+# (lines sized to meet the hex centres of every other row), or "none".
+grid = "hex"
 
 # Master RNG seed; omit for a clock-derived random seed.
 seed = 42

@@ -1,7 +1,7 @@
 use maps::config::Config;
 use maps::core::render::{debug_svg, svg};
 use maps::core::tags::Tags;
-use maps::core::{GenOptions, Mode, generate_with};
+use maps::core::{GenOptions, GridStyle, Mode, generate_with};
 use std::path::Path;
 use std::process::exit;
 
@@ -14,6 +14,7 @@ Generates a cave map SVG. Options are read from the TOML config file
 Options:
   -c, --config <FILE>  config file path (same as the positional argument)
   -m, --mode <MODE>    map type: cave (default) or forest
+  -g, --grid <STYLE>   grid overlay: hex (default), square or none
   -s, --seed <N>       master RNG seed (default: derived from the clock)
       --shape-seed <N> re-roll/pin just the map shape (outline, water, stones)
       --decor-seed <N> re-roll/pin just the hatch fans / tree canopies
@@ -41,6 +42,7 @@ fn fail(msg: &str) -> ! {
 fn main() {
     let mut config_path: Option<String> = None;
     let mut mode: Option<Mode> = None;
+    let mut grid: Option<GridStyle> = None;
     let mut seed: Option<u64> = None;
     let mut tags: Option<Tags> = None;
     let mut out: Option<String> = None;
@@ -64,6 +66,14 @@ fn main() {
                     "cave" => Mode::Cave,
                     "forest" | "glade" => Mode::Forest,
                     other => fail(&format!("unknown mode: {other} (cave|forest)")),
+                });
+            }
+            "-g" | "--grid" => {
+                grid = Some(match value("--grid").to_ascii_lowercase().as_str() {
+                    "hex" => GridStyle::Hex,
+                    "square" => GridStyle::Square,
+                    "none" => GridStyle::None,
+                    other => fail(&format!("unknown grid style: {other} (hex|square|none)")),
                 });
             }
             "-s" | "--seed" => {
@@ -144,11 +154,15 @@ fn main() {
     let mode = mode
         .or(config.mode.map(Mode::from))
         .unwrap_or(Mode::Cave);
+    let grid = grid
+        .or(config.grid.map(GridStyle::from))
+        .unwrap_or(GridStyle::Hex);
 
     let map = generate_with(
         seed,
         &GenOptions {
             mode,
+            grid,
             tags,
             outline: config.outline_params(),
             water_level: water_level.or(config.water_level),

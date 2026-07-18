@@ -4,6 +4,7 @@
 use crate::grid::Hex;
 use crate::outline::Point;
 use rand::Rng;
+use rand::seq::SliceRandom;
 use std::collections::HashSet;
 
 /// Small irregular polygons dropped in open (non-tunnel, non-water) cells.
@@ -138,6 +139,9 @@ pub fn hatching<R: Rng>(
             out.push(HatchFan { hull, strokes });
         }
     }
+    // Random stacking: shuffle so which fan hides which is seed-decided,
+    // not a uniform cascade in walk direction.
+    out.shuffle(rng);
     (out, dots)
 }
 
@@ -178,11 +182,36 @@ pub fn trees<R: Rng>(
     for lp in loops {
         // Masonry course on ruin wall: sampled denser than the blocks are
         // long, so consecutive blocks overlap and hide parts of one another
-        // (draw order does the occlusion, like the hatch-fan hulls).
-        for (p, dir) in resample(lp, 3.2) {
-            let n = (dir.1, -dir.0);
-            if is_ruin_wall(p, n, ruin_cells, hex_size) {
-                tiles.push(tile(p, dir, n, rng));
+        // (draw order does the occlusion; the course is shuffled afterwards
+        // so the layering direction is random, not a uniform cascade).
+        let samples = resample(lp, 3.2);
+        let m = samples.len();
+        if m >= 3 {
+            // Turn angle at each sample: sharp local maxima are corners and
+            // get a mitered L-block wrapping both faces.
+            let turn: Vec<f64> = (0..m)
+                .map(|i| {
+                    let a = samples[(i + m - 1) % m].1;
+                    let b = samples[(i + 1) % m].1;
+                    (a.0 * b.0 + a.1 * b.1).clamp(-1.0, 1.0).acos()
+                })
+                .collect();
+            for i in 0..m {
+                let (p, dir) = samples[i];
+                let n = (dir.1, -dir.0);
+                if !is_ruin_wall(p, n, ruin_cells, hex_size) {
+                    continue;
+                }
+                let is_corner = turn[i] > 0.6
+                    && turn[i] >= turn[(i + m - 1) % m]
+                    && turn[i] >= turn[(i + 1) % m];
+                if is_corner {
+                    let t_in = samples[(i + m - 1) % m].1;
+                    let t_out = samples[(i + 1) % m].1;
+                    tiles.push(corner_tile(p, t_in, t_out, rng));
+                } else {
+                    tiles.push(tile(p, dir, n, rng));
+                }
             }
         }
         // Band 0: canopies tight against the clearing edge, dense enough to
@@ -229,16 +258,23 @@ pub fn trees<R: Rng>(
             out.push((canopy(c, r, rng), 2));
         }
     }
+    // Random stacking: shuffle so which canopy/block overlaps which is
+    // seed-decided, instead of a uniform cascade in walk direction. The
+    // canopy depth bands still draw deepest-first (the renderer groups by
+    // band); the shuffle randomises overlap within each band.
+    out.shuffle(rng);
+    tiles.shuffle(rng);
     (out, tiles)
 }
 
-/// One masonry block: a tangent-aligned quad laid just outside the wall
-/// line, with slight size and corner jitter. Blocks are longer than their
-/// sampling interval, so the course overlaps.
+/// One masonry block: a tangent-aligned quad recessed into the wall line
+/// (its inner edge tucks under the border stroke), with slight size and
+/// corner jitter. Blocks are longer than their sampling interval, so the
+/// course overlaps.
 fn tile<R: Rng>(p: Point, dir: (f64, f64), n: (f64, f64), rng: &mut R) -> Vec<Point> {
     let half_len = rng.random_range(2.4..3.6);
-    let depth = rng.random_range(2.8..4.6);
-    let inner = 0.6 + rng.random_range(-0.3..0.3);
+    let depth = rng.random_range(4.0..5.6);
+    let inner = rng.random_range(-1.2..-0.6);
     let corners = [
         (-half_len, inner),
         (half_len, inner),
@@ -251,6 +287,57 @@ fn tile<R: Rng>(p: Point, dir: (f64, f64), n: (f64, f64), rng: &mut R) -> Vec<Po
             (
                 p.0 + dir.0 * t + n.0 * d + rng.random_range(-0.25..0.25),
                 p.1 + dir.1 * t + n.1 * d + rng.random_range(-0.25..0.25),
+            )
+        })
+        .collect()
+}
+
+/// A corner stone: a mitered block bent around the corner so both faces get
+/// an arm — the "L" shape of dressed quoins in the reference style.
+fn corner_tile<R: Rng>(
+    p: Point,
+    t_in: (f64, f64),
+    t_out: (f64, f64),
+    rng: &mut R,
+) -> Vec<Point> {
+    let n1 = (t_in.1, -t_in.0);
+    let n2 = (t_out.1, -t_out.0);
+    let mut bis = (n1.0 + n2.0, n1.1 + n2.1);
+    let len = bis.0.hypot(bis.1);
+    if len < 0.3 {
+        // Near-reversal: no sensible miter, fall back to a straight block.
+        return tile(p, t_in, n1, rng);
+    }
+    bis = (bis.0 / len, bis.1 / len);
+    let miter = (1.0 / (bis.0 * n1.0 + bis.1 * n1.1)).clamp(1.0, 2.5);
+
+    let inner = rng.random_range(-1.2..-0.6);
+    let depth = rng.random_range(4.0..5.6);
+    let arm = rng.random_range(2.8..4.2);
+    let ci = (p.0 + bis.0 * inner * miter, p.1 + bis.1 * inner * miter);
+    let co = (
+        p.0 + bis.0 * (inner + depth) * miter,
+        p.1 + bis.1 * (inner + depth) * miter,
+    );
+    let pts = [
+        (p.0 - t_in.0 * arm + n1.0 * inner, p.1 - t_in.1 * arm + n1.1 * inner),
+        (
+            p.0 - t_in.0 * arm + n1.0 * (inner + depth),
+            p.1 - t_in.1 * arm + n1.1 * (inner + depth),
+        ),
+        co,
+        (
+            p.0 + t_out.0 * arm + n2.0 * (inner + depth),
+            p.1 + t_out.1 * arm + n2.1 * (inner + depth),
+        ),
+        (p.0 + t_out.0 * arm + n2.0 * inner, p.1 + t_out.1 * arm + n2.1 * inner),
+        ci,
+    ];
+    pts.iter()
+        .map(|&(x, y)| {
+            (
+                x + rng.random_range(-0.25..0.25),
+                y + rng.random_range(-0.25..0.25),
             )
         })
         .collect()

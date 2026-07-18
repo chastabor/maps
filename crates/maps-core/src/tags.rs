@@ -45,6 +45,12 @@ pub enum ExitTag {
 
 /// How much water the cave holds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RuinsTag {
+    Ruins,
+    Organic,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WaterTag {
     Dry,
     Wet,
@@ -59,6 +65,10 @@ pub struct Tags {
     pub connect: Option<ConnectTag>,
     pub exits: Option<ExitTag>,
     pub water: Option<WaterTag>,
+    /// Ruins presence, mirroring the water group: `ruins` regrows about half
+    /// the areas as geometry, `organic` guarantees none, untagged allows the
+    /// occasional ruin (see `GenOptions::ruins_level` for exact control).
+    pub ruins: Option<RuinsTag>,
 }
 
 impl Tags {
@@ -98,6 +108,13 @@ impl Tags {
                 WaterTag::Dry
             }
         });
+        let ruins = rng.random_bool(0.25).then(|| {
+            if rng.random_bool(0.6) {
+                RuinsTag::Ruins
+            } else {
+                RuinsTag::Organic
+            }
+        });
         Tags {
             size,
             layout,
@@ -105,6 +122,7 @@ impl Tags {
             connect,
             exits,
             water,
+            ruins,
         }
     }
 
@@ -130,6 +148,8 @@ impl Tags {
                 "junction" => tags.exits = Some(ExitTag::Junction),
                 "dry" => tags.water = Some(WaterTag::Dry),
                 "wet" => tags.water = Some(WaterTag::Wet),
+                "ruins" => tags.ruins = Some(RuinsTag::Ruins),
+                "organic" => tags.ruins = Some(RuinsTag::Organic),
                 other => return Err(format!("unknown tag: {other}")),
             }
         }
@@ -179,6 +199,12 @@ impl fmt::Display for Tags {
             names.push(match w {
                 WaterTag::Dry => "dry",
                 WaterTag::Wet => "wet",
+            });
+        }
+        if let Some(r) = self.ruins {
+            names.push(match r {
+                RuinsTag::Ruins => "ruins",
+                RuinsTag::Organic => "organic",
             });
         }
         if names.is_empty() {

@@ -1,0 +1,14 @@
+mode = "cave"
+seed = 11
+tags = "large,burrow,tree,ruins"
+output = "examples/ruins.svg"
+
+# 0 = no water .. 1 = fully submerged; this floods the lowest 20% of terrain.
+water_level = 0.2
+
+# Fraction of areas regrown as geometric ruins: rooms turn into rectangles
+# or circles, corridors into straight or arcing halls, and ruins that grow
+# into contact merge into one larger space. Ruin walls are shaded with faded
+# stipple dots; the rest stays organic cave with hatched walls — ruined
+# architecture swallowed by the natural cavern.
+ruins_level = 0.75

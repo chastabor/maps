@@ -14,7 +14,10 @@ Generates a cave map SVG. Options are read from the TOML config file
 Options:
   -c, --config <FILE>  config file path (same as the positional argument)
   -m, --mode <MODE>    map type: cave (default) or forest
-  -s, --seed <N>       RNG seed (default: derived from the clock)
+  -s, --seed <N>       master RNG seed (default: derived from the clock)
+      --shape-seed <N> re-roll/pin just the map shape (outline, water, stones)
+      --decor-seed <N> re-roll/pin just the hatch fans / tree canopies
+      --name-seed <N>  re-roll/pin just the title
   -t, --tags <LIST>    comma-separated tags, e.g. large,hub,coral
                        size:   small|medium|large
                        layout: hub|chamber|burrow
@@ -22,7 +25,10 @@ Options:
                        links:  tree|connected
                        exits:  sealed|entrance|passage|junction
                        water:  wet|dry
+                       ruins:  ruins|organic
   -w, --water <LEVEL>  water level 0.0..=1.0 (0 = dry, 1 = fully submerged)
+  -r, --ruins <LEVEL>  ruins level 0.0..=1.0: fraction of areas that become
+                       geometric (rectangles/circles) instead of organic
   -o, --out <FILE>     output SVG path (default: cave.svg)
   -d, --debug          render raw hex cells instead of the finished map
   -h, --help           show this help";
@@ -40,6 +46,10 @@ fn main() {
     let mut out: Option<String> = None;
     let mut debug: Option<bool> = None;
     let mut water_level: Option<f64> = None;
+    let mut ruins_level: Option<f64> = None;
+    let mut shape_seed: Option<u64> = None;
+    let mut decor_seed: Option<u64> = None;
+    let mut name_seed: Option<u64> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -66,6 +76,16 @@ fn main() {
             "-t" | "--tags" => {
                 tags = Some(Tags::parse(&value("--tags")).unwrap_or_else(|e| fail(&e)));
             }
+            "--shape-seed" | "--decor-seed" | "--name-seed" => {
+                let parsed: u64 = value(&arg).parse().unwrap_or_else(|_| {
+                    fail(&format!("{arg} must be an unsigned integer"));
+                });
+                match arg.as_str() {
+                    "--shape-seed" => shape_seed = Some(parsed),
+                    "--decor-seed" => decor_seed = Some(parsed),
+                    _ => name_seed = Some(parsed),
+                }
+            }
             "-w" | "--water" => {
                 let level: f64 = value("--water")
                     .parse()
@@ -74,6 +94,15 @@ fn main() {
                     fail("--water must be between 0.0 and 1.0");
                 }
                 water_level = Some(level);
+            }
+            "-r" | "--ruins" => {
+                let level: f64 = value("--ruins")
+                    .parse()
+                    .unwrap_or_else(|_| fail("--ruins must be a number"));
+                if !(0.0..=1.0).contains(&level) {
+                    fail("--ruins must be between 0.0 and 1.0");
+                }
+                ruins_level = Some(level);
             }
             "-o" | "--out" => out = Some(value("--out")),
             "-d" | "--debug" => debug = Some(true),
@@ -123,6 +152,10 @@ fn main() {
             tags,
             outline: config.outline_params(),
             water_level: water_level.or(config.water_level),
+            ruins_level: ruins_level.or(config.ruins_level),
+            shape_seed: shape_seed.or(config.shape_seed),
+            decor_seed: decor_seed.or(config.decor_seed),
+            name_seed: name_seed.or(config.name_seed),
         },
     );
     let rendered = if debug { debug_svg(&map) } else { svg(&map) };
@@ -130,9 +163,12 @@ fn main() {
         fail(&format!("failed to write {out}: {e}"));
     }
     println!(
-        "\"{}\" | seed {} | tags: {} | {} areas -> {}",
+        "\"{}\" | seed {} (shape {}, decor {}, name {}) | tags: {} | {} areas -> {}",
         map.title,
         map.seed,
+        map.shape_seed,
+        map.decor_seed,
+        map.name_seed,
         map.tags,
         map.areas.count(),
         out

@@ -55,23 +55,61 @@ pub struct HatchFan {
     pub strokes: Vec<(Point, Point)>,
 }
 
+/// True if the wall at this sample belongs to a ruin area: step half a cell
+/// toward the floor side and look the cell up.
+fn is_ruin_wall(p: Point, nrm: (f64, f64), ruin_cells: &HashSet<Hex>, s: f64) -> bool {
+    !ruin_cells.is_empty()
+        && ruin_cells.contains(&Hex::at((p.0 - nrm.0 * 0.6 * s, p.1 - nrm.1 * 0.6 * s), s))
+}
+
 /// Wall hatching as cone units, the counterpart of the forest's border
 /// trees: fans are scattered along the wall the way canopies are scattered
 /// along the tree line. Per-unit randomness is the axis angle and how deep
 /// inside the cave the fan starts — the renderer's floor mask clips anything
 /// on the floor (just as the clearing covers the trees' inner halves), so a
 /// fan that starts deep shows only its longest strokes.
-pub fn hatching<R: Rng>(loops: &[Vec<Point>], rng: &mut R) -> Vec<HatchFan> {
+///
+/// Wall sections owned by ruin areas get *faded stipple dots* instead of
+/// fans: circles in a band outside the wall, returned as
+/// `(centre, radius, opacity)` — larger and darker at the line, fading out.
+pub fn hatching<R: Rng>(
+    loops: &[Vec<Point>],
+    ruin_cells: &HashSet<Hex>,
+    hex_size: f64,
+    rng: &mut R,
+) -> (Vec<HatchFan>, Vec<(Point, f64, f64)>) {
     let mut out = Vec::new();
+    let mut dots = Vec::new();
     for lp in loops {
         for (p, dir) in resample(lp, 8.0) {
+            let nrm = (dir.1, -dir.0);
+            if is_ruin_wall(p, nrm, ruin_cells, hex_size) {
+                // Stipple covering this ~8px stretch of ruin wall: dense,
+                // large and dark against the line, fading with distance.
+                for _ in 0..rng.random_range(15..23) {
+                    let along = rng.random_range(-4.0..4.0);
+                    let u: f64 = rng.random();
+                    let d = 0.4 + u * u * 9.5;
+                    let t = (d / 10.0).min(1.0);
+                    let r = (0.95 - 0.55 * t) * rng.random_range(0.7..1.2);
+                    let alpha = 0.85 - 0.6 * t;
+                    dots.push((
+                        (
+                            p.0 + dir.0 * along + nrm.0 * d,
+                            p.1 + dir.1 * along + nrm.1 * d,
+                        ),
+                        r,
+                        alpha,
+                    ));
+                }
+                continue;
+            }
             if rng.random_bool(0.12) {
                 continue;
             }
             // The trace walks with floor on a fixed side, so this normal
             // always points into the wall (outward on outer loops, into
             // pillars on holes).
-            let nrm = (dir.1, -dir.0);
             let swing = rng.random_range(-0.9..0.9f64);
             let (sin, cos) = swing.sin_cos();
             let axis = (nrm.0 * cos - nrm.1 * sin, nrm.0 * sin + nrm.1 * cos);
@@ -100,7 +138,7 @@ pub fn hatching<R: Rng>(loops: &[Vec<Point>], rng: &mut R) -> Vec<HatchFan> {
             out.push(HatchFan { hull, strokes });
         }
     }
-    out
+    (out, dots)
 }
 
 /// Footprint quad spanning a fan's first (short) and last (wide) strokes,
@@ -125,13 +163,35 @@ fn fan_hull(strokes: &[(Point, Point)], pad: f64) -> Vec<Point> {
 /// with a recessed inner ring — in a wide range of sizes. Three rows recede
 /// from the clearing; the returned depth band (0 = nearest) drives shading:
 /// nearest trees render lightest and the deepest fade toward the dark woods.
-pub fn trees<R: Rng>(loops: &[Vec<Point>], rng: &mut R) -> Vec<(Vec<Point>, usize)> {
+///
+/// Wall sections owned by ruin areas get *masonry tiles* instead of trees:
+/// a single course of small tangent-aligned stone blocks just outside the
+/// line, returned separately as quads.
+pub fn trees<R: Rng>(
+    loops: &[Vec<Point>],
+    ruin_cells: &HashSet<Hex>,
+    hex_size: f64,
+    rng: &mut R,
+) -> (Vec<(Vec<Point>, usize)>, Vec<Vec<Point>>) {
     let mut out = Vec::new();
+    let mut tiles = Vec::new();
     for lp in loops {
+        // Masonry course on ruin wall: sampled denser than the blocks are
+        // long, so consecutive blocks overlap and hide parts of one another
+        // (draw order does the occlusion, like the hatch-fan hulls).
+        for (p, dir) in resample(lp, 3.2) {
+            let n = (dir.1, -dir.0);
+            if is_ruin_wall(p, n, ruin_cells, hex_size) {
+                tiles.push(tile(p, dir, n, rng));
+            }
+        }
         // Band 0: canopies tight against the clearing edge, dense enough to
         // overlap into a continuous band.
         for (p, dir) in resample(lp, 5.5) {
             let n = (dir.1, -dir.0);
+            if is_ruin_wall(p, n, ruin_cells, hex_size) {
+                continue;
+            }
             let r = rng.random_range(3.5..8.5);
             let off = r * rng.random_range(0.4..0.7);
             let c = (
@@ -142,10 +202,10 @@ pub fn trees<R: Rng>(loops: &[Vec<Point>], rng: &mut R) -> Vec<(Vec<Point>, usiz
         }
         // Band 1: bigger canopies deeper into the woods.
         for (p, dir) in resample(lp, 8.0) {
-            if rng.random_bool(0.2) {
+            let n = (dir.1, -dir.0);
+            if is_ruin_wall(p, n, ruin_cells, hex_size) || rng.random_bool(0.2) {
                 continue;
             }
-            let n = (dir.1, -dir.0);
             let r = rng.random_range(5.0..10.5);
             let off = rng.random_range(5.0..12.0);
             let c = (
@@ -156,10 +216,10 @@ pub fn trees<R: Rng>(loops: &[Vec<Point>], rng: &mut R) -> Vec<(Vec<Point>, usiz
         }
         // Band 2: the deep-woods fringe, blending toward the background.
         for (p, dir) in resample(lp, 8.0) {
-            if rng.random_bool(0.15) {
+            let n = (dir.1, -dir.0);
+            if is_ruin_wall(p, n, ruin_cells, hex_size) || rng.random_bool(0.15) {
                 continue;
             }
-            let n = (dir.1, -dir.0);
             let r = rng.random_range(5.5..11.5);
             let off = rng.random_range(10.0..19.0);
             let c = (
@@ -169,7 +229,31 @@ pub fn trees<R: Rng>(loops: &[Vec<Point>], rng: &mut R) -> Vec<(Vec<Point>, usiz
             out.push((canopy(c, r, rng), 2));
         }
     }
-    out
+    (out, tiles)
+}
+
+/// One masonry block: a tangent-aligned quad laid just outside the wall
+/// line, with slight size and corner jitter. Blocks are longer than their
+/// sampling interval, so the course overlaps.
+fn tile<R: Rng>(p: Point, dir: (f64, f64), n: (f64, f64), rng: &mut R) -> Vec<Point> {
+    let half_len = rng.random_range(2.4..3.6);
+    let depth = rng.random_range(2.8..4.6);
+    let inner = 0.6 + rng.random_range(-0.3..0.3);
+    let corners = [
+        (-half_len, inner),
+        (half_len, inner),
+        (half_len, inner + depth),
+        (-half_len, inner + depth),
+    ];
+    corners
+        .iter()
+        .map(|&(t, d)| {
+            (
+                p.0 + dir.0 * t + n.0 * d + rng.random_range(-0.25..0.25),
+                p.1 + dir.1 * t + n.1 * d + rng.random_range(-0.25..0.25),
+            )
+        })
+        .collect()
 }
 
 /// One canopy: a star polygon whose lobe count grows with its radius, with

@@ -41,6 +41,22 @@ impl Hex {
         (x, y)
     }
 
+    /// The hex containing a pixel point (inverse of `center`).
+    pub fn at(p: (f64, f64), size: f64) -> Hex {
+        let qf = (SQRT3 / 3.0 * p.0 - p.1 / 3.0) / size;
+        let rf = (2.0 / 3.0 * p.1) / size;
+        // Cube rounding.
+        let sf = -qf - rf;
+        let (mut q, mut r, s) = (qf.round(), rf.round(), sf.round());
+        let (dq, dr, ds) = ((q - qf).abs(), (r - rf).abs(), (s - sf).abs());
+        if dq > dr && dq > ds {
+            q = -r - s;
+        } else if dr > ds {
+            r = -q - s;
+        }
+        Hex::new(q as i32, r as i32)
+    }
+
     pub fn corners(self, size: f64) -> [(f64, f64); 6] {
         let (cx, cy) = self.center(size);
         std::array::from_fn(|i| {

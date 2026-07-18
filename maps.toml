@@ -1,0 +1,55 @@
+# maps configuration. Every field is optional; command-line flags override
+# anything set here.
+
+# Master RNG seed; omit for a clock-derived random seed.
+seed = 42
+
+# Randomness is split into three streams, each derived from the master seed
+# but individually overridable — re-roll one aspect while pinning the rest.
+# The maps binary prints all three effective values after generating, so a
+# map can be replicated identically on another system by quoting them.
+#shape_seed = 123   # map outline, water, stones
+#decor_seed = 456   # hatch fans / tree canopies
+#name_seed = 789    # the title
+
+# Generation tags: a comma-separated string or an array of strings.
+#   size:   small | medium | large
+#   layout: hub | chamber | burrow
+#   shape:  cavities | coral | chaotic
+#   links:  tree | connected
+#   exits:  sealed | entrance | passage | junction
+#   water:  wet | dry
+#   ruins:  ruins (half the areas become geometric; see ruins_level)
+# Omit to let the seed pick random tags.
+tags = "large,hub,wet"
+
+# Output SVG path.
+output = "cave.svg"
+
+# Render the raw hex-cell debug view instead of the finished map.
+debug = false
+
+# Water level, 0.0..1.0: the fraction of the terrain that floods, lowest
+# basins first. 0 = no water, 0.5 = lowest half under water, 1 = fully
+# submerged; raise it and pools expand, lower it and they recede. Omit to
+# use the tag default (wet ~0.45, dry 0, else ~0.15).
+#water_level = 0.4
+
+# Ruins level, 0.0..1.0: the fraction of areas regrown as geometric ruins.
+# Rooms become rectangles (straight walls) or circles (arching walls);
+# corridors become straight or arcing halls (ones too contorted to fit, or
+# whose reshaping would orphan a door, stay organic). Ruins growing into
+# contact merge into one larger space. Ruin walls carry their own
+# decoration: faded stipple dots in caves, masonry tiles in glades.
+# Omit to use the tag default (ruins tag = 0.5, otherwise 0).
+#ruins_level = 0.5
+
+# Outline / smoothing overrides (defaults shown).
+[outline]
+hex_size = 12.0      # pixel size of one hex cell
+bumpiness = 0.55     # boundary smoothing strength, 0..1
+smooth_passes = 1    # number of smoothing passes
+irregularity = 0.16  # vertex jitter, as a fraction of hex size
+roughness = 0.07     # fine jitter for the subdivision rounds
+narrow_pull = 0.4    # how tightly tunnels are pinched, 0..1
+chaikin_iters = 2    # corner-cutting iterations

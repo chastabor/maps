@@ -2,7 +2,9 @@
 #   maps examples/forest.toml
 mode = "forest"
 seed = 7
-tags = "medium,connected,wet"
+# "organic" pins this example as a purely natural glade (untagged maps may
+# grow the occasional ruin).
+tags = "medium,connected,wet,organic"
 output = "examples/forest.svg"
 
 # 0 = no water .. 1 = fully submerged; this floods the lowest 30% of terrain.

@@ -2,7 +2,9 @@
 #   maps examples/cave.toml
 mode = "cave"
 seed = 42
-tags = "large,hub,wet"
+# "organic" pins this example as a purely natural cave (untagged maps may
+# grow the occasional ruin).
+tags = "large,hub,wet,organic"
 output = "examples/cave.svg"
 
 # 0 = no water .. 1 = fully submerged; this floods the lowest 40% of terrain.

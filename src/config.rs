@@ -24,6 +24,16 @@ pub struct Config {
     /// values between flood that fraction of the terrain, lowest basins
     /// first. Overrides the wet/dry tag default.
     pub water_level: Option<f64>,
+    /// Ruins level in 0..=1: the fraction of areas that take on geometric
+    /// shapes (rectangles/circles) instead of their organic outline.
+    /// Overrides the ruins tag default (0.5).
+    pub ruins_level: Option<f64>,
+    /// Override the shape sub-seed (map outline, water, stones).
+    pub shape_seed: Option<u64>,
+    /// Override the decoration sub-seed (hatch fans / tree canopies).
+    pub decor_seed: Option<u64>,
+    /// Override the naming sub-seed (the title).
+    pub name_seed: Option<u64>,
     /// Outline/smoothing overrides.
     pub outline: Option<OutlineConfig>,
 }

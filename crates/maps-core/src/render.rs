@@ -25,6 +25,8 @@ struct Style {
     shadow: &'static str,
     /// Ink colour for the wall hatch fans.
     hatch: &'static str,
+    /// Fill for ruin masonry tiles (forest mode).
+    tile: &'static str,
     title: &'static str,
     caption: &'static str,
     water: &'static str,
@@ -41,6 +43,7 @@ const CAVE_STYLE: Style = Style {
     tree_shades: ["#efe9db", "#efe9db", "#efe9db"],
     shadow: "#8d8471",
     hatch: "#5a5342",
+    tile: "#e7e0cf",
     title: "#3a3226",
     caption: "#8a7f6a",
     water: "#a8c3cc",
@@ -57,6 +60,7 @@ const FOREST_STYLE: Style = Style {
     tree_shades: ["#87a860", "#69894f", "#4d6942"],
     shadow: "#2e4038",
     hatch: "#2e4038",
+    tile: "#b7b4a2",
     title: "#cfdcb4",
     caption: "#8fa382",
     water: "#a8c3cc",
@@ -114,15 +118,19 @@ pub fn svg(map: &CaveMap) -> String {
         r##"<rect x="{vx:.1}" y="{vy:.1}" width="{vw:.1}" height="{vh:.1}" fill="{}"/>"##,
         style.bg
     );
+    // Nonzero winding everywhere: overlapping area loops (e.g. a projected
+    // ruin shape crossing a neighbour) merge into one larger space instead
+    // of cancelling out, while pillar holes keep their opposite winding.
     let _ = write!(
         s,
-        r##"<clipPath id="floor" clip-rule="evenodd"><path d="{floor_path}"/></clipPath>"##
+        r##"<clipPath id="floor" clip-rule="nonzero"><path d="{floor_path}"/></clipPath>"##
     );
-    // Inverse of the floor: lets wall decorations (hatching) draw only on
-    // rock, so bands from one chamber never spill onto a neighbour's floor.
+    // Inverse of the floor: lets wall decorations (hatching, shadow, the
+    // border itself) draw only on rock, so overlapping chambers lose the
+    // barrier between them and bands never spill onto a floor.
     let _ = write!(
         s,
-        r##"<mask id="rock" maskUnits="userSpaceOnUse" x="{vx:.1}" y="{vy:.1}" width="{vw:.1}" height="{vh:.1}"><rect x="{vx:.1}" y="{vy:.1}" width="{vw:.1}" height="{vh:.1}" fill="white"/><path d="{floor_path}" fill="black" fill-rule="evenodd"/></mask>"##
+        r##"<mask id="rock" maskUnits="userSpaceOnUse" x="{vx:.1}" y="{vy:.1}" width="{vw:.1}" height="{vh:.1}"><rect x="{vx:.1}" y="{vy:.1}" width="{vw:.1}" height="{vh:.1}" fill="white"/><path d="{floor_path}" fill="black" fill-rule="nonzero"/></mask>"##
     );
 
     // Border trees sit behind the floor fill: the clearing covers their
@@ -147,11 +155,11 @@ pub fn svg(map: &CaveMap) -> String {
         }
     }
 
-    // Floor fill only; its border stroke is drawn later, above the water,
+    // Floor fill only; the border stroke is drawn later, above the water,
     // so pools sit underneath the wall line and never thin it.
     let _ = write!(
         s,
-        r##"<path d="{floor_path}" fill="{}" fill-rule="evenodd"/>"##,
+        r##"<path d="{floor_path}" fill="{}" fill-rule="nonzero"/>"##,
         style.floor
     );
 
@@ -236,6 +244,19 @@ pub fn svg(map: &CaveMap) -> String {
         s.push_str("</g>");
     }
 
+    // Faded stipple dots along ruin walls (cave mode), same layer slot as
+    // the fans they replace.
+    if !map.dots.is_empty() {
+        let _ = write!(s, r##"<g mask="url(#rock)" fill="{}">"##, style.hatch);
+        for &((x, y), r, a) in &map.dots {
+            let _ = write!(
+                s,
+                r##"<circle cx="{x:.1}" cy="{y:.1}" r="{r:.2}" fill-opacity="{a:.2}"/>"##
+            );
+        }
+        s.push_str("</g>");
+    }
+
     // The shadow band sits above the hatching so fans never blank it out,
     // but at partial opacity so their strokes still read through; masked to
     // rock so only the outer half of the stroke shows.
@@ -245,7 +266,24 @@ pub fn svg(map: &CaveMap) -> String {
         style.shadow
     );
 
-    // The wall border, drawn last at full weight above everything.
+    // Masonry tiles along ruin walls (forest mode), under the wall line so
+    // their inner edge seats cleanly against it; masked to rock so a block
+    // can never land inside a clearing.
+    if !map.tiles.is_empty() {
+        let _ = write!(
+            s,
+            r##"<g mask="url(#rock)" fill="{}" stroke="{}" stroke-width="0.45" stroke-linejoin="round">"##,
+            style.tile, style.tree_line
+        );
+        for t in &map.tiles {
+            let pts: Vec<String> = t.iter().map(|(x, y)| format!("{x:.1},{y:.1}")).collect();
+            let _ = write!(s, r##"<polygon points="{}"/>"##, pts.join(" "));
+        }
+        s.push_str("</g>");
+    }
+
+    // The wall border: cell-level unions guarantee simple loops with no
+    // interior segments, so a plain full-weight stroke on top is correct.
     let _ = write!(
         s,
         r##"<path d="{floor_path}" fill="none" stroke="{}" stroke-width="2.4" stroke-linejoin="round"/>"##,

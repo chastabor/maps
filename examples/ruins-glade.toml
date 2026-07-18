@@ -1,0 +1,14 @@
+mode = "forest"
+seed = 19
+tags = "large,chamber,connected,ruins"
+output = "examples/ruins-glade.svg"
+
+# 0 = no water .. 1 = fully submerged; this floods the lowest 25% of terrain.
+water_level = 0.25
+
+# Fraction of areas regrown as geometric ruins: clearings turn into
+# rectangles or circles, connecting paths into straight or arcing lanes, and
+# ruins that grow into contact merge into one larger space. Ruin walls are
+# edged with courses of masonry tile; organic clearings keep their tree
+# canopies — overgrown foundations of some lost settlement in the woods.
+ruins_level = 0.75

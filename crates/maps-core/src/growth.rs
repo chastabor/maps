@@ -95,6 +95,19 @@ impl Areas {
         self.owner.get(&h).copied()
     }
 
+    /// Swap out an area's entire cell set (ruins reshaping). The new cells
+    /// must be free or already owned by this area.
+    pub fn replace_area(&mut self, i: usize, new_cells: Vec<Hex>) {
+        for c in &self.cells[i] {
+            self.owner.remove(c);
+        }
+        for &c in &new_cells {
+            debug_assert!(self.owner.get(&c).is_none_or(|&o| o == i));
+            self.owner.insert(c, i);
+        }
+        self.cells[i] = new_cells;
+    }
+
     /// Free the given cells of `area` (used by corridor shrinking).
     pub fn remove_from_area(&mut self, area: usize, remove: &[Hex]) {
         for c in remove {

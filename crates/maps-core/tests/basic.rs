@@ -38,19 +38,55 @@ fn explicit_tags_deterministic() {
 }
 
 #[test]
-fn areas_never_touch() {
+fn organic_areas_never_touch() {
+    // Ruin-reshaped areas may deliberately reach a neighbour (cell-level
+    // union); organic areas must still keep their one-cell buffer.
     for seed in 0..25 {
         let map: CaveMap = generate(seed, None);
         for (i, area) in map.areas.cells.iter().enumerate() {
+            if map.ruins[i].is_some() {
+                continue;
+            }
             for &c in area {
+                let _ = c;
                 for n in c.neighbors() {
                     if let Some(o) = map.areas.owner_of(n) {
-                        assert_eq!(o, i, "seed {seed}: areas {i} and {o} touch at {n:?}");
+                        assert!(
+                            o == i || map.ruins[o].is_some(),
+                            "seed {seed}: organic areas {i} and {o} touch at {n:?}"
+                        );
                     }
                 }
             }
         }
     }
+}
+
+#[test]
+fn ruin_decoration_matches_mode() {
+    use maps_core::{GenOptions, Mode, generate_with};
+    let opts = |mode| GenOptions {
+        mode,
+        tags: Some(Tags::parse("large,chamber,ruins").unwrap()),
+        ruins_level: Some(1.0),
+        ..GenOptions::default()
+    };
+    let cave = generate_with(11, &opts(Mode::Cave));
+    assert!(cave.ruins.iter().any(|r| r.is_some()), "no ruins applied");
+    assert!(!cave.dots.is_empty(), "cave ruins missing stipple dots");
+    assert!(cave.tiles.is_empty(), "cave has masonry tiles");
+    let glade = generate_with(11, &opts(Mode::Forest));
+    assert!(!glade.tiles.is_empty(), "glade ruins missing masonry tiles");
+    assert!(glade.dots.is_empty(), "glade has stipple dots");
+    // Organic-only maps produce neither.
+    let plain = generate_with(
+        11,
+        &GenOptions {
+            ruins_level: Some(0.0),
+            ..GenOptions::default()
+        },
+    );
+    assert!(plain.dots.is_empty() && plain.tiles.is_empty());
 }
 
 #[test]
@@ -212,27 +248,144 @@ fn water_level_fills_from_the_lowest_basins() {
         );
         map.water
     };
+    // Net signed area: outer loops and holes carry opposite winding, so the
+    // magnitude of the sum is the true flooded area.
+    let area = |loops: &Vec<Vec<(f64, f64)>>| {
+        loops
+            .iter()
+            .map(|lp| {
+                let mut a = 0.0;
+                for j in 0..lp.len() {
+                    let (x1, y1) = lp[j];
+                    let (x2, y2) = lp[(j + 1) % lp.len()];
+                    a += x1 * y2 - x2 * y1;
+                }
+                a / 2.0
+            })
+            .sum::<f64>()
+            .abs()
+    };
     for seed in 0..6 {
-        let low = at_level(seed, 0.3);
-        let high = at_level(seed, 0.55);
-        let low_pts: usize = low.iter().map(|l| l.len()).sum();
-        let high_pts: usize = high.iter().map(|l| l.len()).sum();
+        let low = area(&at_level(seed, 0.3));
+        let high = area(&at_level(seed, 0.55));
         assert!(
-            high_pts >= low_pts,
-            "seed {seed}: raising the level shrank the water"
+            high >= low,
+            "seed {seed}: raising the level shrank the water ({low:.0} -> {high:.0})"
         );
         assert!(at_level(seed, 0.0).is_empty(), "seed {seed}: level 0 not dry");
-        // Level 1 submerges the whole floor: one water loop per floor loop,
-        // covering everything the wall outline covers.
-        let full = at_level(seed, 1.0);
-        assert!(!full.is_empty(), "seed {seed}: level 1 not flooded");
-        let full_pts: usize = full.iter().map(|l| l.len()).sum();
-        assert!(full_pts >= high_pts, "seed {seed}: level 1 smaller than 0.55");
+        // Level 1 submerges the whole floor.
+        let full = area(&at_level(seed, 1.0));
+        assert!(full > 0.0, "seed {seed}: level 1 not flooded");
+        assert!(full >= high, "seed {seed}: level 1 smaller than 0.55");
     }
     // Same seed and level twice -> identical pools (elevation is stable).
     let a: HashSet<String> = at_level(3, 0.4).iter().map(|l| format!("{l:?}")).collect();
     let b: HashSet<String> = at_level(3, 0.4).iter().map(|l| format!("{l:?}")).collect();
     assert_eq!(a, b);
+}
+
+#[test]
+fn sub_seeds_isolate_streams() {
+    use maps_core::{GenOptions, generate_with};
+    let base = generate_with(42, &GenOptions::default());
+
+    // A new name seed changes only the title.
+    let renamed = generate_with(
+        42,
+        &GenOptions {
+            name_seed: Some(999),
+            ..GenOptions::default()
+        },
+    );
+    assert_eq!(base.outline, renamed.outline);
+    assert_eq!(base.water, renamed.water);
+    assert_eq!(
+        base.hatching.len(),
+        renamed.hatching.len(),
+        "decor changed with the name seed"
+    );
+
+    // A new decor seed changes the hatching but not shape or title.
+    let redecorated = generate_with(
+        42,
+        &GenOptions {
+            decor_seed: Some(999),
+            ..GenOptions::default()
+        },
+    );
+    assert_eq!(base.outline, redecorated.outline);
+    assert_eq!(base.title, redecorated.title);
+    let strokes = |m: &maps_core::CaveMap| {
+        m.hatching
+            .iter()
+            .flat_map(|f| f.strokes.iter())
+            .map(|s| format!("{s:?}"))
+            .collect::<Vec<_>>()
+    };
+    assert_ne!(strokes(&base), strokes(&redecorated));
+
+    // A new shape seed changes the map itself.
+    let reshaped = generate_with(
+        42,
+        &GenOptions {
+            shape_seed: Some(999),
+            ..GenOptions::default()
+        },
+    );
+    assert_ne!(base.outline, reshaped.outline);
+
+    // Supplying the base map's own sub-seeds explicitly replicates it.
+    let replica = generate_with(
+        7777, // different master seed; every stream pinned
+        &GenOptions {
+            tags: Some(base.tags.clone()),
+            shape_seed: Some(base.shape_seed),
+            decor_seed: Some(base.decor_seed),
+            name_seed: Some(base.name_seed),
+            ..GenOptions::default()
+        },
+    );
+    assert_eq!(base.outline, replica.outline);
+    assert_eq!(base.title, replica.title);
+    assert_eq!(strokes(&base), strokes(&replica));
+}
+
+#[test]
+fn ruins_level_controls_geometric_areas() {
+    use maps_core::{GenOptions, generate_with};
+    let at = |level: Option<f64>| {
+        generate_with(
+            11,
+            &GenOptions {
+                tags: Some(Tags::parse("large,chamber").unwrap()),
+                ruins_level: level,
+                ..GenOptions::default()
+            },
+        )
+    };
+    // The organic tag guarantees level 0, same as an explicit override.
+    let organic = generate_with(
+        11,
+        &GenOptions {
+            tags: Some(Tags::parse("large,chamber,organic").unwrap()),
+            ..GenOptions::default()
+        },
+    );
+    assert_eq!(at(Some(0.0)).outline, organic.outline);
+    assert!(organic.ruins.iter().all(|r| r.is_none()));
+    // Full ruins reshape the walls.
+    assert_ne!(at(Some(1.0)).outline, at(Some(0.0)).outline);
+    // Deterministic for the same level.
+    assert_eq!(at(Some(1.0)).outline, at(Some(1.0)).outline);
+    // The ruins tag alone activates geometry (default level 0.5).
+    let tagged = generate_with(
+        11,
+        &GenOptions {
+            tags: Some(Tags::parse("large,chamber,ruins").unwrap()),
+            ..GenOptions::default()
+        },
+    );
+    assert_ne!(tagged.outline, at(Some(0.0)).outline);
 }
 
 #[test]

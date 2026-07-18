@@ -105,9 +105,10 @@ pub fn build_water<R: Rng>(
         chaikin_iters: 3,
         ..params.clone()
     };
-    let mud_loops = smooth_loops(trace_loops(&mud), &HashSet::new(), &wparams, rng);
-    let pools = smooth_loops(trace_loops(&water), &HashSet::new(), &wparams, rng);
-    let deep_loops = smooth_loops(trace_loops(&deep), &HashSet::new(), &wparams, rng);
+    let no_ruins = std::collections::HashMap::new();
+    let mud_loops = smooth_loops(trace_loops(&mud), &HashSet::new(), &no_ruins, &wparams, rng);
+    let pools = smooth_loops(trace_loops(&water), &HashSet::new(), &no_ruins, &wparams, rng);
+    let deep_loops = smooth_loops(trace_loops(&deep), &HashSet::new(), &no_ruins, &wparams, rng);
 
     Water {
         cells: water,

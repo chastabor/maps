@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>maps — cave &amp; glade generator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside id="controls">
+    <h1>maps</h1>
+
+    <section>
+      <button id="new-map" class="primary">New map</button>
+      <label class="row">seed
+        <input id="seed" type="text" inputmode="numeric" spellcheck="false">
+      </label>
+      <div class="row buttons">
+        <button id="reroll-shape" title="new shape, same decor &amp; name">shape&nbsp;🎲</button>
+        <button id="reroll-decor" title="new decoration, same shape &amp; name">decor&nbsp;🎲</button>
+        <button id="reroll-name" title="new title, same map">name&nbsp;🎲</button>
+      </div>
+      <label class="row">name
+        <input id="map-name" type="text" placeholder="(seeded)" spellcheck="false">
+      </label>
+    </section>
+
+    <section>
+      <div class="row" id="mode-row"></div>
+      <div class="row" id="grid-row"></div>
+    </section>
+
+    <section id="tag-section">
+      <div id="tag-groups"></div>
+    </section>
+
+    <section>
+      <div class="row slider">
+        <label><input type="checkbox" id="water-auto" checked> water auto</label>
+        <input id="water" type="range" min="0" max="100" value="40" disabled>
+        <span id="water-val">0.40</span>
+      </div>
+      <div class="row slider">
+        <label><input type="checkbox" id="ruins-auto" checked> ruins auto</label>
+        <input id="ruins" type="range" min="0" max="100" value="50" disabled>
+        <span id="ruins-val">0.50</span>
+      </div>
+    </section>
+
+    <section>
+      <button id="export-svg">Download SVG</button>
+    </section>
+
+    <section id="readout">
+      <div id="map-title"></div>
+      <div id="map-tags"></div>
+      <code id="map-seeds"></code>
+    </section>
+  </aside>
+
+  <main id="map-pane"><p class="hint">loading …</p></main>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

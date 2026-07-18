@@ -10,13 +10,20 @@ toml = "0.8"
 
 [workspace]
 resolver = "3"
-members = ["crates/maps-core"]
+members = ["crates/maps-core", "crates/maps-wasm"]
+
+[profile.release]
+# Small wasm binaries; harmless for the native CLI.
+opt-level = "s"
+lto = true
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-rand = "0.9"
+# No default features: everything is seeded, and the "os_rng" default pulls
+# getrandom, which does not build for wasm32-unknown-unknown out of the box.
+rand = { version = "0.9", default-features = false, features = ["alloc"] }
 rand_pcg = "0.9"
 maps-core = { path = "crates/maps-core" }

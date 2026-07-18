@@ -210,9 +210,88 @@ pub(crate) fn smooth_loops<R: Rng>(
             for _ in 0..params.chaikin_iters {
                 flat = chaikin(&flat);
             }
-            decimate(flat, 0.8)
+            remove_bowties(decimate(flat, 0.8))
         })
         .collect()
+}
+
+/// Enforce simple loops: wherever the boundary crosses itself (a "bowtie" —
+/// e.g. two ruin shapes' wall loci intersecting), cut the smaller lobe off
+/// at the crossing point. Guarantees the rendered border never loops over
+/// itself regardless of what upstream projection did.
+fn remove_bowties(mut lp: Vec<Point>) -> Vec<Point> {
+    for _ in 0..4 {
+        let Some((i, j, p)) = first_crossing(&lp) else {
+            return lp;
+        };
+        let lobe = j - i;
+        if lobe <= lp.len() / 2 {
+            lp.splice(i + 1..=j, [p]);
+        } else {
+            let mut kept: Vec<Point> = lp[i + 1..=j].to_vec();
+            kept.push(p);
+            lp = kept;
+        }
+        if lp.len() < 3 {
+            return lp;
+        }
+    }
+    lp
+}
+
+/// First pair of non-adjacent segments that intersect, with the crossing
+/// point, using a coarse spatial hash to stay near-linear.
+fn first_crossing(lp: &[Point]) -> Option<(usize, usize, Point)> {
+    let n = lp.len();
+    if n < 4 {
+        return None;
+    }
+    const CELL: f64 = 16.0;
+    let mut buckets: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    let key = |x: f64, y: f64| ((x / CELL).floor() as i64, (y / CELL).floor() as i64);
+    for i in 0..n {
+        let (a, b) = (lp[i], lp[(i + 1) % n]);
+        let (k0, k1) = (key(a.0.min(b.0), a.1.min(b.1)), key(a.0.max(b.0), a.1.max(b.1)));
+        for kx in k0.0..=k1.0 {
+            for ky in k0.1..=k1.1 {
+                buckets.entry((kx, ky)).or_default().push(i);
+            }
+        }
+    }
+    let mut best: Option<(usize, usize, Point)> = None;
+    for seg in buckets.values() {
+        for (si, &i) in seg.iter().enumerate() {
+            for &j in &seg[si + 1..] {
+                let (i, j) = (i.min(j), i.max(j));
+                if j == i + 1 || (i == 0 && j == n - 1) {
+                    continue;
+                }
+                if let Some(p) =
+                    seg_intersection(lp[i], lp[(i + 1) % n], lp[j], lp[(j + 1) % n])
+                    && best.is_none_or(|(bi, bj, _)| (i, j) < (bi, bj))
+                {
+                    best = Some((i, j, p));
+                }
+            }
+        }
+    }
+    best
+}
+
+fn seg_intersection(a: Point, b: Point, c: Point, d: Point) -> Option<Point> {
+    let r = (b.0 - a.0, b.1 - a.1);
+    let s = (d.0 - c.0, d.1 - c.1);
+    let denom = r.0 * s.1 - r.1 * s.0;
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let t = ((c.0 - a.0) * s.1 - (c.1 - a.1) * s.0) / denom;
+    let u = ((c.0 - a.0) * r.1 - (c.1 - a.1) * r.0) / denom;
+    if t > 1e-9 && t < 1.0 - 1e-9 && u > 1e-9 && u < 1.0 - 1e-9 {
+        Some((a.0 + r.0 * t, a.1 + r.1 * t))
+    } else {
+        None
+    }
 }
 
 /// Drop points closer than `min_d` to the previously kept point; the loops

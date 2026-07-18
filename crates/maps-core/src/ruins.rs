@@ -148,7 +148,14 @@ pub fn ruin_cell_map(
                 .neighbors()
                 .iter()
                 .any(|n| areas.owner_of(*n).is_some_and(|o| o != i));
-            if !seam && shape.covers(c.center(hex_size), hex_size) {
+            // A cell inside a *second* ruin's geometry sits in the broken
+            // zone where two structures ran into each other: projecting it
+            // would extend this shape's wall across the other shape's wall
+            // locus and tie the boundary into a bowtie.
+            let contested = shapes.iter().enumerate().any(|(j, s)| {
+                j != i && s.is_some_and(|s2| s2.covers(c.center(hex_size), hex_size))
+            });
+            if !seam && !contested && shape.covers(c.center(hex_size), hex_size) {
                 map.insert(c, *shape);
             }
         }

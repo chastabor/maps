@@ -188,7 +188,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         oparams.hex_size,
         &mut rng,
     );
-    let ruin_map = ruins::ruin_cell_map(&areas, &ruin_shapes);
+    let ruin_map = ruins::ruin_cell_map(&areas, &ruin_shapes, oparams.hex_size);
     let outline = build_outline(&areas, &topology, &ruin_map, oparams, &mut rng);
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
     let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);

@@ -164,13 +164,29 @@ pub(crate) fn smooth_loops<R: Rng>(
             let mut locked = vec![false; n];
             for i in 0..n {
                 if let Some(shape) = pts[i].2 {
-                    let w = if dist[i] == u32::MAX {
+                    let w_run = if dist[i] == u32::MAX {
                         1.0
                     } else {
                         (dist[i] as f64 / RAMP).min(1.0)
                     };
                     let p = pts[i].0;
                     let proj = shape.project(p);
+                    // Halls project each vertex to the *nearest* wall, so a
+                    // vertex far from both walls (a radial side wall, or the
+                    // far side of a two-cell-wide raster band) would jump
+                    // across the passage and can land on the same wall as
+                    // the opposite side — the pinch. Fade the projection out
+                    // with displacement: crisp within half a cell, organic
+                    // beyond 1.5 cells. Rooms are convex with a coverage-
+                    // filtered raster, so their pull-in is always fold-safe.
+                    let w_disp = match shape {
+                        RuinShape::Rect { .. } | RuinShape::Circle { .. } => 1.0,
+                        RuinShape::StraightHall { .. } | RuinShape::ArcHall { .. } => {
+                            let d = (proj.0 - p.0).hypot(proj.1 - p.1);
+                            ((1.5 * size - d) / size).clamp(0.0, 1.0)
+                        }
+                    };
+                    let w = w_run * w_disp;
                     pts[i].0 = (p.0 + (proj.0 - p.0) * w, p.1 + (proj.1 - p.1) * w);
                     locked[i] = w >= 0.999;
                 }

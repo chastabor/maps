@@ -131,10 +131,14 @@ pub fn build<R: Rng>(
 /// Seam cells — where a reshaped area touches a *different* area — stay
 /// organic: the merged throat then keeps its full cell width instead of
 /// pinching down to the shapes' exact geometric intersection, and its walls
-/// carry organic decoration.
+/// carry organic decoration. Cells the shape doesn't actually cover (the
+/// door-adjacent originals kept for connectivity, which can sit entirely
+/// outside the fitted geometry) stay organic too — projecting them would
+/// collapse their connecting stub onto the distant shape wall.
 pub fn ruin_cell_map(
     areas: &Areas,
     shapes: &[Option<RuinShape>],
+    hex_size: f64,
 ) -> std::collections::HashMap<Hex, RuinShape> {
     let mut map = std::collections::HashMap::new();
     for (i, shape) in shapes.iter().enumerate() {
@@ -144,7 +148,7 @@ pub fn ruin_cell_map(
                 .neighbors()
                 .iter()
                 .any(|n| areas.owner_of(*n).is_some_and(|o| o != i));
-            if !seam {
+            if !seam && shape.covers(c.center(hex_size), hex_size) {
                 map.insert(c, *shape);
             }
         }
@@ -213,8 +217,50 @@ fn reshape(
             return false;
         }
     }
+    // Reject shapes that enclose rock (a raster wrapped into a ring): the
+    // pocket's walls and the region's outer walls would project onto the
+    // same shape surfaces and pinch the floor between them shut.
+    if encloses_rock(&new_set) {
+        return false;
+    }
     areas.replace_area(i, cells);
     true
+}
+
+/// True if the cell set surrounds any non-member cell: flood the non-member
+/// cells of the set's (padded) bounding box from its border; anything
+/// unreached is an enclosed pocket.
+fn encloses_rock(cells: &HashSet<Hex>) -> bool {
+    let (mut min_q, mut max_q, mut min_r, mut max_r) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+    for c in cells {
+        min_q = min_q.min(c.q);
+        max_q = max_q.max(c.q);
+        min_r = min_r.min(c.r);
+        max_r = max_r.max(c.r);
+    }
+    let (min_q, max_q, min_r, max_r) = (min_q - 1, max_q + 1, min_r - 1, max_r + 1);
+    let in_box = |h: &Hex| h.q >= min_q && h.q <= max_q && h.r >= min_r && h.r <= max_r;
+
+    let mut open: HashSet<Hex> = HashSet::new();
+    let mut stack: Vec<Hex> = Vec::new();
+    for q in min_q..=max_q {
+        for r in min_r..=max_r {
+            let h = Hex::new(q, r);
+            let border = q == min_q || q == max_q || r == min_r || r == max_r;
+            if border && !cells.contains(&h) && open.insert(h) {
+                stack.push(h);
+            }
+        }
+    }
+    while let Some(c) = stack.pop() {
+        for n in c.neighbors() {
+            if in_box(&n) && !cells.contains(&n) && open.insert(n) {
+                stack.push(n);
+            }
+        }
+    }
+    let box_cells = ((max_q - min_q + 1) * (max_r - min_r + 1)) as usize;
+    box_cells - cells.len() != open.len()
 }
 
 fn is_connected(cells: &[Hex]) -> bool {
@@ -272,9 +318,13 @@ fn fit_hall<R: Rng>(cells: &[Hex], s: f64, rng: &mut R) -> Option<RuinShape> {
             .cloned()
             .max_by(|p, q| perp(p).abs().total_cmp(&perp(q).abs()))
             .unwrap();
+        // A workable arc needs a radius of several cells: any smaller and
+        // the rasterized band wraps into a full ring around the centre,
+        // whose enclosed pocket pinches shut under projection.
         if perp(&apex).abs() > 0.8 * s
             && let Some((center, r)) = circumcircle(a, apex, b)
             && r < best * 4.0
+            && r >= 2.5 * s
         {
             let fits = centers
                 .iter()

@@ -194,8 +194,9 @@ same seed renders the identical outline, pools and stones in either dressing.
 maps examples/cave.toml         # cave          -> examples/cave.svg
 maps examples/forest.toml       # glade         -> examples/forest.svg
 maps examples/ruins.toml        # ruined cave   -> examples/ruins.svg
-maps examples/ruins-glade.toml  # ruined glade  -> examples/ruins-glade.svg
-maps examples/pattern.toml      # tiled ruins   -> examples/pattern.svg
+maps examples/ruins-glade.toml  # ruined glade, mosaic floors -> examples/ruins-glade.svg
+maps examples/pattern.toml      # tiled ruined cave (truchet) -> examples/pattern.svg
+maps examples/pattern-glade.toml # ruined glade (islamic)     -> examples/pattern-glade.svg
 ```
 
 The ruins tag works in both modes: in a cave the geometry reads as ruined
@@ -238,6 +239,10 @@ JS boundary as **strings** — JavaScript numbers corrupt integers above 2^53.
 - Changing style parameters such as `[outline] hex_size` alters stroke
   sampling counts and therefore downstream random details — pin the streams
   you care about if you tweak style while iterating.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ## Credits
 

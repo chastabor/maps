@@ -1,0 +1,10 @@
+# A ruined glade with Islamic star-lattice floors: Hankin
+# polygons-in-contact lines lace the geometric clearings, ponds wash
+# translucently over the tilework, and the wild clearings stay bare grass.
+mode = "forest"
+seed = 19
+tags = "large,chamber,connected,wet,ruins,islamic"
+output = "examples/pattern-glade.svg"
+
+ruins_level = 0.85
+water_level = 0.3

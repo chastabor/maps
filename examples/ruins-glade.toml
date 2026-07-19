@@ -1,6 +1,7 @@
 mode = "forest"
 seed = 19
-tags = "large,chamber,connected,ruins"
+# "mosaic" tiles the ruined clearings' floors with wave-shaded hexes.
+tags = "large,chamber,connected,ruins,mosaic"
 output = "examples/ruins-glade.svg"
 
 # 0 = no water .. 1 = fully submerged; this floods the lowest 25% of terrain.

@@ -2,6 +2,7 @@
 name = "maps"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 maps-core = { workspace = true }
@@ -20,6 +21,7 @@ lto = true
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [workspace.dependencies]
 # No default features: everything is seeded, and the "os_rng" default pulls

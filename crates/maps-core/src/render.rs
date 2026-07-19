@@ -157,26 +157,30 @@ pub fn svg(map: &CaveMap) -> String {
     let mut s = String::new();
     let _ = write!(
         s,
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vxd} {vyd} {vwd} {vhd}" width="{vw0}" height="{vh0}">"##
+        r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="{vxd} {vyd} {vwd} {vhd}" width="{vw0}" height="{vh0}">"##
     );
     let _ = write!(
         s,
         r##"<rect x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}" fill="{}"/>"##,
         style.bg
     );
-    // Nonzero winding everywhere: overlapping area loops (e.g. a projected
-    // ruin shape crossing a neighbour) merge into one larger space instead
-    // of cancelling out, while pillar holes keep their opposite winding.
+    // The floor path is by far the largest string in the file and is used
+    // five times (clip, mask, fill, shadow, border): define it once and
+    // instantiate with <use>. Nonzero winding everywhere: overlapping area
+    // loops (e.g. a projected ruin shape crossing a neighbour) merge into
+    // one larger space instead of cancelling out, while pillar holes keep
+    // their opposite winding.
+    let _ = write!(s, r##"<defs><path id="fp" d="{floor_path}"/></defs>"##);
     let _ = write!(
         s,
-        r##"<clipPath id="floor" clip-rule="nonzero"><path d="{floor_path}"/></clipPath>"##
+        r##"<clipPath id="floor" clip-rule="nonzero"><use xlink:href="#fp" href="#fp"/></clipPath>"##
     );
     // Inverse of the floor: lets wall decorations (hatching, shadow, the
     // border itself) draw only on rock, so overlapping chambers lose the
     // barrier between them and bands never spill onto a floor.
     let _ = write!(
         s,
-        r##"<mask id="rock" maskUnits="userSpaceOnUse" x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}"><rect x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}" fill="white"/><path d="{floor_path}" fill="black" fill-rule="nonzero"/></mask>"##
+        r##"<mask id="rock" maskUnits="userSpaceOnUse" x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}"><rect x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}" fill="white"/><use xlink:href="#fp" href="#fp" fill="black" fill-rule="nonzero"/></mask>"##
     );
 
     // Border trees sit behind the floor fill: the clearing covers their
@@ -205,7 +209,7 @@ pub fn svg(map: &CaveMap) -> String {
     // so pools sit underneath the wall line and never thin it.
     let _ = write!(
         s,
-        r##"<path d="{floor_path}" fill="{}" fill-rule="nonzero"/>"##,
+        r##"<use xlink:href="#fp" href="#fp" fill="{}" fill-rule="nonzero"/>"##,
         style.floor
     );
 
@@ -408,10 +412,11 @@ pub fn svg(map: &CaveMap) -> String {
 
     // The shadow band sits above the hatching so fans never blank it out,
     // but at partial opacity so their strokes still read through; masked to
-    // rock so only the outer half of the stroke shows.
+    // rock so only the wall side shows. Offset down-right so the border
+    // reads as floating above the map, per the original.
     let _ = write!(
         s,
-        r##"<g mask="url(#rock)"><path d="{floor_path}" fill="none" stroke="{}" stroke-width="9" stroke-linejoin="round" stroke-opacity="0.7"/></g>"##,
+        r##"<g mask="url(#rock)"><use xlink:href="#fp" href="#fp" transform="translate(1.5 2)" fill="none" stroke="{}" stroke-width="9" stroke-linejoin="round" stroke-opacity="0.7"/></g>"##,
         style.shadow
     );
 
@@ -435,7 +440,7 @@ pub fn svg(map: &CaveMap) -> String {
     // interior segments, so a plain full-weight stroke on top is correct.
     let _ = write!(
         s,
-        r##"<path d="{floor_path}" fill="none" stroke="{}" stroke-width="2.4" stroke-linejoin="round"/>"##,
+        r##"<use xlink:href="#fp" href="#fp" fill="none" stroke="{}" stroke-width="2.4" stroke-linejoin="round"/>"##,
         style.line
     );
 

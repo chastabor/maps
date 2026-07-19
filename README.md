@@ -197,6 +197,7 @@ maps examples/ruins.toml        # ruined cave   -> examples/ruins.svg
 maps examples/ruins-glade.toml  # ruined glade, mosaic floors -> examples/ruins-glade.svg
 maps examples/pattern.toml      # tiled ruined cave (truchet) -> examples/pattern.svg
 maps examples/pattern-glade.toml # ruined glade (islamic)     -> examples/pattern-glade.svg
+maps examples/dungeon.toml      # clean doored dungeon rooms  -> examples/dungeon.svg
 ```
 
 The ruins tag works in both modes: in a cave the geometry reads as ruined
@@ -218,14 +219,22 @@ Build with the standard toolchain (no wasm-pack needed):
 ```sh
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.126 --locked   # match Cargo.lock
+cargo install wasm-opt --locked
 
 cargo build -p maps-wasm --target wasm32-unknown-unknown --profile wasm-release
 wasm-bindgen target/wasm32-unknown-unknown/wasm-release/maps_wasm.wasm \
   --target web --out-dir web/pkg
-# optional: wasm-opt -Os web/pkg/maps_wasm_bg.wasm -o web/pkg/maps_wasm_bg.wasm
+
+# Size-optimization pass: shrinks web/pkg/maps_wasm_bg.wasm in place (~25%
+# smaller, e.g. 324 KB -> 237 KB). -Os optimizes for size; -Oz squeezes harder.
+wasm-opt -Os web/pkg/maps_wasm_bg.wasm -o web/pkg/maps_wasm_bg.wasm
 
 python3 -m http.server -d web   # then open http://localhost:8000
 ```
+
+The `wasm-opt` pass is optional — the page runs fine without it — but it
+noticeably reduces the download size; run it before deploying. It rewrites the
+`.wasm` in place, so re-run it after every `wasm-bindgen` regeneration.
 
 The wasm output is byte-identical to the native CLI for the same seeds
 (pure-Rust PRNG, IEEE f64), so permalinks, config files and the printed

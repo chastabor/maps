@@ -2,8 +2,10 @@
 //! `debug_svg` shows the raw hex cells, one colour per area.
 
 use crate::grid::Hex;
+use crate::growth::Areas;
 use crate::outline::Point;
-use crate::{CaveMap, GridStyle, Mode};
+use crate::topology::Door;
+use crate::{AreaKind, CaveMap, DoorStyle, GridStyle, Mode};
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Write;
@@ -437,6 +439,11 @@ pub fn svg(map: &CaveMap) -> String {
         s.push_str("</g>");
     }
 
+    // Dungeon doors, drawn UNDER the wall border so the jamb caps merge into
+    // the wall line: a hex-aligned bar across the doorway with a dark cap at
+    // each end. Wood / metal (banded) / portcullis (barred).
+    s.push_str(&door_layer(map, style));
+
     // The wall border: cell-level unions guarantee simple loops with no
     // interior segments, so a plain full-weight stroke on top is correct.
     let _ = write!(
@@ -455,6 +462,147 @@ pub fn svg(map: &CaveMap) -> String {
     );
     s.push_str("</svg>");
     s
+}
+
+/// √3/2 — the apothem of a unit-side hex (centre to edge midpoint).
+const HEX_APOTHEM: f64 = crate::grid::SQRT3 / 2.0;
+/// The three across-flats hex axes (edge-midpoint to opposite edge-midpoint),
+/// as unit vectors at 0°, 60° and 120°. A door bar snaps to whichever a door's
+/// passage runs most nearly along, so it aligns to the tile and spans it.
+const DOOR_AXES: [(f64, f64); 3] =
+    [(1.0, 0.0), (0.5, HEX_APOTHEM), (-0.5, HEX_APOTHEM)];
+/// Half-width of a door leaf, across the bar, in hex-size units.
+const DOOR_LEAF_HALF: f64 = 0.26;
+/// Radius of a jamb cap (the dark stub anchoring a door into the wall).
+const DOOR_CAP_R: f64 = 0.30;
+/// Radius of one portcullis bar (drawn as a ring).
+const DOOR_BAR_R: f64 = 0.14;
+
+/// The doors layer: for every opening onto a dungeon room, a hex-aligned bar
+/// spanning the doorway with a dark jamb cap at each end. Drawn as one group
+/// so the caller can slip it *under* the wall border, where the caps merge
+/// into the wall line. Returns `""` when the map has no dungeon doors.
+fn door_layer(map: &CaveMap, style: &Style) -> String {
+    let ap = HEX_SIZE * HEX_APOTHEM; // centre to edge midpoint
+    let lw = DOOR_LEAF_HALF * HEX_SIZE;
+    let cr = DOOR_CAP_R * HEX_SIZE;
+    let pr = DOOR_BAR_R * HEX_SIZE;
+    let mut caps = String::new(); // jamb caps (wall colour, filled)
+    let mut leaves = String::new(); // wood/metal leaf rectangles (floor-filled)
+    let mut marks = String::new(); // metal reinforcing bands (stroke only)
+    let mut bars = String::new(); // portcullis bars (rings)
+    for (i, d) in map.topology.doors.iter().enumerate() {
+        if !(map.is_dungeon(d.a) || map.is_dungeon(d.b)) {
+            continue;
+        }
+        let Some((c, u)) = door_axes(d, &map.areas, HEX_SIZE) else {
+            continue;
+        };
+        // Snap the passage direction to the nearest across-flats hex axis.
+        let axis = DOOR_AXES
+            .into_iter()
+            .max_by(|a, b| (u.0 * a.0 + u.1 * a.1).abs().total_cmp(&(u.0 * b.0 + u.1 * b.1).abs()))
+            .unwrap();
+        let perp = (-axis.1, axis.0);
+        // Endpoints on the two opposite edge midpoints; the caps sit there.
+        let e1 = (c.0 + axis.0 * ap, c.1 + axis.1 * ap);
+        let e2 = (c.0 - axis.0 * ap, c.1 - axis.1 * ap);
+        let _ = write!(
+            caps,
+            r##"<circle cx="{}" cy="{}" r="{cr}"/><circle cx="{}" cy="{}" r="{cr}"/>"##,
+            D1(e1.0), D1(e1.1), D1(e2.0), D1(e2.1), cr = D1(cr),
+        );
+        match map.door_styles[i] {
+            DoorStyle::Portcullis => {
+                // A row of five bars between the caps.
+                for k in -2..=2 {
+                    let t = k as f64 / 3.0;
+                    let p = (c.0 + axis.0 * ap * t, c.1 + axis.1 * ap * t);
+                    let _ = write!(bars, r##"<circle cx="{}" cy="{}" r="{}"/>"##, D1(p.0), D1(p.1), D1(pr));
+                }
+            }
+            kind => {
+                // Wood or metal leaf: a rectangle spanning the two caps.
+                let corner = |st: f64, sp: f64| {
+                    (c.0 + axis.0 * ap * st + perp.0 * lw * sp, c.1 + axis.1 * ap * st + perp.1 * lw * sp)
+                };
+                let (p1, p2, p3, p4) = (corner(1.0, 1.0), corner(-1.0, 1.0), corner(-1.0, -1.0), corner(1.0, -1.0));
+                let _ = write!(
+                    leaves,
+                    "M{} {}L{} {}L{} {}L{} {}Z",
+                    D1(p1.0), D1(p1.1), D1(p2.0), D1(p2.1), D1(p3.0), D1(p3.1), D1(p4.0), D1(p4.1),
+                );
+                if kind == DoorStyle::Metal {
+                    // A band down the leaf's length.
+                    let (a, b) = ((c.0 + axis.0 * ap * 0.72, c.1 + axis.1 * ap * 0.72), (c.0 - axis.0 * ap * 0.72, c.1 - axis.1 * ap * 0.72));
+                    let _ = write!(marks, "M{} {}L{} {}", D1(a.0), D1(a.1), D1(b.0), D1(b.1));
+                }
+            }
+        }
+    }
+    if caps.is_empty() {
+        return String::new();
+    }
+    // Caps under the leaves so only their rounded ends show beyond the bar.
+    let mut out = String::new();
+    let _ = write!(out, r##"<g clip-path="url(#floor)"><g fill="{}">{caps}</g>"##, style.line);
+    if !leaves.is_empty() {
+        let _ = write!(
+            out,
+            r##"<path d="{leaves}" fill="{}" stroke="{}" stroke-width="1.6" stroke-linejoin="round"/>"##,
+            style.floor, style.line
+        );
+    }
+    if !bars.is_empty() {
+        let _ = write!(
+            out,
+            r##"<g fill="{}" stroke="{}" stroke-width="1.4">{bars}</g>"##,
+            style.floor, style.line
+        );
+    }
+    if !marks.is_empty() {
+        let _ = write!(
+            out,
+            r##"<path d="{marks}" fill="none" stroke="{}" stroke-width="1.3" stroke-linecap="round"/>"##,
+            style.line
+        );
+    }
+    out.push_str("</g>");
+    out
+}
+
+/// A door's cell centre `c` and the unit passage direction `u` (a-side to
+/// b-side centroid). `None` if the door's two sides can't be located — never
+/// for a built map, since every door touches both its areas.
+fn door_axes(d: &Door, areas: &Areas, s: f64) -> Option<(Point, Point)> {
+    let c = d.cell.center(s);
+    let (mut a_acc, mut a_n) = ((0.0, 0.0), 0u32);
+    let (mut b_acc, mut b_n) = ((0.0, 0.0), 0u32);
+    for n in d.cell.neighbors() {
+        let p = n.center(s);
+        match areas.owner_of(n) {
+            Some(o) if o == d.a => {
+                a_acc = (a_acc.0 + p.0, a_acc.1 + p.1);
+                a_n += 1;
+            }
+            Some(o) if o == d.b => {
+                b_acc = (b_acc.0 + p.0, b_acc.1 + p.1);
+                b_n += 1;
+            }
+            _ => {}
+        }
+    }
+    if a_n == 0 || b_n == 0 {
+        return None;
+    }
+    let a_c = (a_acc.0 / a_n as f64, a_acc.1 / a_n as f64);
+    let b_c = (b_acc.0 / b_n as f64, b_acc.1 / b_n as f64);
+    let u = (b_c.0 - a_c.0, b_c.1 - a_c.1);
+    let len = u.0.hypot(u.1);
+    if len < 1e-6 {
+        return None;
+    }
+    Some((c, (u.0 / len, u.1 / len)))
 }
 
 fn outline_path(loops: &[Vec<Point>]) -> String {
@@ -512,6 +660,19 @@ pub fn debug_svg(map: &CaveMap) -> String {
         s.push_str("</g>");
     }
 
+    // Dungeon areas: outline their cells in cyan so the ruin/dungeon split is
+    // visible over the per-area fills.
+    s.push_str(r##"<g fill="none" stroke="#31d2f2" stroke-width="1.4">"##);
+    for (i, area) in map.areas.cells.iter().enumerate() {
+        if !map.is_dungeon(i) {
+            continue;
+        }
+        for &h in area {
+            let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(h));
+        }
+    }
+    s.push_str("</g>");
+
     s.push_str(r##"<g fill="#f2f2ea" stroke="none">"##);
     for d in &map.topology.doors {
         let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(d.cell));
@@ -527,14 +688,18 @@ pub fn debug_svg(map: &CaveMap) -> String {
     s.push_str("</g>");
 
     let n_corridors = map.topology.is_corridor.iter().filter(|&&c| c).count();
+    let n_ruin = map.areas.kinds().iter().filter(|&&k| k == AreaKind::Ruin).count();
+    let n_dungeon = map.areas.kinds().iter().filter(|&&k| k == AreaKind::Dungeon).count();
     let _ = write!(
         s,
-        r##"<text x="{}" y="{}" fill="#aaaab4" font-family="monospace" font-size="11">seed {} | tags: {} | {} areas, {} doors, {} corridors, {} exits</text>"##,
+        r##"<text x="{}" y="{}" fill="#aaaab4" font-family="monospace" font-size="11">seed {} | tags: {} | {} areas ({} ruin, {} dungeon), {} doors, {} corridors, {} exits</text>"##,
         D1(vx + 6.0),
         D1(vy + 14.0),
         map.seed,
         map.tags,
         map.areas.count(),
+        n_ruin,
+        n_dungeon,
         map.topology.doors.len(),
         n_corridors,
         map.topology.exits.len(),

@@ -509,10 +509,10 @@ fn dungeon_level_splits_geometric_areas() {
     // Every area is classified, and the geometric (reshaped) set is exactly
     // the non-organic kinds.
     let full = at("large,chamber,ruins,dungeon", Some(1.0));
-    assert_eq!(full.area_kind.len(), full.areas.count());
+    assert_eq!(full.areas.kinds().len(), full.areas.count());
     let geometric = full.ruins.iter().filter(|r| r.is_some()).count();
     assert!(geometric > 0, "no geometric areas to split");
-    for (i, k) in full.area_kind.iter().enumerate() {
+    for (i, k) in full.areas.kinds().iter().enumerate() {
         assert_eq!(
             full.ruins[i].is_some(),
             *k != AreaKind::Organic,
@@ -520,23 +520,25 @@ fn dungeon_level_splits_geometric_areas() {
         );
     }
     // dungeon_level 1.0 promotes every geometric area; none stay Ruin.
-    let dungeon = full.area_kind.iter().filter(|k| **k == AreaKind::Dungeon).count();
+    let dungeon = full.areas.kinds().iter().filter(|k| **k == AreaKind::Dungeon).count();
     assert_eq!(dungeon, geometric, "level 1.0 should promote every geometric area");
-    assert!(full.area_kind.iter().all(|k| *k != AreaKind::Ruin));
+    assert!(full.areas.kinds().iter().all(|k| *k != AreaKind::Ruin));
 
     // dungeon_level 0 and the `natural` tag leave nothing a dungeon.
     assert!(at("large,chamber,ruins,dungeon", Some(0.0))
-        .area_kind
+        .areas
+        .kinds()
         .iter()
         .all(|k| *k != AreaKind::Dungeon));
     assert!(at("large,chamber,ruins,natural", None)
-        .area_kind
+        .areas
+        .kinds()
         .iter()
         .all(|k| *k != AreaKind::Dungeon));
 
     // A partial level splits the geometric areas into both kinds.
     let half = at("large,chamber,ruins,dungeon", Some(0.5));
-    let half_dungeon = half.area_kind.iter().filter(|k| **k == AreaKind::Dungeon).count();
+    let half_dungeon = half.areas.kinds().iter().filter(|k| **k == AreaKind::Dungeon).count();
     assert!(half_dungeon > 0 && half_dungeon < geometric, "0.5 should split, got {half_dungeon}/{geometric}");
 
     // Clean dungeon walls shed the ruin stipple: an all-dungeon cave has none,
@@ -544,8 +546,9 @@ fn dungeon_level_splits_geometric_areas() {
     assert!(full.dots.is_empty(), "all-dungeon cave should have no stipple");
     assert!(!at("large,chamber,ruins,natural", None).dots.is_empty(), "ruin cave lost its stipple");
 
-    // The split rides the salt-4 sub-stream and is deterministic.
-    assert_eq!(full.area_kind, at("large,chamber,ruins,dungeon", Some(1.0)).area_kind);
+    // The classification is deterministic per seed.
+    let again = at("large,chamber,ruins,dungeon", Some(1.0));
+    assert_eq!(full.areas.kinds(), again.areas.kinds());
 }
 
 #[test]
@@ -597,4 +600,53 @@ fn parse_tags() {
     assert_eq!(t.to_string(), "large hub coral");
     assert!(Tags::parse("bogus").is_err());
     assert_eq!(Tags::parse("").unwrap(), Tags::default());
+}
+
+#[test]
+fn growth_only_dungeons_fuse() {
+    // Kind-aware growth (step 1): two areas may share an edge only if BOTH are
+    // dungeon; every other pair keeps the one-cell doorway gap. Also assert the
+    // rule is not vacuous — dungeon fusion actually happens across seeds.
+    use maps_core::AreaKind;
+    use maps_core::grid::HexGrid;
+    use maps_core::growth::{grid_radius, grow_areas, resolve};
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let tags = Tags::parse("large,chamber,dry").unwrap();
+    let mut fusions = 0usize;
+    for seed in 0..60u64 {
+        let mut rng = Pcg64::seed_from_u64(seed);
+        let params = resolve(&tags, &mut rng);
+        // Deterministic mix so both fuse (dungeon-dungeon) and gap cases arise.
+        let slot_kinds: Vec<AreaKind> = (0..params.sizes.len())
+            .map(|i| match i % 3 {
+                0 => AreaKind::Dungeon,
+                1 => AreaKind::Ruin,
+                _ => AreaKind::Organic,
+            })
+            .collect();
+        let grid = HexGrid::hexagon(grid_radius(&params));
+        let areas = grow_areas(&grid, &mut rng, &params, &slot_kinds);
+        assert_eq!(areas.cells.len(), areas.kinds().len());
+
+        for (i, cells) in areas.cells.iter().enumerate() {
+            for &c in cells {
+                for nb in c.neighbors() {
+                    if let Some(j) = areas.owner_of(nb) {
+                        if j != i {
+                            assert!(
+                                areas.kind(i).may_fuse(areas.kind(j)),
+                                "seed {seed}: areas {i}({:?}) and {j}({:?}) touch but are not both dungeon",
+                                areas.kind(i),
+                                areas.kind(j)
+                            );
+                            fusions += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(fusions > 0, "expected some dungeon-dungeon fusion across seeds, got none");
 }

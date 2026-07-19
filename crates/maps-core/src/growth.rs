@@ -1,9 +1,40 @@
 //! Seed-growth: grow N disjoint areas cell by cell, keeping a one-cell gap
 //! between areas so that gap cells can later become doorways.
 
+use crate::AreaKind;
 use crate::grid::{CellMap, Hex, HexGrid};
 use crate::tags::{LayoutTag, ShapeTag, SizeTag, Tags};
 use rand::Rng;
+
+/// May the growing area `idx` (of kind `cur_kind`) sit next to the cell owned
+/// by `owner_val`? Free cells and its own cells are fine; a foreign area only
+/// if the two kinds fuse ([`AreaKind::may_fuse`] — dungeon↔dungeon only).
+/// `kinds` holds the kinds of already-grown areas, indexed by area id.
+fn neighbor_ok(owner_val: Option<u32>, idx: usize, cur_kind: AreaKind, kinds: &[AreaKind]) -> bool {
+    owner_val.is_none_or(|o| o as usize == idx || cur_kind.may_fuse(kinds[o as usize]))
+}
+
+/// Extend `frontier` with the still-valid free neighbours of newly added cell
+/// `c`: in-grid, unowned, and every one of their own neighbours passes
+/// [`neighbor_ok`].
+fn extend_frontier(
+    frontier: &mut std::collections::BTreeSet<Hex>,
+    grid: &HexGrid,
+    owner: &CellMap<u32>,
+    idx: usize,
+    cur_kind: AreaKind,
+    kinds: &[AreaKind],
+    c: Hex,
+) {
+    for n in c.neighbors() {
+        if grid.contains(n)
+            && !owner.contains(n)
+            && n.neighbors().iter().all(|m| neighbor_ok(owner.get(*m), idx, cur_kind, kinds))
+        {
+            frontier.insert(n);
+        }
+    }
+}
 
 /// Numeric parameters resolved from tags for the growth step.
 #[derive(Clone, Debug)]
@@ -79,9 +110,11 @@ pub fn grid_radius(params: &GrowthParams) -> i32 {
     (r + 2).min(40)
 }
 
-/// The grown areas. `cells[i]` lists area i's cells in growth order.
+/// The grown areas. `cells[i]` lists area i's cells in growth order;
+/// `kinds[i]` is its architectural state, kept aligned by construction.
 pub struct Areas {
     pub cells: Vec<Vec<Hex>>,
+    kinds: Vec<AreaKind>,
     owner: CellMap<u32>,
 }
 
@@ -92,6 +125,21 @@ impl Areas {
 
     pub fn owner_of(&self, h: Hex) -> Option<usize> {
         self.owner.get(h).map(|o| o as usize)
+    }
+
+    /// The architectural state of area `i`.
+    pub fn kind(&self, i: usize) -> AreaKind {
+        self.kinds[i]
+    }
+
+    /// All kinds, aligned with `cells`.
+    pub fn kinds(&self) -> &[AreaKind] {
+        &self.kinds
+    }
+
+    /// Re-classify area `i` (e.g. demoted to organic when reshaping fails).
+    pub fn set_kind(&mut self, i: usize, kind: AreaKind) {
+        self.kinds[i] = kind;
     }
 
     /// Swap out an area's entire cell set (ruins reshaping). The new cells
@@ -119,12 +167,23 @@ impl Areas {
 /// Areas smaller than this are discarded as failed growths.
 const MIN_AREA: usize = 4;
 
-pub fn grow_areas<R: Rng>(grid: &HexGrid, rng: &mut R, params: &GrowthParams) -> Areas {
+/// Grow the areas. `slot_kinds[i]` is the pre-assigned kind of the area seeded
+/// from `params.sizes[i]`; growth is kind-aware only in that two dungeon areas
+/// may fuse ([`AreaKind::may_fuse`]). Slots that fail to grow (`MIN_AREA`) are
+/// dropped; the surviving areas carry their kinds (`Areas::kind`).
+pub fn grow_areas<R: Rng>(
+    grid: &HexGrid,
+    rng: &mut R,
+    params: &GrowthParams,
+    slot_kinds: &[AreaKind],
+) -> Areas {
     let mut owner: CellMap<u32> = CellMap::new(grid.radius);
     let mut areas: Vec<Vec<Hex>> = Vec::new();
+    let mut kinds: Vec<AreaKind> = Vec::new();
 
-    for &target in &params.sizes {
+    for (slot, &target) in params.sizes.iter().enumerate() {
         let idx = areas.len();
+        let cur_kind = slot_kinds[slot];
 
         let seed = if areas.is_empty() {
             // First area: seed anywhere whose whole neighbourhood is free,
@@ -167,7 +226,9 @@ pub fn grow_areas<R: Rng>(grid: &HexGrid, rng: &mut R, params: &GrowthParams) ->
             ring.retain(|&h| {
                 grid.contains(h)
                     && !owner.contains(h)
-                    && h.neighbors().iter().all(|n| !owner.contains(*n))
+                    && h.neighbors()
+                        .iter()
+                        .all(|n| neighbor_ok(owner.get(*n), idx, cur_kind, &kinds))
             });
             // No spot within reach of the existing cave: skip rather than
             // create an unreachable satellite area.
@@ -181,27 +242,14 @@ pub fn grow_areas<R: Rng>(grid: &HexGrid, rng: &mut R, params: &GrowthParams) ->
         owner.insert(seed, idx as u32);
 
         // Frontier of valid candidates, kept sorted (BTreeSet iterates in
-        // Hex order = the old sort order, so RNG picks are identical).
-        // Validity — "free, in grid, no neighbour owned by another area" —
+        // Hex order = the old sort order, so RNG picks are stable). Validity
         // is monotone while this area grows: adding our own cells never
-        // invalidates a candidate, and cells blocked by another area stay
-        // blocked. So the set only gains neighbours of newly added cells
-        // and loses the picked cell; no per-step rebuild needed.
+        // invalidates a candidate, and a cell blocked by a non-fusable area
+        // stays blocked (the other areas are already grown and fixed). So the
+        // set only gains neighbours of newly added cells and loses the picked
+        // cell; no per-step rebuild needed.
         let mut frontier: std::collections::BTreeSet<Hex> = std::collections::BTreeSet::new();
-        let extend_frontier =
-            |frontier: &mut std::collections::BTreeSet<Hex>, owner: &CellMap<u32>, c: Hex| {
-                for n in c.neighbors() {
-                    if grid.contains(n)
-                        && !owner.contains(n)
-                        && n.neighbors()
-                            .iter()
-                            .all(|m| owner.get(*m).is_none_or(|o| o as usize == idx))
-                    {
-                        frontier.insert(n);
-                    }
-                }
-            };
-        extend_frontier(&mut frontier, &owner, seed);
+        extend_frontier(&mut frontier, grid, &owner, idx, cur_kind, &kinds, seed);
 
         while cells.len() < target {
             if frontier.is_empty() {
@@ -229,7 +277,7 @@ pub fn grow_areas<R: Rng>(grid: &HexGrid, rng: &mut R, params: &GrowthParams) ->
             owner.insert(pick, idx as u32);
             cells.push(pick);
             frontier.remove(&pick);
-            extend_frontier(&mut frontier, &owner, pick);
+            extend_frontier(&mut frontier, grid, &owner, idx, cur_kind, &kinds, pick);
         }
 
         if cells.len() < MIN_AREA {
@@ -239,9 +287,10 @@ pub fn grow_areas<R: Rng>(grid: &HexGrid, rng: &mut R, params: &GrowthParams) ->
             continue;
         }
         areas.push(cells);
+        kinds.push(cur_kind);
     }
 
-    Areas { cells: areas, owner }
+    Areas { cells: areas, kinds, owner }
 }
 
 pub(crate) fn weighted_index<R: Rng>(rng: &mut R, weights: &[f64]) -> usize {

@@ -5,12 +5,12 @@
 //! rectangles and arcing for circles — including the passage mouths where
 //! doors meet them.
 
+use crate::AreaKind;
 use crate::grid::{Hex, HexGrid};
 use crate::growth::Areas;
 use crate::outline::Point;
 use crate::topology::Topology;
 use rand::Rng;
-use rand::seq::SliceRandom;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,42 +86,40 @@ impl RuinShape {
 /// Area of a unit-side hexagon: 3*sqrt(3)/2.
 const CELL_AREA: f64 = 2.598_076_211_353_316;
 
-/// Pick a `level` fraction of the areas, fit each with a geometric shape
-/// (rooms: rectangles/circles; corridors: straight/arcing halls) and
-/// *reshape its cells* to the rasterized shape, exactly as if the node had
-/// grown that way. Shapes claim free cells, so a shape reaching another
-/// area's neighbourhood unions with it at the cell level — the outline then
-/// traces one loop around both and no interior border ever exists. An area
-/// whose reshaping would disconnect it or orphan a door stays organic.
+/// Fit each geometric (ruin/dungeon — see `Areas::kind`, classified before
+/// growth) area with a geometric shape (rooms: rectangles/circles; corridors:
+/// straight/arcing halls) and *reshape its cells* to the rasterized shape,
+/// exactly as if the node had grown that way. Shapes claim free cells, so a
+/// shape reaching another area's neighbourhood unions with it at the cell
+/// level — the outline then traces one loop around both and no interior border
+/// ever exists. An area whose reshaping would disconnect it or orphan a door
+/// keeps its organic cells and is **demoted back to organic**, so
+/// ruin/dungeon ⇔ actually reshaped always holds.
 pub fn build<R: Rng>(
     areas: &mut Areas,
     topology: &Topology,
     grid: &HexGrid,
-    level: f64,
     hex_size: f64,
     rng: &mut R,
 ) -> Vec<Option<RuinShape>> {
-    let n = areas.count();
-    let mut out = vec![None; n];
-    if level <= 0.0 {
-        return out;
-    }
-    let mut eligible: Vec<usize> = (0..n).collect();
-    let count = ((level.clamp(0.0, 1.0) * eligible.len() as f64).round() as usize)
-        .min(eligible.len());
-    if count == 0 {
-        return out;
-    }
-    eligible.shuffle(rng);
-    for &i in eligible.iter().take(count) {
+    let mut out = vec![None; areas.count()];
+    // Range loop: the body mutates `areas` (reshape / set_kind), so iterating
+    // a borrow of it is not an option.
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..areas.count() {
+        if areas.kind(i) == AreaKind::Organic {
+            continue;
+        }
         let shape = if topology.is_corridor[i] {
             fit_hall(&areas.cells[i], hex_size, rng)
         } else {
             Some(fit(&areas.cells[i], hex_size, rng))
         };
-        let Some(shape) = shape else { continue };
-        if reshape(areas, topology, grid, i, shape, hex_size) {
-            out[i] = Some(shape);
+        match shape {
+            Some(shape) if reshape(areas, topology, grid, i, shape, hex_size) => {
+                out[i] = Some(shape);
+            }
+            _ => areas.set_kind(i, AreaKind::Organic),
         }
     }
     out

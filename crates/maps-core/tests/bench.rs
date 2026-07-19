@@ -25,7 +25,9 @@ fn stages() {
         let t = Instant::now();
         let params = resolve(&tags, &mut rng);
         let grid = HexGrid::hexagon(grid_radius(&params));
-        let mut areas = grow_areas(&grid, &mut rng, &params);
+        // Time the ruin path: classify every area geometric.
+        let slot_kinds = vec![maps_core::AreaKind::Ruin; params.sizes.len()];
+        let mut areas = grow_areas(&grid, &mut rng, &params, &slot_kinds);
         acc[0] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();
@@ -33,7 +35,7 @@ fn stages() {
         acc[1] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();
-        let shapes = ruins::build(&mut areas, &topo, &grid, 0.9, oparams.hex_size, &mut rng);
+        let shapes = ruins::build(&mut areas, &topo, &grid, oparams.hex_size, &mut rng);
         acc[2] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();

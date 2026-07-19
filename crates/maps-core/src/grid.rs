@@ -1,6 +1,6 @@
 //! Axial-coordinate, pointy-top hexagonal grid.
 
-const SQRT3: f64 = 1.732_050_807_568_877_2;
+pub(crate) const SQRT3: f64 = 1.732_050_807_568_877_2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct Hex {

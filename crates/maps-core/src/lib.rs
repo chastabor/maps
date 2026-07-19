@@ -16,6 +16,7 @@ pub mod water;
 
 use grid::HexGrid;
 use growth::{Areas, GrowthParams, grid_radius, grow_areas, resolve};
+use rand::Rng;
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use rand_pcg::Pcg64;
@@ -53,6 +54,30 @@ pub enum AreaKind {
     Organic,
     Ruin,
     Dungeon,
+}
+
+impl AreaKind {
+    /// Whether areas of these two kinds may sit cell-adjacent with no rock gap
+    /// between them. Only two **dungeon** areas fuse — into one compound room
+    /// (e.g. a rectangle with an attached circular silo); every other pair
+    /// keeps the one-cell doorway gap. Growth, reshaping and symmetry all
+    /// consult this one rule.
+    pub fn may_fuse(self, other: AreaKind) -> bool {
+        self == AreaKind::Dungeon && other == AreaKind::Dungeon
+    }
+}
+
+/// How one door onto a dungeon room is drawn. All three are a hex-aligned bar
+/// across the doorway with jamb caps at each end; they differ in the leaf:
+/// `Wood` is a plain leaf, `Metal` adds a reinforcing band down its length,
+/// `Portcullis` is a row of bars (drawn as circles) instead of a leaf. One per
+/// `topology` door; entries for doors that touch no dungeon area are unused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum DoorStyle {
+    #[default]
+    Wood,
+    Metal,
+    Portcullis,
 }
 
 pub struct CaveMap {
@@ -95,11 +120,21 @@ pub struct CaveMap {
     pub tiles: Vec<Vec<Point>>,
     /// Per-area geometric ruin shape, if the area was reshaped.
     pub ruins: Vec<Option<ruins::RuinShape>>,
-    /// Per-area architectural state (organic / ruin / dungeon), one per area.
-    pub area_kind: Vec<AreaKind>,
+    /// Per-door glyph style, aligned with `topology.doors`. Only doors that
+    /// touch a `Dungeon` area are rendered; the rest carry default entries.
+    /// (Per-area kinds live on `areas` — see [`growth::Areas::kind`].)
+    pub door_styles: Vec<DoorStyle>,
     /// Floor tile pattern elements on ruin-area cells (pattern tag).
     pub floor_pattern: Vec<decor::PatternElem>,
     pub title: String,
+}
+
+impl CaveMap {
+    /// Whether the area at `i` is a clean, doored dungeon room (as opposed to
+    /// organic or weathered ruin). Out-of-range indices are not dungeons.
+    pub fn is_dungeon(&self, i: usize) -> bool {
+        self.areas.kinds().get(i) == Some(&AreaKind::Dungeon)
+    }
 }
 
 /// Everything that shapes generation besides the seed.
@@ -167,6 +202,30 @@ fn sub_seed(seed: u64, stream: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// Assign a kind to each of the `n` area slots *before* growth, so growth can
+/// react (only dungeon areas may fuse). `round(ruins_level·n)` slots become
+/// geometric (ruin ∪ dungeon); of those, `round(dungeon_level·n_geo)` are
+/// dungeon and the rest ruin; all remaining slots are organic. Which slots take
+/// which kind is a shape-stream shuffle. With no geometric areas it draws
+/// nothing, so a fully-organic map's growth is untouched.
+fn classify_slots<R: Rng>(n: usize, ruins_level: f64, dungeon_level: f64, rng: &mut R) -> Vec<AreaKind> {
+    let n_geo = ((ruins_level.clamp(0.0, 1.0) * n as f64).round() as usize).min(n);
+    if n_geo == 0 {
+        return vec![AreaKind::Organic; n];
+    }
+    let n_dun = ((dungeon_level.clamp(0.0, 1.0) * n_geo as f64).round() as usize).min(n_geo);
+    let mut slots: Vec<usize> = (0..n).collect();
+    slots.shuffle(rng);
+    let mut kinds = vec![AreaKind::Organic; n];
+    for &s in &slots[..n_dun] {
+        kinds[s] = AreaKind::Dungeon;
+    }
+    for &s in &slots[n_dun..n_geo] {
+        kinds[s] = AreaKind::Ruin;
+    }
+    kinds
+}
+
 /// Generate a map with explicit options.
 ///
 /// Randomness is split into three independent streams so each can be
@@ -189,9 +248,6 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     });
     let mut rng = Pcg64::seed_from_u64(shape_seed);
     let params = resolve(&tags, &mut rng);
-    let grid = HexGrid::hexagon(grid_radius(&params));
-    let mut areas = grow_areas(&grid, &mut rng, &params);
-    let topology = topology::build(&grid, &mut areas, &tags, &mut rng);
     // The tag picks the state; the level only fine-tunes it: organic always
     // means no ruins, while ruins/untagged use the override in place of
     // their default fraction.
@@ -208,57 +264,43 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         Some(tags::DungeonTag::Dungeon) => opts.dungeon_level.unwrap_or(0.6),
         None => opts.dungeon_level.unwrap_or(0.0),
     };
-    // Reshapes the selected areas' cells to the rasterized geometry, so all
-    // downstream layers (outline, water, stones, decor) see the real
-    // footprint and touching shapes union at the cell level.
-    let ruin_shapes = ruins::build(
-        &mut areas,
-        &topology,
-        &grid,
-        ruins_level,
-        oparams.hex_size,
-        &mut rng,
-    );
+    // Classify each area SLOT before growth, so growth can react to it (only
+    // dungeon areas may fuse). Classification, growth, reshaping and doors all
+    // draw from the one shape stream — determinism is per-seed, with no
+    // byte-compatibility to older output.
+    let slot_kinds = classify_slots(params.sizes.len(), ruins_level, dungeon_level, &mut rng);
+    let grid = HexGrid::hexagon(grid_radius(&params));
+    let mut areas = grow_areas(&grid, &mut rng, &params, &slot_kinds);
+    let topology = topology::build(&grid, &mut areas, &tags, &mut rng);
+    // Reshape the geometric areas (ruin ∪ dungeon, per `areas.kind`) to the
+    // rasterized geometry, so all downstream layers (outline, water, stones,
+    // decor) see the real footprint and touching shapes union at the cell
+    // level. Areas that can't reshape are demoted back to organic inside.
+    let ruin_shapes = ruins::build(&mut areas, &topology, &grid, oparams.hex_size, &mut rng);
     let ruin_map = ruins::ruin_cell_map(&areas, &ruin_shapes, oparams.hex_size);
 
-    // Classify areas on the organic → ruin → dungeon spectrum. The geometric
-    // set is exactly the reshaped areas (decided on the shape stream above);
-    // splitting it into ruin vs dungeon draws from a dedicated salt-4
-    // sub-stream, so the shape/decor/name streams are untouched when no area
-    // is promoted (dungeon_level 0 → byte-identical output).
-    let geometric: Vec<usize> = ruin_shapes
+    // Style each door that opens onto a dungeon room; other doors keep a
+    // default entry and draw nothing.
+    let door_styles: Vec<DoorStyle> = topology
+        .doors
         .iter()
-        .enumerate()
-        .filter(|(_, s)| s.is_some())
-        .map(|(i, _)| i)
-        .collect();
-    let n_dungeon = (dungeon_level.clamp(0.0, 1.0) * geometric.len() as f64).round() as usize;
-    let dungeon_set: std::collections::HashSet<usize> = if n_dungeon == 0 {
-        std::collections::HashSet::new()
-    } else {
-        let mut pick = geometric.clone();
-        let mut dungeon_rng = Pcg64::seed_from_u64(sub_seed(shape_seed, 4));
-        pick.shuffle(&mut dungeon_rng);
-        pick.into_iter().take(n_dungeon).collect()
-    };
-    let area_kind: Vec<AreaKind> = (0..areas.count())
-        .map(|i| {
-            if ruin_shapes[i].is_none() {
-                AreaKind::Organic
-            } else if dungeon_set.contains(&i) {
-                AreaKind::Dungeon
+        .map(|d| {
+            if areas.kind(d.a) == AreaKind::Dungeon || areas.kind(d.b) == AreaKind::Dungeon {
+                match rng.random_range(0..100) {
+                    0..22 => DoorStyle::Metal,
+                    22..37 => DoorStyle::Portcullis,
+                    _ => DoorStyle::Wood,
+                }
             } else {
-                AreaKind::Ruin
+                DoorStyle::default()
             }
         })
         .collect();
     // Dungeon-area cells: their walls take the clean treatment, so they are
     // held out of the weathered ruin decor (stipple / masonry) below.
-    let dungeon_cells: std::collections::HashSet<grid::Hex> = area_kind
-        .iter()
-        .enumerate()
-        .filter(|(_, k)| **k == AreaKind::Dungeon)
-        .flat_map(|(i, _)| areas.cells[i].iter().copied())
+    let dungeon_cells: std::collections::HashSet<grid::Hex> = (0..areas.count())
+        .filter(|&i| areas.kind(i) == AreaKind::Dungeon)
+        .flat_map(|i| areas.cells[i].iter().copied())
         .collect();
 
     let outline = build_outline(&areas, &topology, &ruin_map, oparams, &mut rng);
@@ -342,7 +384,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         dots,
         tiles,
         ruins: ruin_shapes,
-        area_kind,
+        door_styles,
         floor_pattern,
         title,
     }

@@ -280,8 +280,20 @@ from weathered ruin to clean dungeon room:
 The `dungeon` tag sets the level's default (0.6); `natural` forces 0. A
 dungeon area shares the ruin geometry (same Rect/Circle/Hall reshaping) but
 takes the *clean* wall treatment — its cells are held out of the ruin decor
-so no stipple or masonry lands on them, leaving a bare wall line. (Rendered
-doors and locally-mirrored symmetric wings are the next steps; see
+so no stipple or masonry lands on them, leaving a bare wall line. Every
+opening onto a dungeon area (a `topology` door where either side is
+`AreaKind::Dungeon`) is drawn as a **hex-aligned door bar** (`render::
+door_layer`): the passage direction is snapped to the nearest of the three
+across-flats hex axes (`DOOR_AXES`, 0°/±60°) so the bar aligns to the tile and
+spans it edge-midpoint to edge-midpoint, with a dark **jamb cap** at each end.
+The whole layer is emitted *under* the wall border, so the caps merge into the
+wall line rather than floating on the floor. Each door carries a `DoorStyle`
+(`lib.rs`, one per door, aligned with `topology.doors`): `Wood` is a plain
+floor-filled leaf, `Metal` adds a reinforcing band down the leaf's length, and
+`Portcullis` replaces the leaf with a row of five bars (rings). Styles are
+rolled on the salt-4 stream right after the dungeon-area selection, so a map
+with no dungeon areas makes zero extra draws and stays byte-identical.
+(Locally-mirrored symmetric wings are the remaining step; see
 `plan/dungeon-mode.md`.)
 
 Determinism: the geometric set is still chosen on the shape stream exactly as

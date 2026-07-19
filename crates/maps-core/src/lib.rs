@@ -224,11 +224,8 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
             v
         })
         .collect();
-    let floor_pattern = if ruin_area_cells.is_empty() {
-        Vec::new()
-    } else {
-        decor::floor_pattern(&ruin_area_cells, pattern_tag, oparams.hex_size, &mut decor_rng)
-    };
+    let floor_pattern =
+        decor::floor_pattern(&ruin_area_cells, pattern_tag, oparams.hex_size, &mut decor_rng);
 
     let title = match opts.title.as_deref().map(str::trim) {
         Some(t) if !t.is_empty() => t.to_string(),

@@ -1,15 +1,10 @@
-import init, { generate, random_tags } from "./pkg/maps_wasm.js";
+import init, { generate, random_tags, tag_families } from "./pkg/maps_wasm.js";
 
-const TAG_GROUPS = [
-  { name: "size", options: ["small", "medium", "large"] },
-  { name: "layout", options: ["hub", "chamber", "burrow"] },
-  { name: "shape", options: ["cavities", "coral", "chaotic"] },
-  { name: "links", options: ["tree", "connected"] },
-  { name: "exits", options: ["sealed", "entrance", "passage", "junction"] },
-  { name: "water", options: ["wet", "dry"] },
-  { name: "ruins", options: ["ruins", "organic"] },
-  { name: "pattern", options: ["mosaic", "truchet", "islamic", "plain"] },
-];
+await init();
+
+// Tag families and their tokens come from the engine's own table — the
+// single source of truth shared with the parser and the CLI help.
+const TAG_GROUPS = tag_families().map(([name, options]) => ({ name, options }));
 const MODES = ["cave", "forest"];
 const GRIDS = ["hex", "square", "none"];
 
@@ -258,7 +253,6 @@ $("export-svg").onclick = () => {
 
 /* ---------- boot ---------- */
 
-await init();
 loadHash();
 $("seed").value = state.seed;
 render();

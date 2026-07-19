@@ -148,7 +148,7 @@ pub(crate) fn smooth_loops<R: Rng>(
                     dist[i] = 0;
                 }
             }
-            if dist.iter().any(|&d| d == 0) {
+            if dist.contains(&0) {
                 // Cyclic distance to the nearest organic vertex.
                 for _ in 0..2 {
                     for i in 0..n {
@@ -319,8 +319,8 @@ pub(crate) fn trace_loops(floor: &HashSet<Hex>) -> Vec<Vec<(Hex, usize)>> {
     cells.sort_unstable();
     let mut edges: Vec<(Hex, usize)> = Vec::new();
     for &c in &cells {
-        for k in 0..6 {
-            if !floor.contains(&c.plus(D[k])) {
+        for (k, &d) in D.iter().enumerate() {
+            if !floor.contains(&c.plus(d)) {
                 edges.push((c, k));
             }
         }

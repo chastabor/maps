@@ -108,6 +108,14 @@ pub fn generate(opts: JsValue) -> Result<JsValue, JsValue> {
     serde_wasm_bindgen::to_value(&out).map_err(err)
 }
 
+/// The tag families and their canonical tokens, straight from the engine's
+/// table: `[[name, [token, ...]], ...]` — the UI builds its radio groups
+/// from this instead of retyping the lists.
+#[wasm_bindgen]
+pub fn tag_families() -> Result<JsValue, JsValue> {
+    serde_wasm_bindgen::to_value(maps_core::tags::tag_families()).map_err(err)
+}
+
 /// The tags this master seed would roll if none were supplied — lets the UI
 /// preview/edit a seed's random tags. Returned as a comma-separated list
 /// ready for the `tags` option ("" when the seed rolls no tags).

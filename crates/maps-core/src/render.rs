@@ -28,7 +28,7 @@ struct Style {
     /// Fill for ruin masonry tiles (forest mode).
     tile: &'static str,
     /// Ruin floor mosaic shades, subtle variations on the floor colour.
-    mosaic: [&'static str; 4],
+    mosaic: [&'static str; crate::decor::MOSAIC_SHADES],
     /// Stroke for line-based ruin floor patterns (truchet/islamic).
     pattern_line: &'static str,
     title: &'static str,
@@ -75,6 +75,13 @@ const FOREST_STYLE: Style = Style {
 
 const HEX_SIZE: f64 = 12.0;
 const MARGIN: f64 = 16.0;
+
+/// Waterline translucency: mud and pools let the floor (and any ruin tile
+/// pattern) show through; deep water is markedly more opaque, and the
+/// mud→pool→deep stacking compounds toward solid in the deepest basins.
+const MUD_OPACITY: f64 = 0.55;
+const WATER_OPACITY: f64 = 0.6;
+const DEEP_OPACITY: f64 = 0.85;
 
 const PALETTE: [&str; 12] = [
     "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6",
@@ -178,14 +185,14 @@ pub fn svg(map: &CaveMap) -> String {
         for elem in &map.floor_pattern {
             match elem {
                 PatternElem::Poly { pts, shade } => {
-                    let p: Vec<String> =
-                        pts.iter().map(|(x, y)| format!("{x:.1},{y:.1}")).collect();
-                    let _ = write!(
-                        s,
-                        r##"<polygon points="{}" fill="{}"/>"##,
-                        p.join(" "),
-                        style.mosaic[*shade as usize % 4]
-                    );
+                    s.push_str(r##"<polygon points=""##);
+                    for (i, (x, y)) in pts.iter().enumerate() {
+                        if i > 0 {
+                            s.push(' ');
+                        }
+                        let _ = write!(s, "{x:.1},{y:.1}");
+                    }
+                    let _ = write!(s, r##"" fill="{}"/>"##, style.mosaic[*shade as usize]);
                 }
                 PatternElem::Curve { from, ctrl, to } => {
                     let _ = write!(
@@ -229,7 +236,7 @@ pub fn svg(map: &CaveMap) -> String {
         let mud_path = outline_path(&map.mud);
         let _ = write!(
             s,
-            r##"<g clip-path="url(#floor)"><path d="{mud_path}" fill="{}" fill-rule="evenodd" fill-opacity="0.55"/></g>"##,
+            r##"<g clip-path="url(#floor)"><path d="{mud_path}" fill="{}" fill-rule="evenodd" fill-opacity="{MUD_OPACITY}"/></g>"##,
             style.mud
         );
     }
@@ -237,7 +244,7 @@ pub fn svg(map: &CaveMap) -> String {
         let water_path = outline_path(&map.water);
         let _ = write!(
             s,
-            r##"<g clip-path="url(#floor)"><path d="{water_path}" fill="{}" fill-rule="evenodd" fill-opacity="0.6" stroke="{}" stroke-width="1.1" stroke-opacity="0.55"/></g>"##,
+            r##"<g clip-path="url(#floor)"><path d="{water_path}" fill="{}" fill-rule="evenodd" fill-opacity="{WATER_OPACITY}" stroke="{}" stroke-width="1.1" stroke-opacity="0.55"/></g>"##,
             style.water, style.line
         );
     }
@@ -245,7 +252,7 @@ pub fn svg(map: &CaveMap) -> String {
         let deep_path = outline_path(&map.deep_water);
         let _ = write!(
             s,
-            r##"<g clip-path="url(#floor)"><path d="{deep_path}" fill="{}" fill-rule="evenodd" fill-opacity="0.85"/></g>"##,
+            r##"<g clip-path="url(#floor)"><path d="{deep_path}" fill="{}" fill-rule="evenodd" fill-opacity="{DEEP_OPACITY}"/></g>"##,
             style.deep
         );
     }

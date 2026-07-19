@@ -5,7 +5,16 @@ use maps::core::{GenOptions, GridStyle, Mode, generate_with};
 use std::path::Path;
 use std::process::exit;
 
-const USAGE: &str = "\
+/// Help text, with the tag-family list rendered from the engine's own table
+/// (`tags::tag_families`) so it can never drift from the parser.
+fn usage() -> String {
+    let families = maps::core::tags::tag_families()
+        .iter()
+        .map(|(name, options)| format!("                       {name}: {}", options.join("|")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\
 Usage: maps [OPTIONS] [CONFIG]
 
 Generates a cave map SVG. Options are read from the TOML config file
@@ -21,20 +30,15 @@ Options:
       --name-seed <N>  re-roll/pin just the title
       --title <NAME>   use this exact map title instead of generating one
   -t, --tags <LIST>    comma-separated tags, e.g. large,hub,coral
-                       size:   small|medium|large
-                       layout: hub|chamber|burrow
-                       shape:  cavities|coral|chaotic
-                       links:  tree|connected
-                       exits:  sealed|entrance|passage|junction
-                       water:  wet|dry
-                       ruins:  ruins|organic
-                       pattern: mosaic|truchet|islamic|plain (ruin floors)
+{families}
   -w, --water <LEVEL>  water level 0.0..=1.0 (0 = dry, 1 = fully submerged)
   -r, --ruins <LEVEL>  ruins level 0.0..=1.0: fraction of areas that become
                        geometric (rectangles/circles) instead of organic
   -o, --out <FILE>     output SVG path (default: cave.svg)
   -d, --debug          render raw hex cells instead of the finished map
-  -h, --help           show this help";
+  -h, --help           show this help"
+    )
+}
 
 fn fail(msg: &str) -> ! {
     eprintln!("{msg}");
@@ -121,13 +125,13 @@ fn main() {
             "-o" | "--out" => out = Some(value("--out")),
             "-d" | "--debug" => debug = Some(true),
             "-h" | "--help" => {
-                println!("{USAGE}");
+                println!("{}", usage());
                 return;
             }
             other if !other.starts_with('-') && config_path.is_none() => {
                 config_path = Some(other.to_string());
             }
-            other => fail(&format!("unknown argument: {other}\n{USAGE}")),
+            other => fail(&format!("unknown argument: {other}\n{}", usage())),
         }
     }
 

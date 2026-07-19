@@ -144,103 +144,61 @@ impl Tags {
         }
     }
 
-    /// Parse a comma- or space-separated tag list, e.g. `"large,hub,coral"`.
-    pub fn parse(s: &str) -> Result<Tags, String> {
-        let mut tags = Tags::default();
-        for token in s.split([',', ' ']).filter(|t| !t.is_empty()) {
-            match token.to_ascii_lowercase().as_str() {
-                "small" => tags.size = Some(SizeTag::Small),
-                "medium" => tags.size = Some(SizeTag::Medium),
-                "large" => tags.size = Some(SizeTag::Large),
-                "hub" => tags.layout = Some(LayoutTag::Hub),
-                "chamber" => tags.layout = Some(LayoutTag::Chamber),
-                "burrow" => tags.layout = Some(LayoutTag::Burrow),
-                "cavities" => tags.shape = Some(ShapeTag::Cavities),
-                "coral" => tags.shape = Some(ShapeTag::Coral),
-                "chaotic" => tags.shape = Some(ShapeTag::Chaotic),
-                "tree" => tags.connect = Some(ConnectTag::Tree),
-                "connected" => tags.connect = Some(ConnectTag::Connected),
-                "sealed" => tags.exits = Some(ExitTag::Sealed),
-                "entrance" => tags.exits = Some(ExitTag::Entrance),
-                "passage" => tags.exits = Some(ExitTag::Passage),
-                "junction" => tags.exits = Some(ExitTag::Junction),
-                "dry" => tags.water = Some(WaterTag::Dry),
-                "wet" => tags.water = Some(WaterTag::Wet),
-                "ruins" => tags.ruins = Some(RuinsTag::Ruins),
-                "organic" => tags.ruins = Some(RuinsTag::Organic),
-                "mosaic" => tags.pattern = Some(PatternTag::Mosaic),
-                "truchet" => tags.pattern = Some(PatternTag::Truchet),
-                "islamic" => tags.pattern = Some(PatternTag::Islamic),
-                "plain" => tags.pattern = Some(PatternTag::Plain),
-                other => return Err(format!("unknown tag: {other}")),
-            }
-        }
-        Ok(tags)
-    }
 }
 
-impl fmt::Display for Tags {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut names: Vec<&str> = Vec::new();
-        if let Some(s) = self.size {
-            names.push(match s {
-                SizeTag::Small => "small",
-                SizeTag::Medium => "medium",
-                SizeTag::Large => "large",
-            });
+/// Declares every tag family exactly once — field, public family name, and
+/// the token ↔ variant mapping — and generates `Tags::parse`,
+/// `Display for Tags` and [`tag_families`] from that single table. Adding a
+/// family or variant here is the only edit needed for the parser, the
+/// display form, the CLI help and the web UI's radio groups.
+macro_rules! tag_families {
+    ($($field:ident ($name:literal, $ty:ident): $($tok:literal => $var:ident),+ ;)+) => {
+        /// Family names with their canonical tokens, in display order — the
+        /// single source of truth for every tag list (CLI help, web UI).
+        pub fn tag_families() -> &'static [(&'static str, &'static [&'static str])] {
+            &[$(($name, &[$($tok),+])),+]
         }
-        if let Some(l) = self.layout {
-            names.push(match l {
-                LayoutTag::Hub => "hub",
-                LayoutTag::Chamber => "chamber",
-                LayoutTag::Burrow => "burrow",
-            });
+
+        impl Tags {
+            /// Parse a comma- or space-separated tag list, e.g.
+            /// `"large,hub,coral"`.
+            pub fn parse(s: &str) -> Result<Tags, String> {
+                let mut tags = Tags::default();
+                for token in s.split([',', ' ']).filter(|t| !t.is_empty()) {
+                    match token.to_ascii_lowercase().as_str() {
+                        $($($tok => tags.$field = Some($ty::$var),)+)+
+                        other => return Err(format!("unknown tag: {other}")),
+                    }
+                }
+                Ok(tags)
+            }
         }
-        if let Some(sh) = self.shape {
-            names.push(match sh {
-                ShapeTag::Cavities => "cavities",
-                ShapeTag::Coral => "coral",
-                ShapeTag::Chaotic => "chaotic",
-            });
+
+        impl fmt::Display for Tags {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let mut names: Vec<&str> = Vec::new();
+                $(
+                    if let Some(v) = self.$field {
+                        names.push(match v { $($ty::$var => $tok,)+ });
+                    }
+                )+
+                if names.is_empty() {
+                    write!(f, "(none)")
+                } else {
+                    write!(f, "{}", names.join(" "))
+                }
+            }
         }
-        if let Some(c) = self.connect {
-            names.push(match c {
-                ConnectTag::Tree => "tree",
-                ConnectTag::Connected => "connected",
-            });
-        }
-        if let Some(e) = self.exits {
-            names.push(match e {
-                ExitTag::Sealed => "sealed",
-                ExitTag::Entrance => "entrance",
-                ExitTag::Passage => "passage",
-                ExitTag::Junction => "junction",
-            });
-        }
-        if let Some(w) = self.water {
-            names.push(match w {
-                WaterTag::Dry => "dry",
-                WaterTag::Wet => "wet",
-            });
-        }
-        if let Some(r) = self.ruins {
-            names.push(match r {
-                RuinsTag::Ruins => "ruins",
-                RuinsTag::Organic => "organic",
-            });
-        }
-        if let Some(p) = self.pattern {
-            names.push(match p {
-                PatternTag::Mosaic => "mosaic",
-                PatternTag::Truchet => "truchet",
-                PatternTag::Islamic => "islamic",
-                PatternTag::Plain => "plain",
-            });
-        }
-        if names.is_empty() {
-            write!(f, "(none)")
-        } else {
-            write!(f, "{}", names.join(" "))
-        }
-    }
+    };
+}
+
+tag_families! {
+    size ("size", SizeTag): "small" => Small, "medium" => Medium, "large" => Large;
+    layout ("layout", LayoutTag): "hub" => Hub, "chamber" => Chamber, "burrow" => Burrow;
+    shape ("shape", ShapeTag): "cavities" => Cavities, "coral" => Coral, "chaotic" => Chaotic;
+    connect ("links", ConnectTag): "tree" => Tree, "connected" => Connected;
+    exits ("exits", ExitTag): "sealed" => Sealed, "entrance" => Entrance, "passage" => Passage, "junction" => Junction;
+    water ("water", WaterTag): "wet" => Wet, "dry" => Dry;
+    ruins ("ruins", RuinsTag): "ruins" => Ruins, "organic" => Organic;
+    pattern ("pattern", PatternTag): "mosaic" => Mosaic, "truchet" => Truchet, "islamic" => Islamic, "plain" => Plain;
 }

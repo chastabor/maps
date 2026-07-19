@@ -56,6 +56,11 @@ pub struct HatchFan {
     pub strokes: Vec<(Point, Point)>,
 }
 
+/// A tree canopy polygon with its depth band (0 = nearest the clearing).
+pub type Canopy = (Vec<Point>, usize);
+/// A masonry block polygon.
+pub type Tile = Vec<Point>;
+
 /// True if the wall at this sample belongs to a ruin area: step half a cell
 /// toward the floor side and look the cell up.
 fn is_ruin_wall(p: Point, nrm: (f64, f64), ruin_cells: &HashSet<Hex>, s: f64) -> bool {
@@ -176,7 +181,7 @@ pub fn trees<R: Rng>(
     ruin_cells: &HashSet<Hex>,
     hex_size: f64,
     rng: &mut R,
-) -> (Vec<(Vec<Point>, usize)>, Vec<Vec<Point>>) {
+) -> (Vec<Canopy>, Vec<Tile>) {
     let mut out = Vec::new();
     let mut tiles = Vec::new();
     for lp in loops {
@@ -363,6 +368,10 @@ fn canopy<R: Rng>(c: Point, r: f64, rng: &mut R) -> Vec<Point> {
         .collect()
 }
 
+/// Number of mosaic floor shades; `PatternElem::Poly::shade` is always in
+/// `0..MOSAIC_SHADES`, and each render `Style` provides that many colours.
+pub const MOSAIC_SHADES: usize = 4;
+
 /// One element of a ruin floor pattern (see `floor_pattern`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum PatternElem {
@@ -375,14 +384,13 @@ pub enum PatternElem {
     Elbow { from: Point, tip: Point, to: Point },
 }
 
-/// Midpoints of a cell's six edges: edge `k` (between corners k and k+1)
-/// has its midpoint in direction `60k` degrees at the inradius.
+/// Midpoints of a cell's six edges, derived from the canonical corner
+/// geometry in `Hex::corners` (edge `k` runs between corners k and k+1).
 fn edge_midpoints(cell: Hex, s: f64) -> [Point; 6] {
-    let (cx, cy) = cell.center(s);
-    let inr = s * 3f64.sqrt() / 2.0;
+    let c = cell.corners(s);
     std::array::from_fn(|k| {
-        let a = std::f64::consts::PI / 3.0 * k as f64;
-        (cx + inr * a.cos(), cy + inr * a.sin())
+        let n = c[(k + 1) % 6];
+        ((c[k].0 + n.0) / 2.0, (c[k].1 + n.1) / 2.0)
     })
 }
 
@@ -399,6 +407,11 @@ pub fn floor_pattern<R: Rng>(
 ) -> Vec<PatternElem> {
     use crate::tags::PatternTag;
     let mut out = Vec::new();
+    if ruin_areas.is_empty() {
+        // Return before any rng draw so pattern-tagged maps without ruins
+        // leave the decor stream untouched.
+        return out;
+    }
     // Islamic: one Hankin angle per map — 30 gives classic straight stars,
     // 45 sharper rosettes.
     let hankin = if pattern == PatternTag::Islamic && rng.random_bool(0.5) {
@@ -406,6 +419,16 @@ pub fn floor_pattern<R: Rng>(
     } else {
         30f64.to_radians()
     };
+    // The Hankin ray directions and their intersection denominator depend
+    // only on the edge index, not the cell: (cos1, sin1, cos2, sin2, denom).
+    let star_rays: [(f64, f64, f64, f64, f64); 6] = std::array::from_fn(|i| {
+        let edge_angle = std::f64::consts::PI / 3.0 * i as f64 + std::f64::consts::PI / 2.0;
+        let r1 = edge_angle + std::f64::consts::PI - hankin;
+        let r2 = edge_angle + hankin;
+        let (c1, s1) = (r1.cos(), r1.sin());
+        let (c2, s2) = (r2.cos(), r2.sin());
+        (c1, s1, c2, s2, c1 * s2 - s1 * c2)
+    });
 
     for area in ruin_areas {
         match pattern {
@@ -430,7 +453,7 @@ pub fn floor_pattern<R: Rng>(
                         3
                     };
                     if rng.random_bool(0.12) {
-                        shade = rng.random_range(0..4);
+                        shade = rng.random_range(0..MOSAIC_SHADES as u8);
                     }
                     let (cx, cy) = cell.center(s);
                     let pts = cell
@@ -468,16 +491,9 @@ pub fn floor_pattern<R: Rng>(
             PatternTag::Islamic => {
                 for &cell in area {
                     let mid = edge_midpoints(cell, s);
-                    for i in 0..6 {
+                    for (i, &(c1, s1, c2, s2, denom)) in star_rays.iter().enumerate() {
                         let p1 = mid[i];
                         let p2 = mid[(i + 1) % 6];
-                        let edge_angle = std::f64::consts::PI / 3.0 * i as f64
-                            + std::f64::consts::PI / 2.0;
-                        let r1 = edge_angle + std::f64::consts::PI - hankin;
-                        let r2 = edge_angle + hankin;
-                        let (c1, s1) = (r1.cos(), r1.sin());
-                        let (c2, s2) = (r2.cos(), r2.sin());
-                        let denom = c1 * s2 - s1 * c2;
                         if denom.abs() > 1e-6 {
                             let t = ((p2.0 - p1.0) * s2 - (p2.1 - p1.1) * c2) / denom;
                             let tip = (p1.0 + t * c1, p1.1 + t * s1);

@@ -56,6 +56,15 @@ pub enum WaterTag {
     Wet,
 }
 
+/// Floor tile pattern drawn on ruin-area cells (no effect without ruins).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PatternTag {
+    Mosaic,
+    Truchet,
+    Islamic,
+    Plain,
+}
+
 /// One optional tag per mutually-exclusive group.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct Tags {
@@ -69,6 +78,8 @@ pub struct Tags {
     /// the areas as geometry, `organic` guarantees none, untagged allows the
     /// occasional ruin (see `GenOptions::ruins_level` for exact control).
     pub ruins: Option<RuinsTag>,
+    /// Ruin floor tile pattern (mosaic/truchet/islamic/plain).
+    pub pattern: Option<PatternTag>,
 }
 
 impl Tags {
@@ -115,6 +126,12 @@ impl Tags {
         } else {
             RuinsTag::Organic
         });
+        let pattern = Some(match rng.random_range(0..100) {
+            0..=54 => PatternTag::Plain,
+            55..=69 => PatternTag::Mosaic,
+            70..=84 => PatternTag::Truchet,
+            _ => PatternTag::Islamic,
+        });
         Tags {
             size,
             layout,
@@ -123,6 +140,7 @@ impl Tags {
             exits,
             water,
             ruins,
+            pattern,
         }
     }
 
@@ -150,6 +168,10 @@ impl Tags {
                 "wet" => tags.water = Some(WaterTag::Wet),
                 "ruins" => tags.ruins = Some(RuinsTag::Ruins),
                 "organic" => tags.ruins = Some(RuinsTag::Organic),
+                "mosaic" => tags.pattern = Some(PatternTag::Mosaic),
+                "truchet" => tags.pattern = Some(PatternTag::Truchet),
+                "islamic" => tags.pattern = Some(PatternTag::Islamic),
+                "plain" => tags.pattern = Some(PatternTag::Plain),
                 other => return Err(format!("unknown tag: {other}")),
             }
         }
@@ -205,6 +227,14 @@ impl fmt::Display for Tags {
             names.push(match r {
                 RuinsTag::Ruins => "ruins",
                 RuinsTag::Organic => "organic",
+            });
+        }
+        if let Some(p) = self.pattern {
+            names.push(match p {
+                PatternTag::Mosaic => "mosaic",
+                PatternTag::Truchet => "truchet",
+                PatternTag::Islamic => "islamic",
+                PatternTag::Plain => "plain",
             });
         }
         if names.is_empty() {

@@ -28,6 +28,7 @@ Options:
                        exits:  sealed|entrance|passage|junction
                        water:  wet|dry
                        ruins:  ruins|organic
+                       pattern: mosaic|truchet|islamic|plain (ruin floors)
   -w, --water <LEVEL>  water level 0.0..=1.0 (0 = dry, 1 = fully submerged)
   -r, --ruins <LEVEL>  ruins level 0.0..=1.0: fraction of areas that become
                        geometric (rectangles/circles) instead of organic

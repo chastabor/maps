@@ -27,6 +27,10 @@ struct Style {
     hatch: &'static str,
     /// Fill for ruin masonry tiles (forest mode).
     tile: &'static str,
+    /// Ruin floor mosaic shades, subtle variations on the floor colour.
+    mosaic: [&'static str; 4],
+    /// Stroke for line-based ruin floor patterns (truchet/islamic).
+    pattern_line: &'static str,
     title: &'static str,
     water: &'static str,
     deep: &'static str,
@@ -43,6 +47,8 @@ const CAVE_STYLE: Style = Style {
     shadow: "#8d8471",
     hatch: "#5a5342",
     tile: "#e7e0cf",
+    mosaic: ["#f4edda", "#ede4cc", "#f0e8d3", "#e9dfc4"],
+    pattern_line: "#3a3226",
     title: "#3a3226",
     water: "#a8c3cc",
     deep: "#7fa2b3",
@@ -59,6 +65,8 @@ const FOREST_STYLE: Style = Style {
     shadow: "#2e4038",
     hatch: "#2e4038",
     tile: "#b7b4a2",
+    mosaic: ["#c0c388", "#b8bb7f", "#c9cc93", "#b1b478"],
+    pattern_line: "#2c3327",
     title: "#cfdcb4",
     water: "#a8c3cc",
     deep: "#7fa2b3",
@@ -159,6 +167,58 @@ pub fn svg(map: &CaveMap) -> String {
         r##"<path d="{floor_path}" fill="{}" fill-rule="nonzero"/>"##,
         style.floor
     );
+
+    // Ruin floor tile pattern, directly on the floor so water floods over
+    // it and the grid overlay stays legible above.
+    if !map.floor_pattern.is_empty() {
+        use crate::decor::PatternElem;
+        let _ = write!(s, r##"<g clip-path="url(#floor)">"##);
+        let mut curves = String::new();
+        let mut elbows = String::new();
+        for elem in &map.floor_pattern {
+            match elem {
+                PatternElem::Poly { pts, shade } => {
+                    let p: Vec<String> =
+                        pts.iter().map(|(x, y)| format!("{x:.1},{y:.1}")).collect();
+                    let _ = write!(
+                        s,
+                        r##"<polygon points="{}" fill="{}"/>"##,
+                        p.join(" "),
+                        style.mosaic[*shade as usize % 4]
+                    );
+                }
+                PatternElem::Curve { from, ctrl, to } => {
+                    let _ = write!(
+                        curves,
+                        "M{:.1} {:.1}Q{:.1} {:.1} {:.1} {:.1}",
+                        from.0, from.1, ctrl.0, ctrl.1, to.0, to.1
+                    );
+                }
+                PatternElem::Elbow { from, tip, to } => {
+                    let _ = write!(
+                        elbows,
+                        "M{:.1} {:.1}L{:.1} {:.1}L{:.1} {:.1}",
+                        from.0, from.1, tip.0, tip.1, to.0, to.1
+                    );
+                }
+            }
+        }
+        if !curves.is_empty() {
+            let _ = write!(
+                s,
+                r##"<path d="{curves}" fill="none" stroke="{}" stroke-width="1.6" stroke-opacity="0.22" stroke-linecap="round"/>"##,
+                style.pattern_line
+            );
+        }
+        if !elbows.is_empty() {
+            let _ = write!(
+                s,
+                r##"<path d="{elbows}" fill="none" stroke="{}" stroke-width="1.0" stroke-opacity="0.28" stroke-linejoin="round"/>"##,
+                style.pattern_line
+            );
+        }
+        s.push_str("</g>");
+    }
 
     // Waterline layers, lowest first: mud fringe under the pools, then the
     // pools, then the deep-water band inside them.

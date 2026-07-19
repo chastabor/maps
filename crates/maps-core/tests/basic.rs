@@ -88,6 +88,60 @@ fn title_override_is_verbatim() {
 }
 
 #[test]
+fn floor_patterns_follow_tags() {
+    use maps_core::decor::PatternElem;
+    use maps_core::{GenOptions, generate_with};
+    let make = |tags: &str| {
+        generate_with(
+            11,
+            &GenOptions {
+                tags: Some(Tags::parse(tags).unwrap()),
+                ruins_level: Some(1.0),
+                ..GenOptions::default()
+            },
+        )
+    };
+    let plain = make("large,chamber,ruins,plain");
+    assert!(plain.floor_pattern.is_empty());
+
+    let mosaic = make("large,chamber,ruins,mosaic");
+    assert!(!mosaic.floor_pattern.is_empty());
+    assert!(mosaic.floor_pattern.iter().all(|e| matches!(e, PatternElem::Poly { .. })));
+
+    let truchet = make("large,chamber,ruins,truchet");
+    assert!(!truchet.floor_pattern.is_empty());
+    assert!(truchet.floor_pattern.iter().all(|e| matches!(e, PatternElem::Curve { .. })));
+
+    let islamic = make("large,chamber,ruins,islamic");
+    assert!(!islamic.floor_pattern.is_empty());
+    assert!(islamic.floor_pattern.iter().all(|e| matches!(e, PatternElem::Elbow { .. })));
+
+    // Same seed twice -> identical pattern; the pattern rides the decor
+    // stream, so re-rolling decor changes it.
+    assert_eq!(truchet.floor_pattern, make("large,chamber,ruins,truchet").floor_pattern);
+    let redecor = generate_with(
+        11,
+        &GenOptions {
+            tags: Some(Tags::parse("large,chamber,ruins,truchet").unwrap()),
+            ruins_level: Some(1.0),
+            decor_seed: Some(999),
+            ..GenOptions::default()
+        },
+    );
+    assert_ne!(truchet.floor_pattern, redecor.floor_pattern);
+
+    // A pattern tag without ruins draws nothing.
+    let organic = generate_with(
+        11,
+        &GenOptions {
+            tags: Some(Tags::parse("large,chamber,organic,truchet").unwrap()),
+            ..GenOptions::default()
+        },
+    );
+    assert!(organic.floor_pattern.is_empty());
+}
+
+#[test]
 fn grid_styles_render_differently() {
     use maps_core::{GenOptions, GridStyle, generate_with};
     let at = |grid| {

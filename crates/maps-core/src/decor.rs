@@ -363,6 +363,134 @@ fn canopy<R: Rng>(c: Point, r: f64, rng: &mut R) -> Vec<Point> {
         .collect()
 }
 
+/// One element of a ruin floor pattern (see `floor_pattern`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PatternElem {
+    /// Mosaic: a shrunk cell polygon with a shade index (the shrink leaves
+    /// grout lines of bare floor between tiles).
+    Poly { pts: Vec<Point>, shade: u8 },
+    /// Truchet: a quadratic bezier between two edge midpoints.
+    Curve { from: Point, ctrl: Point, to: Point },
+    /// Islamic star: two segments meeting at a star tip.
+    Elbow { from: Point, tip: Point, to: Point },
+}
+
+/// Midpoints of a cell's six edges: edge `k` (between corners k and k+1)
+/// has its midpoint in direction `60k` degrees at the inradius.
+fn edge_midpoints(cell: Hex, s: f64) -> [Point; 6] {
+    let (cx, cy) = cell.center(s);
+    let inr = s * 3f64.sqrt() / 2.0;
+    std::array::from_fn(|k| {
+        let a = std::f64::consts::PI / 3.0 * k as f64;
+        (cx + inr * a.cos(), cy + inr * a.sin())
+    })
+}
+
+/// Floor tile patterns for ruin areas, per `plan/hex-tile-pattern.md`
+/// (adapted to our pointy-top grid): mosaic wave-shaded tiles, Truchet
+/// edge-midpoint ribbons, or Hankin polygons-in-contact star lines. Draws
+/// from the decor stream; `ruin_areas` is one sorted cell list per
+/// reshaped area.
+pub fn floor_pattern<R: Rng>(
+    ruin_areas: &[Vec<Hex>],
+    pattern: crate::tags::PatternTag,
+    s: f64,
+    rng: &mut R,
+) -> Vec<PatternElem> {
+    use crate::tags::PatternTag;
+    let mut out = Vec::new();
+    // Islamic: one Hankin angle per map — 30 gives classic straight stars,
+    // 45 sharper rosettes.
+    let hankin = if pattern == PatternTag::Islamic && rng.random_bool(0.5) {
+        45f64.to_radians()
+    } else {
+        30f64.to_radians()
+    };
+
+    for area in ruin_areas {
+        match pattern {
+            PatternTag::Plain => {}
+            PatternTag::Mosaic => {
+                // Radial shade waves from the area's centroid, with the
+                // occasional rng-swapped "replaced" tile.
+                let n = area.len() as f64;
+                let cq = area.iter().map(|c| c.q as f64).sum::<f64>() / n;
+                let cr = area.iter().map(|c| c.r as f64).sum::<f64>() / n;
+                for &cell in area {
+                    let (dq, dr) = (cell.q as f64 - cq, cell.r as f64 - cr);
+                    let dist = (dq * dq + dr * dr + dq * dr).sqrt();
+                    let wave = (dist * 0.9).sin();
+                    let mut shade = if wave > 0.5 {
+                        0
+                    } else if wave > 0.0 {
+                        1
+                    } else if wave > -0.5 {
+                        2
+                    } else {
+                        3
+                    };
+                    if rng.random_bool(0.12) {
+                        shade = rng.random_range(0..4);
+                    }
+                    let (cx, cy) = cell.center(s);
+                    let pts = cell
+                        .corners(s)
+                        .iter()
+                        .map(|&(x, y)| (cx + (x - cx) * 0.86, cy + (y - cy) * 0.86))
+                        .collect();
+                    out.push(PatternElem::Poly { pts, shade });
+                }
+            }
+            PatternTag::Truchet => {
+                // Wiring style is per area so each ruin reads coherent:
+                // adjacent pairs coil into knots, alternating pairs sweep.
+                let sweeping = rng.random_bool(0.5);
+                let connections: [(usize, usize); 3] = if sweeping {
+                    [(0, 2), (1, 4), (3, 5)]
+                } else {
+                    [(0, 1), (2, 3), (4, 5)]
+                };
+                for &cell in area {
+                    let rot = rng.random_range(0..6usize);
+                    let mid = edge_midpoints(cell, s);
+                    let (cx, cy) = cell.center(s);
+                    for (a, b) in connections {
+                        let from = mid[(a + rot) % 6];
+                        let to = mid[(b + rot) % 6];
+                        let ctrl = (
+                            cx + 0.45 * ((from.0 + to.0) / 2.0 - cx),
+                            cy + 0.45 * ((from.1 + to.1) / 2.0 - cy),
+                        );
+                        out.push(PatternElem::Curve { from, ctrl, to });
+                    }
+                }
+            }
+            PatternTag::Islamic => {
+                for &cell in area {
+                    let mid = edge_midpoints(cell, s);
+                    for i in 0..6 {
+                        let p1 = mid[i];
+                        let p2 = mid[(i + 1) % 6];
+                        let edge_angle = std::f64::consts::PI / 3.0 * i as f64
+                            + std::f64::consts::PI / 2.0;
+                        let r1 = edge_angle + std::f64::consts::PI - hankin;
+                        let r2 = edge_angle + hankin;
+                        let (c1, s1) = (r1.cos(), r1.sin());
+                        let (c2, s2) = (r2.cos(), r2.sin());
+                        let denom = c1 * s2 - s1 * c2;
+                        if denom.abs() > 1e-6 {
+                            let t = ((p2.0 - p1.0) * s2 - (p2.1 - p1.1) * c2) / denom;
+                            let tip = (p1.0 + t * c1, p1.1 + t * s1);
+                            out.push(PatternElem::Elbow { from: p1, tip, to: p2 });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Points every `spacing` units along a closed polyline, each with the unit
 /// direction of the edge it sits on.
 fn resample(lp: &[Point], spacing: f64) -> Vec<(Point, (f64, f64))> {

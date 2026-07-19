@@ -8,6 +8,7 @@ const TAG_GROUPS = [
   { name: "exits", options: ["sealed", "entrance", "passage", "junction"] },
   { name: "water", options: ["wet", "dry"] },
   { name: "ruins", options: ["ruins", "organic"] },
+  { name: "pattern", options: ["mosaic", "truchet", "islamic", "plain"] },
 ];
 const MODES = ["cave", "forest"];
 const GRIDS = ["hex", "square", "none"];

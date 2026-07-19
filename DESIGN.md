@@ -1,0 +1,236 @@
+# Design: how `maps` generates deterministic caves, glades and ruins
+
+This document describes the generation pipeline in `crates/maps-core`. The
+cave/glade process follows watabou's Cave Generator as reverse-engineered in
+Boris the Brave's writeup —
+[How does Cave/Glade Generator work?](https://www.boristhebrave.com/2023/11/19/how-does-cave-glade-generator-work/)
+— reimplemented from that public description. The ruins process is our own
+extension. Section headings note the implementing module.
+
+## Determinism model (`lib.rs`)
+
+Everything derives from a master `u64` seed, split via splitmix64 into three
+independent, individually overridable streams:
+
+| Stream | Seeds | Drives |
+|---|---|---|
+| **shape** | `shape_seed` | tags (when rolled), area growth, topology, outline smoothing, water, stones |
+| **decor** | `decor_seed` | hatch fans / stipple dots / tree canopies / masonry, including their stacking order |
+| **name** | `name_seed` | the title (unless overridden verbatim by `title`) |
+
+Rules that keep output byte-identical across platforms (native and wasm):
+
+- Every random choice flows through a seeded PCG-64 in a **fixed call
+  order**; collections are never iterated in hash order when the result
+  feeds the RNG (cells are sorted first).
+- Random tags come from their own sub-stream of the shape seed, so
+  supplying the same tags explicitly reproduces the identical map — the
+  basis of replication and of the web UI's per-family defaults.
+- Draws happen unconditionally where a feature might be disabled (e.g. the
+  water noise salt), so toggling one option never shifts another's stream.
+- Seeds are `u64` and cross the JavaScript boundary as strings (numbers
+  corrupt integers above 2^53).
+- `Tags::random` gives **every family a concrete tag**, making the
+  generator the single source of truth for what an untouched family means.
+
+## The cave/glade pipeline
+
+### 1. Tags as parameter presets (`tags.rs`, `growth.rs::resolve`)
+
+As in the original, tags are switches/presets resolved into numeric
+parameters: area count by size (small 2–3, medium 3–8, large 9–19), area
+sizes by layout (`hub`: one 60–79-cell chamber plus satellites; `chamber`:
+even 11–14±2; `burrow`: `10 + 80·((r+r+r)/3)³`), and the growth exponent by
+shape (below). `water_level`/`ruins_level` fine-tune the active tag's
+default; `dry`/`organic` are absolute.
+
+### 2. Hex grid (`grid.rs`)
+
+Pointy-top axial-coordinate hexes on a board sized from the total target
+area. (The article describes a DCEL; we get the same adjacency and boundary
+walks directly from axial arithmetic.)
+
+### 3. Seed growth (`growth.rs`)
+
+Each area starts at a seed cell and accretes one neighbouring cell at a
+time. Candidates are weighted `c^gamma` where `c` is how many neighbours
+are already in the area: `cavities` pins gamma at 6 (round blobs), `coral`
+uses negative gamma (tendrils), `chaotic` prefers cells with exactly two
+connections. Growth preserves a **one-cell buffer** between areas — those
+gap cells are the future doorways. Two of our refinements: the first area
+seeds near the board centre, and later areas seed at distance 2 from an
+existing area so every area is guaranteed a doorway candidate.
+
+### 4. Doorways (`topology.rs`)
+
+Gap cells adjacent to two areas are grouped per area-pair, then culled:
+`tree` keeps a random spanning tree (no loops), `connected` breaks one edge
+of every triangle of mutually adjacent areas. One door cell is chosen per
+surviving pair.
+
+### 5. Corridors (`topology.rs`)
+
+Areas are randomly chosen to shrink into corridors (probability grows with
+door count; `burrow` raises it; a hub's main chamber is exempt). Shrinking
+removes random cells while flood-fill confirms the remainder stays
+connected and every door/exit keeps contact — converging to winding
+width-1 passages.
+
+### 6. Exits (`topology.rs`)
+
+Attachment cells are weighted by squared distance from the centre; a
+passage then walks outward cell by cell until it reaches the board rim
+(candidates that cannot reach it are discarded). Counts: `sealed` 0,
+`entrance` 1, `passage` 2, `junction` 3–4.
+
+### 7. Water as terrain elevation (`water.rs`)
+
+A hand-rolled two-octave value noise (deterministic integer-lattice hash)
+assigns each floor cell an elevation. The water level is a **fill
+fraction**: the waterline is that quantile of the map's elevations, so 0 is
+dry, 0.5 floods the lowest half, 1 submerges everything. Two derived bands
+follow the same waterline: deep water below `level − 0.15` and a mud fringe
+below `level + 0.06` (only where it touches a real pool). Pool outlines run
+through the same smoothing pipeline as walls but with far less jitter —
+water lies glassy against rough rock.
+
+### 8. Boundary tracing and smoothing (`outline.rs`)
+
+The floor (areas ∪ doors ∪ exit passages) is one cell set; a cell-following
+contour walk produces closed loops — outer walls and interior pillars —
+with pinch corners handled unambiguously. Each loop then goes through the
+article's smoothing sequence:
+
+1. subdivide every edge;
+2. Laplacian smoothing (*bumpiness*);
+3. pull tunnel-cell vertices toward their cell centres (*narrowing* — what
+   makes corridors, doors and exit passages read as tight passages);
+4. per-vertex jitter (*irregularity*);
+5. two rounds of subdivide + finer jitter (*roughness*);
+6. Chaikin corner cutting.
+
+We add two closing steps: decimation (drop sub-pixel points) and
+**bowtie removal** — a spatially-hashed self-intersection scan that cuts
+the smaller lobe at any crossing, guaranteeing simple loops whatever
+upstream jitter or projection did.
+
+### 9. Decoration (`decor.rs`)
+
+All decoration draws from the decor stream and is **shuffled** at the end,
+so stacking/overlap order is seed-decided rather than a cascade in the
+boundary-walk direction.
+
+- **Cave walls**: cone fans — five parallel strokes of growing length per
+  fan, scattered along the wall like trees along a tree line. Each fan has
+  an opaque footprint that hides fans beneath it; the floor mask clips
+  whatever falls inside the cave, so fans that start deep show only their
+  longest strokes. A translucent shadow band hugs the outside of every
+  wall, above the fans.
+- **Glade walls**: tree canopies — star polygons with lobe count scaling
+  with radius and a recessed inner ring, laid in three depth bands that
+  lighten toward the clearing (the background is the darkest layer of all;
+  the cave palette sets those depth colours to one beige, which is why no
+  shading shows there).
+- **Stones**: small irregular polygons in open cells.
+- **Ruin floor patterns** (`pattern` tag: mosaic/truchet/islamic/plain):
+  tile patterns drawn on ruin-area cells so architecture reads against
+  organic floor, ported from `plan/hex-tile-pattern.md` onto our
+  pointy-top grid. *Mosaic* fills shrunk cell hexes (grout gaps) with
+  radial wave shades from each ruin's centroid plus occasional rng
+  "replaced" tiles; *Truchet* joins edge midpoints with quadratic bezier
+  ribbons (knot or maze wiring chosen per ruin, rotation per cell), flowing
+  continuously across shared edges; *Islamic* uses Hankin's
+  polygons-in-contact — rays projected inward from edge midpoints at a
+  per-map angle (30° stars or 45° rosettes) trimmed at their
+  intersections. Drawn just above the floor fill so water floods over
+  them; all randomness rides the decor stream.
+
+### 10. Naming (`naming.rs`)
+
+A small Tracery-style grammar with cave and woodland lexicons; water
+presence biases toward damp names. An explicit `title` bypasses generation
+without consuming the name stream.
+
+### 11. Rendering (`render.rs`)
+
+Layer order: background → trees → floor fill → mud → water → deep water →
+grid overlay (hex, square or none) → stones → hatching/dots → shadow band →
+masonry → wall stroke → title. Nonzero winding everywhere so overlapping
+loops union; an inverse-floor mask (`#rock`) restricts wall decoration to
+rock. The seed/tags caption is deliberately not part of the SVG — that
+information lives in the CLI output, the web readout and permalinks.
+
+## The ruins extension (`ruins.rs`)
+
+Ruins replace a fraction of the grown areas with geometric architecture —
+`ruins_level` (0..1) picks how many, the way the water level picks how much
+floods. The guiding principle, arrived at after fighting rendering-level
+patches: **ruins are cells, like every other node**. Geometry is realised
+on the hex grid *before* any outline exists, so unions, passage widths and
+wall thickness follow from the same grid rules as organic areas.
+
+### Fitting
+
+Selected rooms get an area-preserving rectangle or circle (50/50), centred
+on the cell centroid and deliberately fitted at ~0.8× area so neighbours
+merge by intent rather than constantly. Selected corridors get a straight
+or arcing hall between their two farthest cells; fits that would misbehave
+are rejected and the area stays organic — a corridor too contorted for its
+centreline, an arc radius under 2.5 cells (its raster would wrap into a
+ring), or any raster that fails validation below.
+
+### Rasterizing (growing like a node)
+
+The shape claims the hexes it covers (free cells or its own; a small margin
+keeps the traced boundary outside the exact geometry so projection only
+ever pulls walls inward). Door-adjacent original cells are kept so no door
+is orphaned. The result must pass three checks or the area reverts to
+organic: connected, every door still adjacent, and **no enclosed rock**
+(a flood-fill test — a ring-shaped raster would pinch the floor around its
+pocket shut).
+
+Because claimed cells may reach another area's neighbourhood, **touching
+ruins union at the cell level**: the contour walk traces one loop around
+both and no interior border ever exists. The threshold for "one room" is
+the grid's own one-cell buffer.
+
+### Projection: making cells look like geometry
+
+During outline smoothing, boundary vertices of ruin cells are projected
+onto the fitted shape and locked against jitter — rectangles come out
+straight, circles arc, halls run clean. Four safeguards keep projection
+from ever fighting the grid:
+
+- **Blend ramp**: projection fades in over the last few vertices of each
+  ruin run, so transitions to organic wall (door mouths, merge seams)
+  cannot fold the loop.
+- **Seam cells** (adjacent to another area) stay organic: merged throats
+  keep full cell width.
+- **Contested cells** (inside a *second* ruin's geometry) stay organic:
+  two shapes' wall loci never extend across each other, which would tie
+  the border into a bowtie.
+- **Hall displacement falloff**: a hall vertex projects crisply only when
+  the move is under half a cell, fading to organic beyond 1.5 cells —
+  radial side walls can't leap across the passage.
+
+Bowtie removal (pipeline step 8) backs all of this with a hard guarantee
+of simple loops.
+
+### Ruin decoration
+
+Wall samples are classified by the cell just inside the wall (pixel→hex
+lookup): ruin-owned wall sections swap their decoration — **faded stipple
+dots** in caves (denser, larger and darker against the line, fading out)
+and **masonry tiles** in glades (an overlapping course recessed under the
+border stroke, seed-shuffled stacking, mitered L-shaped quoins at sharp
+corners). Organic sections keep fans/canopies, switching exactly at the
+ownership boundary — so a half-merged structure reads geometric on one
+side and wild on the other.
+
+## Verification
+
+`crates/maps-core/tests/basic.rs` pins the invariants (determinism, door
+connectivity, sub-seed stream isolation, water monotonicity, ruin/decoration
+semantics); `tests/trace.rs` holds regression tests on user-reported seeds
+for minimum passage width and loop simplicity. The wasm build is checked
+byte-identical against the native `examples/cave.svg`.

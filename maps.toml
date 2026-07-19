@@ -28,6 +28,7 @@ seed = 42
 #   exits:  sealed | entrance | passage | junction
 #   water:  wet | dry
 #   ruins:  ruins | organic (see ruins_level)
+#   pattern: mosaic | truchet | islamic | plain — floor tiles on ruin cells
 # Omit to let the seed pick random tags.
 tags = "large,hub,wet"
 

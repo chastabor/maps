@@ -143,6 +143,10 @@ randomly from the seed.
 | | `dry` | No water at all |
 | **Ruins** | `ruins` | Half the areas become geometric ruins, regrown on the hex grid — rooms turn into rectangles (straight walls) or circles (arching walls), corridors into straight or arcing halls. Ruins that grow into contact merge into one larger space. Ruin walls get their own decoration: faded stipple dots in caves, overlapping masonry tiles in glades. Tune the fraction with `ruins_level` / `--ruins`. |
 | | `organic` | No ruins at all (untagged maps allow the occasional ruin, ~10%) |
+| **Pattern** | `mosaic` | Ruin floors tiled with wave-shaded hex mosaic (grout lines between tiles) |
+| | `truchet` | Ruin floors traced with flowing Truchet ribbons (knots or sweeping mazes per ruin) |
+| | `islamic` | Ruin floors laced with Hankin polygons-in-contact star lines (6-point stars/rosettes) |
+| | `plain` | Bare ruin floors (the most common seed roll) |
 
 Example: `maps -t large,burrow,tree,junction,wet` or `maps -t large,chamber,ruins -r 0.8`
 

@@ -82,6 +82,8 @@ pub struct CaveMap {
     pub tiles: Vec<Vec<Point>>,
     /// Per-area geometric ruin shape, if the area was reshaped.
     pub ruins: Vec<Option<ruins::RuinShape>>,
+    /// Floor tile pattern elements on ruin-area cells (pattern tag).
+    pub floor_pattern: Vec<decor::PatternElem>,
     pub title: String,
 }
 
@@ -209,6 +211,24 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
             (Vec::new(), Vec::new(), trees, tiles)
         }
     };
+    // Ruin floor tiles, after the other decor so `plain` maps keep their
+    // exact output. One sorted cell list per reshaped area.
+    let pattern_tag = tags.pattern.unwrap_or(tags::PatternTag::Plain);
+    let ruin_area_cells: Vec<Vec<grid::Hex>> = ruin_shapes
+        .iter()
+        .enumerate()
+        .filter(|(_, sh)| sh.is_some())
+        .map(|(i, _)| {
+            let mut v = areas.cells[i].clone();
+            v.sort_unstable();
+            v
+        })
+        .collect();
+    let floor_pattern = if ruin_area_cells.is_empty() {
+        Vec::new()
+    } else {
+        decor::floor_pattern(&ruin_area_cells, pattern_tag, oparams.hex_size, &mut decor_rng)
+    };
 
     let title = match opts.title.as_deref().map(str::trim) {
         Some(t) if !t.is_empty() => t.to_string(),
@@ -239,6 +259,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         dots,
         tiles,
         ruins: ruin_shapes,
+        floor_pattern,
         title,
     }
 }

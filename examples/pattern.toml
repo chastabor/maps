@@ -1,0 +1,13 @@
+# A ruined cave with Truchet-tiled floors: the ribbon pattern marks every
+# geometric room and hall, and the translucent pools let the tilework show
+# through the shallows (deep water stays dark).
+mode = "cave"
+seed = 11
+tags = "large,chamber,tree,wet,ruins,truchet"
+output = "examples/pattern.svg"
+
+# Most areas become geometric so the flooring is prominent.
+ruins_level = 0.85
+
+# Enough water to flood some tiled floors.
+water_level = 0.35

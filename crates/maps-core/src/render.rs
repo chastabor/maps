@@ -222,11 +222,14 @@ pub fn svg(map: &CaveMap) -> String {
 
     // Waterline layers, lowest first: mud fringe under the pools, then the
     // pools, then the deep-water band inside them.
+    // The waterline fills are translucent so ruin floor patterns show
+    // through the shallows; deep water is markedly less transparent, and
+    // the stacking (mud under pool under deep) compounds toward opaque.
     if !map.mud.is_empty() {
         let mud_path = outline_path(&map.mud);
         let _ = write!(
             s,
-            r##"<g clip-path="url(#floor)"><path d="{mud_path}" fill="{}" fill-rule="evenodd"/></g>"##,
+            r##"<g clip-path="url(#floor)"><path d="{mud_path}" fill="{}" fill-rule="evenodd" fill-opacity="0.55"/></g>"##,
             style.mud
         );
     }
@@ -234,7 +237,7 @@ pub fn svg(map: &CaveMap) -> String {
         let water_path = outline_path(&map.water);
         let _ = write!(
             s,
-            r##"<g clip-path="url(#floor)"><path d="{water_path}" fill="{}" fill-rule="evenodd" stroke="{}" stroke-width="1.1" stroke-opacity="0.55"/></g>"##,
+            r##"<g clip-path="url(#floor)"><path d="{water_path}" fill="{}" fill-rule="evenodd" fill-opacity="0.6" stroke="{}" stroke-width="1.1" stroke-opacity="0.55"/></g>"##,
             style.water, style.line
         );
     }
@@ -242,7 +245,7 @@ pub fn svg(map: &CaveMap) -> String {
         let deep_path = outline_path(&map.deep_water);
         let _ = write!(
             s,
-            r##"<g clip-path="url(#floor)"><path d="{deep_path}" fill="{}" fill-rule="evenodd"/></g>"##,
+            r##"<g clip-path="url(#floor)"><path d="{deep_path}" fill="{}" fill-rule="evenodd" fill-opacity="0.85"/></g>"##,
             style.deep
         );
     }

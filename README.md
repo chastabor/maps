@@ -195,6 +195,7 @@ maps examples/cave.toml         # cave          -> examples/cave.svg
 maps examples/forest.toml       # glade         -> examples/forest.svg
 maps examples/ruins.toml        # ruined cave   -> examples/ruins.svg
 maps examples/ruins-glade.toml  # ruined glade  -> examples/ruins-glade.svg
+maps examples/pattern.toml      # tiled ruins   -> examples/pattern.svg
 ```
 
 The ruins tag works in both modes: in a cave the geometry reads as ruined

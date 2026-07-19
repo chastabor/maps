@@ -17,6 +17,7 @@ pub mod water;
 use grid::HexGrid;
 use growth::{Areas, GrowthParams, grid_radius, grow_areas, resolve};
 use rand::SeedableRng;
+use rand::seq::SliceRandom;
 use rand_pcg::Pcg64;
 use outline::{OutlineParams, Point, build_outline};
 use tags::Tags;
@@ -40,6 +41,18 @@ pub enum GridStyle {
     Hex,
     Square,
     None,
+}
+
+/// The architectural state of an area, on the organic → ruin → dungeon
+/// spectrum. `ruins_level` sets how much of the map leaves `Organic`; of that
+/// geometric remainder, `dungeon_level` promotes a fraction from `Ruin`
+/// (weathered geometry) to `Dungeon` (clean walls, doors, symmetry).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AreaKind {
+    #[default]
+    Organic,
+    Ruin,
+    Dungeon,
 }
 
 pub struct CaveMap {
@@ -82,6 +95,8 @@ pub struct CaveMap {
     pub tiles: Vec<Vec<Point>>,
     /// Per-area geometric ruin shape, if the area was reshaped.
     pub ruins: Vec<Option<ruins::RuinShape>>,
+    /// Per-area architectural state (organic / ruin / dungeon), one per area.
+    pub area_kind: Vec<AreaKind>,
     /// Floor tile pattern elements on ruin-area cells (pattern tag).
     pub floor_pattern: Vec<decor::PatternElem>,
     pub title: String,
@@ -106,6 +121,12 @@ pub struct GenOptions {
     /// Fine-tunes the ruins tag's default (ruins 0.5, untagged 0.1); the
     /// `organic` tag always means no ruins and ignores this.
     pub ruins_level: Option<f64>,
+    /// Fraction (0..=1) of the geometric (ruin) areas promoted to clean
+    /// **dungeon** rooms — crisp walls, rendered doors, and (later) symmetric
+    /// wings — instead of weathered ruins. Nested inside `ruins_level`: with
+    /// no geometric areas it does nothing. Fine-tunes the dungeon tag's
+    /// default (dungeon 0.6, untagged 0.0); the `natural` tag forces 0.
+    pub dungeon_level: Option<f64>,
     /// Override the shape stream (tags, areas, topology, outline, water,
     /// stones). Defaults to a sub-seed derived from the master seed.
     pub shape_seed: Option<u64>,
@@ -179,6 +200,14 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         Some(tags::RuinsTag::Ruins) => opts.ruins_level.unwrap_or(0.5),
         None => opts.ruins_level.unwrap_or(0.1),
     };
+    // Nested inside ruins: the fraction of the geometric areas that become
+    // clean dungeon rooms rather than weathered ruins. `natural` forces none;
+    // untagged is none unless overridden.
+    let dungeon_level = match tags.dungeon {
+        Some(tags::DungeonTag::Natural) => 0.0,
+        Some(tags::DungeonTag::Dungeon) => opts.dungeon_level.unwrap_or(0.6),
+        None => opts.dungeon_level.unwrap_or(0.0),
+    };
     // Reshapes the selected areas' cells to the rasterized geometry, so all
     // downstream layers (outline, water, stones, decor) see the real
     // footprint and touching shapes union at the cell level.
@@ -191,23 +220,80 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         &mut rng,
     );
     let ruin_map = ruins::ruin_cell_map(&areas, &ruin_shapes, oparams.hex_size);
+
+    // Classify areas on the organic → ruin → dungeon spectrum. The geometric
+    // set is exactly the reshaped areas (decided on the shape stream above);
+    // splitting it into ruin vs dungeon draws from a dedicated salt-4
+    // sub-stream, so the shape/decor/name streams are untouched when no area
+    // is promoted (dungeon_level 0 → byte-identical output).
+    let geometric: Vec<usize> = ruin_shapes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    let n_dungeon = (dungeon_level.clamp(0.0, 1.0) * geometric.len() as f64).round() as usize;
+    let dungeon_set: std::collections::HashSet<usize> = if n_dungeon == 0 {
+        std::collections::HashSet::new()
+    } else {
+        let mut pick = geometric.clone();
+        let mut dungeon_rng = Pcg64::seed_from_u64(sub_seed(shape_seed, 4));
+        pick.shuffle(&mut dungeon_rng);
+        pick.into_iter().take(n_dungeon).collect()
+    };
+    let area_kind: Vec<AreaKind> = (0..areas.count())
+        .map(|i| {
+            if ruin_shapes[i].is_none() {
+                AreaKind::Organic
+            } else if dungeon_set.contains(&i) {
+                AreaKind::Dungeon
+            } else {
+                AreaKind::Ruin
+            }
+        })
+        .collect();
+    // Dungeon-area cells: their walls take the clean treatment, so they are
+    // held out of the weathered ruin decor (stipple / masonry) below.
+    let dungeon_cells: std::collections::HashSet<grid::Hex> = area_kind
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| **k == AreaKind::Dungeon)
+        .flat_map(|(i, _)| areas.cells[i].iter().copied())
+        .collect();
+
     let outline = build_outline(&areas, &topology, &ruin_map, oparams, &mut rng);
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
     let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
     let stones = decor::stones(&floor, &narrow, &w.cells, oparams.hex_size, &mut rng);
 
-    let ruin_cells: std::collections::HashSet<grid::Hex> = ruin_map.keys().copied().collect();
+    // Only weathered (ruin) walls get stipple/masonry; dungeon cells are
+    // excluded here and their walls skipped in decor, leaving a clean line.
+    let ruin_cells: std::collections::HashSet<grid::Hex> = ruin_map
+        .keys()
+        .copied()
+        .filter(|h| !dungeon_cells.contains(h))
+        .collect();
 
     let mut decor_rng = Pcg64::seed_from_u64(decor_seed);
     let (hatching, dots, trees, tiles) = match mode {
         Mode::Cave => {
-            let (fans, dots) =
-                decor::hatching(&outline, &ruin_cells, oparams.hex_size, &mut decor_rng);
+            let (fans, dots) = decor::hatching(
+                &outline,
+                &ruin_cells,
+                &dungeon_cells,
+                oparams.hex_size,
+                &mut decor_rng,
+            );
             (fans, dots, Vec::new(), Vec::new())
         }
         Mode::Forest => {
-            let (trees, tiles) =
-                decor::trees(&outline, &ruin_cells, oparams.hex_size, &mut decor_rng);
+            let (trees, tiles) = decor::trees(
+                &outline,
+                &ruin_cells,
+                &dungeon_cells,
+                oparams.hex_size,
+                &mut decor_rng,
+            );
             (Vec::new(), Vec::new(), trees, tiles)
         }
     };
@@ -256,6 +342,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         dots,
         tiles,
         ruins: ruin_shapes,
+        area_kind,
         floor_pattern,
         title,
     }

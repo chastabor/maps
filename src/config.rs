@@ -30,6 +30,10 @@ pub struct Config {
     /// shapes (rectangles/circles) instead of their organic outline.
     /// Overrides the ruins tag default (0.5).
     pub ruins_level: Option<f64>,
+    /// Dungeon level in 0..=1: the fraction of the geometric (ruin) areas
+    /// promoted to clean, doored dungeon rooms instead of weathered ruins.
+    /// Overrides the dungeon tag default (0.6).
+    pub dungeon_level: Option<f64>,
     /// Override the shape sub-seed (map outline, water, stones).
     pub shape_seed: Option<u64>,
     /// Override the decoration sub-seed (hatch fans / tree canopies).

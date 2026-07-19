@@ -266,6 +266,32 @@ corners). Organic sections keep fans/canopies, switching exactly at the
 ownership boundary — so a half-merged structure reads geometric on one
 side and wild on the other.
 
+### Dungeon areas (`lib.rs`)
+
+The organic → ruin spectrum extends to a third state, **dungeon**, nested
+inside ruins. `ruins_level` still sets how much of the map is geometric;
+`dungeon_level` (0..1) is the fraction of *those* geometric areas promoted
+from weathered ruin to clean dungeon room:
+
+    organic  = 1 − ruins_level
+    ruin     = ruins_level · (1 − dungeon_level)
+    dungeon  = ruins_level · dungeon_level
+
+The `dungeon` tag sets the level's default (0.6); `natural` forces 0. A
+dungeon area shares the ruin geometry (same Rect/Circle/Hall reshaping) but
+takes the *clean* wall treatment — its cells are held out of the ruin decor
+so no stipple or masonry lands on them, leaving a bare wall line. (Rendered
+doors and locally-mirrored symmetric wings are the next steps; see
+`plan/dungeon-mode.md`.)
+
+Determinism: the geometric set is still chosen on the shape stream exactly as
+before, so ruins output is unchanged. Splitting that set into ruin vs dungeon
+draws from a dedicated **salt-4 sub-stream** of the shape seed
+(`sub_seed(shape_seed, 4)`), so `dungeon_level = 0` leaves shape, decor and
+name streams byte-identical. Adding the `dungeon` family to `Tags::random`
+appends one draw (kept last), so seed-rolled maps gain a dungeon tag without
+shifting any other family's roll.
+
 ## Verification
 
 `crates/maps-core/tests/basic.rs` pins the invariants (determinism, door

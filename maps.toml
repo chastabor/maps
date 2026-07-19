@@ -28,6 +28,7 @@ seed = 42
 #   exits:  sealed | entrance | passage | junction
 #   water:  wet | dry
 #   ruins:  ruins | organic (see ruins_level)
+#   dungeon: dungeon | natural (see dungeon_level)
 #   pattern: mosaic | truchet | islamic | plain — floor tiles on ruin cells
 # Omit to let the seed pick random tags.
 tags = "large,hub,wet"
@@ -54,6 +55,14 @@ debug = false
 # 0.1 (the occasional lone ruin); the organic tag always means no ruins
 # and ignores it. Mirrors how water_level fine-tunes wet/dry.
 #ruins_level = 0.5
+
+# Dungeon level, 0.0..1.0: nested inside ruins. Of the areas that ruins turned
+# geometric, this is the fraction promoted to clean *dungeon* rooms — crisp
+# walls with no weathered stipple/masonry (and, in later steps, rendered doors
+# and symmetric wings) — the rest stay weathered ruins. With no geometric
+# areas (organic maps, ruins_level 0) it does nothing. Fine-tunes the dungeon
+# tag's default — dungeon 0.6, untagged 0.0; the natural tag forces 0.
+#dungeon_level = 0.6
 
 # Outline / smoothing overrides (defaults shown).
 [outline]

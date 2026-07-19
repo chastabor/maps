@@ -47,7 +47,9 @@ fn stages() {
 
         let t = Instant::now();
         let ruin_cells: std::collections::HashSet<_> = ruin_map.keys().copied().collect();
-        let _fans = maps_core::decor::hatching(&outline, &ruin_cells, 12.0, &mut rng);
+        let dungeon_cells = std::collections::HashSet::new();
+        let _fans =
+            maps_core::decor::hatching(&outline, &ruin_cells, &dungeon_cells, 12.0, &mut rng);
         acc[5] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();

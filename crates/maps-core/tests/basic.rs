@@ -492,6 +492,63 @@ fn ruins_level_controls_geometric_areas() {
 }
 
 #[test]
+fn dungeon_level_splits_geometric_areas() {
+    use maps_core::{AreaKind, GenOptions, generate_with};
+    let at = |tags: &str, dungeon: Option<f64>| {
+        generate_with(
+            11,
+            &GenOptions {
+                tags: Some(Tags::parse(tags).unwrap()),
+                ruins_level: Some(1.0),
+                dungeon_level: dungeon,
+                ..GenOptions::default()
+            },
+        )
+    };
+
+    // Every area is classified, and the geometric (reshaped) set is exactly
+    // the non-organic kinds.
+    let full = at("large,chamber,ruins,dungeon", Some(1.0));
+    assert_eq!(full.area_kind.len(), full.areas.count());
+    let geometric = full.ruins.iter().filter(|r| r.is_some()).count();
+    assert!(geometric > 0, "no geometric areas to split");
+    for (i, k) in full.area_kind.iter().enumerate() {
+        assert_eq!(
+            full.ruins[i].is_some(),
+            *k != AreaKind::Organic,
+            "area {i}: geometry and kind disagree"
+        );
+    }
+    // dungeon_level 1.0 promotes every geometric area; none stay Ruin.
+    let dungeon = full.area_kind.iter().filter(|k| **k == AreaKind::Dungeon).count();
+    assert_eq!(dungeon, geometric, "level 1.0 should promote every geometric area");
+    assert!(full.area_kind.iter().all(|k| *k != AreaKind::Ruin));
+
+    // dungeon_level 0 and the `natural` tag leave nothing a dungeon.
+    assert!(at("large,chamber,ruins,dungeon", Some(0.0))
+        .area_kind
+        .iter()
+        .all(|k| *k != AreaKind::Dungeon));
+    assert!(at("large,chamber,ruins,natural", None)
+        .area_kind
+        .iter()
+        .all(|k| *k != AreaKind::Dungeon));
+
+    // A partial level splits the geometric areas into both kinds.
+    let half = at("large,chamber,ruins,dungeon", Some(0.5));
+    let half_dungeon = half.area_kind.iter().filter(|k| **k == AreaKind::Dungeon).count();
+    assert!(half_dungeon > 0 && half_dungeon < geometric, "0.5 should split, got {half_dungeon}/{geometric}");
+
+    // Clean dungeon walls shed the ruin stipple: an all-dungeon cave has none,
+    // while the same map left as ruins does.
+    assert!(full.dots.is_empty(), "all-dungeon cave should have no stipple");
+    assert!(!at("large,chamber,ruins,natural", None).dots.is_empty(), "ruin cave lost its stipple");
+
+    // The split rides the salt-4 sub-stream and is deterministic.
+    assert_eq!(full.area_kind, at("large,chamber,ruins,dungeon", Some(1.0)).area_kind);
+}
+
+#[test]
 fn water_bands_accompany_pools() {
     use maps_core::tags::Tags;
     use maps_core::{GenOptions, generate_with};

@@ -50,6 +50,17 @@ pub enum RuinsTag {
     Organic,
 }
 
+/// Dungeon presence, nested inside ruins: of the areas that ruins turned
+/// geometric, `dungeon` regrows a fraction as clean, doored, symmetric rooms
+/// instead of weathered ruins; `natural` guarantees none. Untagged means none
+/// unless [`GenOptions::dungeon_level`] overrides it. Has no effect where
+/// there are no geometric areas (organic maps, `ruins_level` 0).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DungeonTag {
+    Dungeon,
+    Natural,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WaterTag {
     Dry,
@@ -78,6 +89,10 @@ pub struct Tags {
     /// the areas as geometry, `organic` guarantees none, untagged allows the
     /// occasional ruin (see `GenOptions::ruins_level` for exact control).
     pub ruins: Option<RuinsTag>,
+    /// Dungeon presence within the geometric (ruin) areas: `dungeon` makes a
+    /// fraction of them clean, doored, symmetric rooms (see
+    /// [`GenOptions::dungeon_level`]); `natural` guarantees none.
+    pub dungeon: Option<DungeonTag>,
     /// Ruin floor tile pattern (mosaic/truchet/islamic/plain).
     pub pattern: Option<PatternTag>,
 }
@@ -132,6 +147,13 @@ impl Tags {
             70..=84 => PatternTag::Truchet,
             _ => PatternTag::Islamic,
         });
+        // Drawn last so adding this family leaves every other family's rolled
+        // value unchanged: only the presence of a dungeon tag is new.
+        let dungeon = Some(if rng.random_bool(0.2) {
+            DungeonTag::Dungeon
+        } else {
+            DungeonTag::Natural
+        });
         Tags {
             size,
             layout,
@@ -140,6 +162,7 @@ impl Tags {
             exits,
             water,
             ruins,
+            dungeon,
             pattern,
         }
     }
@@ -200,5 +223,6 @@ tag_families! {
     exits ("exits", ExitTag): "sealed" => Sealed, "entrance" => Entrance, "passage" => Passage, "junction" => Junction;
     water ("water", WaterTag): "wet" => Wet, "dry" => Dry;
     ruins ("ruins", RuinsTag): "ruins" => Ruins, "organic" => Organic;
+    dungeon ("dungeon", DungeonTag): "dungeon" => Dungeon, "natural" => Natural;
     pattern ("pattern", PatternTag): "mosaic" => Mosaic, "truchet" => Truchet, "islamic" => Islamic, "plain" => Plain;
 }

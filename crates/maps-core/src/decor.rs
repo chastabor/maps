@@ -61,11 +61,11 @@ pub type Canopy = (Vec<Point>, usize);
 /// A masonry block polygon.
 pub type Tile = Vec<Point>;
 
-/// True if the wall at this sample belongs to a ruin area: step half a cell
-/// toward the floor side and look the cell up.
-fn is_ruin_wall(p: Point, nrm: (f64, f64), ruin_cells: &HashSet<Hex>, s: f64) -> bool {
-    !ruin_cells.is_empty()
-        && ruin_cells.contains(&Hex::at((p.0 - nrm.0 * 0.6 * s, p.1 - nrm.1 * 0.6 * s), s))
+/// True if the wall at this sample backs onto a cell in `cells`: step half a
+/// cell toward the floor side and look the cell up. Used both for ruin walls
+/// (weathered decor) and dungeon walls (skipped, left clean).
+fn wall_over(p: Point, nrm: (f64, f64), cells: &HashSet<Hex>, s: f64) -> bool {
+    !cells.is_empty() && cells.contains(&Hex::at((p.0 - nrm.0 * 0.6 * s, p.1 - nrm.1 * 0.6 * s), s))
 }
 
 /// Wall hatching as cone units, the counterpart of the forest's border
@@ -78,9 +78,11 @@ fn is_ruin_wall(p: Point, nrm: (f64, f64), ruin_cells: &HashSet<Hex>, s: f64) ->
 /// Wall sections owned by ruin areas get *faded stipple dots* instead of
 /// fans: circles in a band outside the wall, returned as
 /// `(centre, radius, opacity)` — larger and darker at the line, fading out.
+/// Walls of `dungeon_cells` get neither: a clean wall line, no decoration.
 pub fn hatching<R: Rng>(
     loops: &[Vec<Point>],
     ruin_cells: &HashSet<Hex>,
+    dungeon_cells: &HashSet<Hex>,
     hex_size: f64,
     rng: &mut R,
 ) -> (Vec<HatchFan>, Vec<(Point, f64, f64)>) {
@@ -89,7 +91,11 @@ pub fn hatching<R: Rng>(
     for lp in loops {
         for (p, dir) in resample(lp, 8.0) {
             let nrm = (dir.1, -dir.0);
-            if is_ruin_wall(p, nrm, ruin_cells, hex_size) {
+            // Dungeon walls stay clean: no fan, no stipple.
+            if wall_over(p, nrm, dungeon_cells, hex_size) {
+                continue;
+            }
+            if wall_over(p, nrm, ruin_cells, hex_size) {
                 // Stipple covering this ~8px stretch of ruin wall: dense,
                 // large and dark against the line, fading with distance.
                 for _ in 0..rng.random_range(15..23) {
@@ -175,10 +181,12 @@ fn fan_hull(strokes: &[(Point, Point)], pad: f64) -> Vec<Point> {
 ///
 /// Wall sections owned by ruin areas get *masonry tiles* instead of trees:
 /// a single course of small tangent-aligned stone blocks just outside the
-/// line, returned separately as quads.
+/// line, returned separately as quads. Dungeon walls get neither tiles nor
+/// canopies — a clean wall line.
 pub fn trees<R: Rng>(
     loops: &[Vec<Point>],
     ruin_cells: &HashSet<Hex>,
+    dungeon_cells: &HashSet<Hex>,
     hex_size: f64,
     rng: &mut R,
 ) -> (Vec<Canopy>, Vec<Tile>) {
@@ -204,7 +212,7 @@ pub fn trees<R: Rng>(
             for i in 0..m {
                 let (p, dir) = samples[i];
                 let n = (dir.1, -dir.0);
-                if !is_ruin_wall(p, n, ruin_cells, hex_size) {
+                if !wall_over(p, n, ruin_cells, hex_size) {
                     continue;
                 }
                 let is_corner = turn[i] > 0.6
@@ -223,7 +231,7 @@ pub fn trees<R: Rng>(
         // overlap into a continuous band.
         for (p, dir) in resample(lp, 5.5) {
             let n = (dir.1, -dir.0);
-            if is_ruin_wall(p, n, ruin_cells, hex_size) {
+            if wall_over(p, n, ruin_cells, hex_size) || wall_over(p, n, dungeon_cells, hex_size) {
                 continue;
             }
             let r = rng.random_range(3.5..8.5);
@@ -237,7 +245,10 @@ pub fn trees<R: Rng>(
         // Band 1: bigger canopies deeper into the woods.
         for (p, dir) in resample(lp, 8.0) {
             let n = (dir.1, -dir.0);
-            if is_ruin_wall(p, n, ruin_cells, hex_size) || rng.random_bool(0.2) {
+            if wall_over(p, n, ruin_cells, hex_size)
+                || wall_over(p, n, dungeon_cells, hex_size)
+                || rng.random_bool(0.2)
+            {
                 continue;
             }
             let r = rng.random_range(5.0..10.5);
@@ -251,7 +262,10 @@ pub fn trees<R: Rng>(
         // Band 2: the deep-woods fringe, blending toward the background.
         for (p, dir) in resample(lp, 8.0) {
             let n = (dir.1, -dir.0);
-            if is_ruin_wall(p, n, ruin_cells, hex_size) || rng.random_bool(0.15) {
+            if wall_over(p, n, ruin_cells, hex_size)
+                || wall_over(p, n, dungeon_cells, hex_size)
+                || rng.random_bool(0.15)
+            {
                 continue;
             }
             let r = rng.random_range(5.5..11.5);

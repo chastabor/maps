@@ -34,6 +34,8 @@ Options:
   -w, --water <LEVEL>  water level 0.0..=1.0 (0 = dry, 1 = fully submerged)
   -r, --ruins <LEVEL>  ruins level 0.0..=1.0: fraction of areas that become
                        geometric (rectangles/circles) instead of organic
+  -D, --dungeon <LEVEL> dungeon level 0.0..=1.0: fraction of the geometric
+                       areas made clean, doored dungeon rooms
   -o, --out <FILE>     output SVG path (default: cave.svg)
   -d, --debug          render raw hex cells instead of the finished map
   -h, --help           show this help"
@@ -56,6 +58,7 @@ fn main() {
     let mut water_level: Option<f64> = None;
     let mut title: Option<String> = None;
     let mut ruins_level: Option<f64> = None;
+    let mut dungeon_level: Option<f64> = None;
     let mut shape_seed: Option<u64> = None;
     let mut decor_seed: Option<u64> = None;
     let mut name_seed: Option<u64> = None;
@@ -121,6 +124,15 @@ fn main() {
                 }
                 ruins_level = Some(level);
             }
+            "-D" | "--dungeon" => {
+                let level: f64 = value("--dungeon")
+                    .parse()
+                    .unwrap_or_else(|_| fail("--dungeon must be a number"));
+                if !(0.0..=1.0).contains(&level) {
+                    fail("--dungeon must be between 0.0 and 1.0");
+                }
+                dungeon_level = Some(level);
+            }
             "--title" => title = Some(value("--title")),
             "-o" | "--out" => out = Some(value("--out")),
             "-d" | "--debug" => debug = Some(true),
@@ -175,6 +187,7 @@ fn main() {
             outline: config.outline_params(),
             water_level: water_level.or(config.water_level),
             ruins_level: ruins_level.or(config.ruins_level),
+            dungeon_level: dungeon_level.or(config.dungeon_level),
             shape_seed: shape_seed.or(config.shape_seed),
             decor_seed: decor_seed.or(config.decor_seed),
             name_seed: name_seed.or(config.name_seed),

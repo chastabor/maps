@@ -120,6 +120,34 @@ We add two closing steps: decimation (drop sub-pixel points) and
 the smaller lobe at any crossing, guaranteeing simple loops whatever
 upstream jitter or projection did.
 
+#### The simple-loop invariant: prevent where a signal exists, enforce always
+
+Self-intersecting loops ("bowties") have two distinct causes, handled at
+different depths:
+
+1. **Room-boundary crossings** (two ruin shapes' wall loci intersecting,
+   or projected walls folding at door mouths) are *prevented at the cell
+   level*, using the ownership map: seam cells (adjacent to another area)
+   and contested cells (inside a second ruin's geometry) are excluded from
+   projection, the blend ramp fades projection near every ownership
+   transition, and hall projection fades with displacement. Cells carry
+   the signal, so generation can simply not produce the fold.
+2. **Jitter micro-folds** — 2–5-point sub-pixel lobes created by random
+   vertex noise mid-wall, inside a single area — carry no cell-level
+   signal at all. Measured with isotropic jitter they occurred on *plain
+   organic* maps more often than ruins maps (~2.2 vs ~1.0 cuts per large
+   map). The fix is generative but geometric, not cell-based: **jitter
+   displaces each vertex along its local wall normal only**. Perpendicular
+   displacement cannot reorder vertices along the curve, so the jitter
+   passes cannot fold the loop by construction. Measured result: organic
+   maps dropped to zero cuts; ruins maps to ~0.13 per map (residual
+   projection edge cases).
+
+`remove_bowties` stays as the unconditional final guarantee regardless:
+prevention reduces its workload to nearly nothing, but no generative
+scheme can *prove* global simplicity (thin necks, future geometry), and
+the scan is effectively free (spatial hash, early exit when clean).
+
 ### 9. Decoration (`decor.rs`)
 
 All decoration draws from the decor stream and is **shuffled** at the end,
@@ -163,7 +191,12 @@ Layer order: background → trees → floor fill → mud → water → deep wate
 grid overlay (hex, square or none) → stones → hatching/dots → shadow band →
 masonry → wall stroke → title. Nonzero winding everywhere so overlapping
 loops union; an inverse-floor mask (`#rock`) restricts wall decoration to
-rock. The seed/tags caption is deliberately not part of the SVG — that
+rock. The floor path — the largest string in the file — is defined once in
+`<defs>` and instantiated five times with `<use>` (clip, mask, fill,
+shadow, border), which also gives the shadow band its offset: translated
+down-right and clipped to the floor, so the border's drop shadow falls
+only on room contents — the rock-side decoration stays clean — and the
+border reads as floating above the rooms, as in the original. The seed/tags caption is deliberately not part of the SVG — that
 information lives in the CLI output, the web readout and permalinks.
 
 ## The ruins extension (`ruins.rs`)

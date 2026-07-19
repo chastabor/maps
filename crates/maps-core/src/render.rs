@@ -64,7 +64,7 @@ const FOREST_STYLE: Style = Style {
     tree_line: "#2a3a2e",
     stone: "#b4b87e",
     tree_shades: ["#87a860", "#69894f", "#4d6942"],
-    shadow: "#2e4038",
+    shadow: "#333c30",
     hatch: "#2e4038",
     tile: "#b7b4a2",
     mosaic: ["#c0c388", "#b8bb7f", "#c9cc93", "#b1b478"],
@@ -410,13 +410,14 @@ pub fn svg(map: &CaveMap) -> String {
         s.push_str("</g>");
     }
 
-    // The shadow band sits above the hatching so fans never blank it out,
-    // but at partial opacity so their strokes still read through; masked to
-    // rock so only the wall side shows. Offset down-right so the border
-    // reads as floating above the map, per the original.
+    // The border's drop shadow: the border geometry itself, stroked,
+    // translucent, offset down-right, and clipped to the floor — it falls
+    // only on room contents (grid, water, tilework), never on the rock-side
+    // decoration, so the outside patterns stay clean and the border reads
+    // as floating above the rooms.
     let _ = write!(
         s,
-        r##"<g mask="url(#rock)"><use xlink:href="#fp" href="#fp" transform="translate(1.5 2)" fill="none" stroke="{}" stroke-width="9" stroke-linejoin="round" stroke-opacity="0.7"/></g>"##,
+        r##"<g clip-path="url(#floor)"><use xlink:href="#fp" href="#fp" transform="translate(1.5 2)" fill="none" stroke="{}" stroke-width="4.5" stroke-linejoin="round" stroke-opacity="0.7"/></g>"##,
         style.shadow
     );
 

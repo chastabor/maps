@@ -429,16 +429,32 @@ fn smooth(pts: &mut [TaggedPoint], t: f64) {
     }
 }
 
+/// Jitter each unlocked vertex along its local wall normal. Normal-only
+/// displacement cannot reorder vertices along the curve, so the jitter
+/// passes can no longer fold the loop into micro-bowties the way isotropic
+/// jitter could (`remove_bowties` remains as the unconditional guarantee
+/// for everything else, e.g. thin necks crossing globally).
 fn jitter_unlocked<R: Rng>(pts: &mut [(Point, bool)], mag: f64, rng: &mut R) {
-    for (p, locked) in pts.iter_mut() {
-        // Draw for every vertex so the RNG stream doesn't depend on how many
-        // vertices happen to be locked.
-        let dx = rng.random_range(-mag..=mag);
-        let dy = rng.random_range(-mag..=mag);
-        if !*locked {
-            p.0 += dx;
-            p.1 += dy;
+    let n = pts.len();
+    // Normals come from a pre-pass snapshot so every vertex sees the same
+    // geometry regardless of processing order.
+    let orig: Vec<Point> = pts.iter().map(|&(p, _)| p).collect();
+    for i in 0..n {
+        // Draw for every vertex so the RNG stream doesn't depend on how
+        // many vertices happen to be locked.
+        let a = rng.random_range(-mag..=mag);
+        if pts[i].1 {
+            continue;
         }
+        let prev = orig[(i + n - 1) % n];
+        let next = orig[(i + 1) % n];
+        let (tx, ty) = (next.0 - prev.0, next.1 - prev.1);
+        let len = tx.hypot(ty);
+        if len < 1e-9 {
+            continue;
+        }
+        pts[i].0.0 += ty / len * a;
+        pts[i].0.1 -= tx / len * a;
     }
 }
 

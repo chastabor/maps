@@ -219,8 +219,8 @@ Build with the standard toolchain (no wasm-pack needed):
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.126 --locked   # match Cargo.lock
 
-cargo build -p maps-wasm --target wasm32-unknown-unknown --release
-wasm-bindgen target/wasm32-unknown-unknown/release/maps_wasm.wasm \
+cargo build -p maps-wasm --target wasm32-unknown-unknown --profile wasm-release
+wasm-bindgen target/wasm32-unknown-unknown/wasm-release/maps_wasm.wasm \
   --target web --out-dir web/pkg
 # optional: wasm-opt -Os web/pkg/maps_wasm_bg.wasm -o web/pkg/maps_wasm_bg.wasm
 

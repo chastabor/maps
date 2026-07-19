@@ -4,6 +4,7 @@
 use crate::grid::Hex;
 use crate::outline::Point;
 use crate::{CaveMap, GridStyle, Mode};
+use std::collections::HashSet;
 use std::fmt::Write;
 
 /// Colour scheme, chosen per map mode.
@@ -260,13 +261,25 @@ pub fn svg(map: &CaveMap) -> String {
     // Grid overlay above the water, visible across the whole floor.
     match map.grid_style {
         GridStyle::Hex => {
+            // One floor set up front: probing it is O(1) per cell, where
+            // scanning doors/exit stubs per cell was O(cells x topology).
+            let mut floor: HashSet<Hex> = HashSet::new();
+            for area in &map.areas.cells {
+                floor.extend(area.iter().copied());
+            }
+            floor.extend(map.topology.doors.iter().map(|d| d.cell));
+            for e in &map.topology.exits {
+                floor.extend(e.stub.iter().copied());
+            }
+            let near_floor =
+                |h: Hex| floor.contains(&h) || h.neighbors().into_iter().any(|n| floor.contains(&n));
             let _ = write!(
                 s,
                 r##"<g clip-path="url(#floor)" stroke="{}" stroke-opacity="0.14" stroke-width="0.6" fill="none">"##,
                 style.line
             );
             for &h in map.grid.cells() {
-                if near_floor(map, h) {
+                if near_floor(h) {
                     let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(h));
                 }
             }
@@ -413,16 +426,6 @@ fn outline_path(loops: &[Vec<Point>]) -> String {
     d
 }
 
-/// True if the cell or any neighbour is cave floor (limits the grid overlay
-/// to hexes that can actually show through the clip).
-fn near_floor(map: &CaveMap, h: Hex) -> bool {
-    let is_floor = |c: Hex| {
-        map.areas.owner_of(c).is_some()
-            || map.topology.doors.iter().any(|d| d.cell == c)
-            || map.topology.exits.iter().any(|e| e.stub.contains(&c))
-    };
-    is_floor(h) || h.neighbors().into_iter().any(is_floor)
-}
 
 pub fn debug_svg(map: &CaveMap) -> String {
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);

@@ -1,10 +1,9 @@
 //! Seed-growth: grow N disjoint areas cell by cell, keeping a one-cell gap
 //! between areas so that gap cells can later become doorways.
 
-use crate::grid::{Hex, HexGrid};
+use crate::grid::{CellMap, Hex, HexGrid};
 use crate::tags::{LayoutTag, ShapeTag, SizeTag, Tags};
 use rand::Rng;
-use std::collections::HashMap;
 
 /// Numeric parameters resolved from tags for the growth step.
 #[derive(Clone, Debug)]
@@ -83,7 +82,7 @@ pub fn grid_radius(params: &GrowthParams) -> i32 {
 /// The grown areas. `cells[i]` lists area i's cells in growth order.
 pub struct Areas {
     pub cells: Vec<Vec<Hex>>,
-    owner: HashMap<Hex, usize>,
+    owner: CellMap<u32>,
 }
 
 impl Areas {
@@ -92,25 +91,25 @@ impl Areas {
     }
 
     pub fn owner_of(&self, h: Hex) -> Option<usize> {
-        self.owner.get(&h).copied()
+        self.owner.get(h).map(|o| o as usize)
     }
 
     /// Swap out an area's entire cell set (ruins reshaping). The new cells
     /// must be free or already owned by this area.
     pub fn replace_area(&mut self, i: usize, new_cells: Vec<Hex>) {
         for c in &self.cells[i] {
-            self.owner.remove(c);
+            self.owner.remove(*c);
         }
         for &c in &new_cells {
-            debug_assert!(self.owner.get(&c).is_none_or(|&o| o == i));
-            self.owner.insert(c, i);
+            debug_assert!(self.owner.get(c).is_none_or(|o| o as usize == i));
+            self.owner.insert(c, i as u32);
         }
         self.cells[i] = new_cells;
     }
 
     /// Free the given cells of `area` (used by corridor shrinking).
     pub fn remove_from_area(&mut self, area: usize, remove: &[Hex]) {
-        for c in remove {
+        for &c in remove {
             self.owner.remove(c);
         }
         self.cells[area].retain(|c| !remove.contains(c));
@@ -121,81 +120,94 @@ impl Areas {
 const MIN_AREA: usize = 4;
 
 pub fn grow_areas<R: Rng>(grid: &HexGrid, rng: &mut R, params: &GrowthParams) -> Areas {
-    let mut owner: HashMap<Hex, usize> = HashMap::new();
+    let mut owner: CellMap<u32> = CellMap::new(grid.radius);
     let mut areas: Vec<Vec<Hex>> = Vec::new();
 
     for &target in &params.sizes {
         let idx = areas.len();
 
-        // Seed anywhere whose whole neighbourhood is free of other areas.
-        let valid: Vec<Hex> = grid
-            .cells()
-            .iter()
-            .copied()
-            .filter(|&h| {
-                !owner.contains_key(&h) && h.neighbors().iter().all(|n| !owner.contains_key(n))
-            })
-            .collect();
-        if valid.is_empty() {
-            continue;
-        }
-        // After the first area, prefer seeds one gap-cell away from an existing
-        // area so every area has at least one doorway candidate to a neighbour.
-        let owned: Vec<Hex> = grid
-            .cells()
-            .iter()
-            .copied()
-            .filter(|h| owner.contains_key(h))
-            .collect();
-        let near: Vec<Hex> = valid
-            .iter()
-            .copied()
-            .filter(|&h| owned.iter().any(|&o| h.distance(o) == 2))
-            .collect();
-        // No spot within reach of the existing cave: skip rather than create
-        // an unreachable satellite area.
-        if near.is_empty() && !areas.is_empty() {
-            continue;
-        }
-        // Start the first area near the centre so the cave grows outward in
-        // every direction rather than hugging one side of the board.
-        let central: Vec<Hex>;
-        let seeds = if !areas.is_empty() {
-            &near
-        } else {
-            central = valid
+        let seed = if areas.is_empty() {
+            // First area: seed anywhere whose whole neighbourhood is free,
+            // preferring the centre so the cave grows outward in every
+            // direction rather than hugging one side of the board.
+            let valid: Vec<Hex> = grid
+                .cells()
+                .iter()
+                .copied()
+                .filter(|&h| {
+                    !owner.contains(h)
+                        && h.neighbors().iter().all(|n| !owner.contains(*n))
+                })
+                .collect();
+            if valid.is_empty() {
+                continue;
+            }
+            let central: Vec<Hex> = valid
                 .iter()
                 .copied()
                 .filter(|h| h.distance(Hex::ORIGIN) <= grid.radius / 3)
                 .collect();
-            if central.is_empty() { &valid } else { &central }
+            let seeds = if central.is_empty() { &valid } else { &central };
+            seeds[rng.random_range(0..seeds.len())]
+        } else {
+            // Later areas seed one gap-cell away from the existing cave so
+            // every area has a doorway candidate to a neighbour. Candidates
+            // are exactly the cells at distance 2 from an owned cell, so
+            // expand a two-cell ring outward from the owned set instead of
+            // testing the whole board against every owned cell; sorting
+            // restores the board-scan order, keeping RNG picks identical.
+            let mut ring: Vec<Hex> = areas
+                .iter()
+                .flatten()
+                .flat_map(|o| o.neighbors())
+                .flat_map(|n| n.neighbors())
+                .collect();
+            ring.sort_unstable();
+            ring.dedup();
+            ring.retain(|&h| {
+                grid.contains(h)
+                    && !owner.contains(h)
+                    && h.neighbors().iter().all(|n| !owner.contains(*n))
+            });
+            // No spot within reach of the existing cave: skip rather than
+            // create an unreachable satellite area.
+            if ring.is_empty() {
+                continue;
+            }
+            ring[rng.random_range(0..ring.len())]
         };
-        let seed = seeds[rng.random_range(0..seeds.len())];
 
         let mut cells = vec![seed];
-        owner.insert(seed, idx);
+        owner.insert(seed, idx as u32);
 
-        while cells.len() < target {
-            // Candidates: free in-grid cells adjacent to this area whose other
-            // neighbours belong to no *other* area (preserves the 1-cell gap).
-            let mut cand: Vec<Hex> = Vec::new();
-            for &c in &cells {
+        // Frontier of valid candidates, kept sorted (BTreeSet iterates in
+        // Hex order = the old sort order, so RNG picks are identical).
+        // Validity — "free, in grid, no neighbour owned by another area" —
+        // is monotone while this area grows: adding our own cells never
+        // invalidates a candidate, and cells blocked by another area stay
+        // blocked. So the set only gains neighbours of newly added cells
+        // and loses the picked cell; no per-step rebuild needed.
+        let mut frontier: std::collections::BTreeSet<Hex> = std::collections::BTreeSet::new();
+        let extend_frontier =
+            |frontier: &mut std::collections::BTreeSet<Hex>, owner: &CellMap<u32>, c: Hex| {
                 for n in c.neighbors() {
                     if grid.contains(n)
-                        && !owner.contains_key(&n)
+                        && !owner.contains(n)
                         && n.neighbors()
                             .iter()
-                            .all(|m| owner.get(m).is_none_or(|&o| o == idx))
+                            .all(|m| owner.get(*m).is_none_or(|o| o as usize == idx))
                     {
-                        cand.push(n);
+                        frontier.insert(n);
                     }
                 }
-            }
-            cand.sort_unstable();
-            cand.dedup();
-            if cand.is_empty() {
+            };
+        extend_frontier(&mut frontier, &owner, seed);
+
+        while cells.len() < target {
+            if frontier.is_empty() {
                 break;
             }
+            let cand: Vec<Hex> = frontier.iter().copied().collect();
 
             let weights: Vec<f64> = cand
                 .iter()
@@ -203,7 +215,7 @@ pub fn grow_areas<R: Rng>(grid: &HexGrid, rng: &mut R, params: &GrowthParams) ->
                     let c = h
                         .neighbors()
                         .iter()
-                        .filter(|n| owner.get(n) == Some(&idx))
+                        .filter(|n| owner.get(**n) == Some(idx as u32))
                         .count();
                     if params.chaotic {
                         if c == 2 { 8.0 } else { 1.0 }
@@ -214,13 +226,15 @@ pub fn grow_areas<R: Rng>(grid: &HexGrid, rng: &mut R, params: &GrowthParams) ->
                 .collect();
 
             let pick = cand[weighted_index(rng, &weights)];
-            owner.insert(pick, idx);
+            owner.insert(pick, idx as u32);
             cells.push(pick);
+            frontier.remove(&pick);
+            extend_frontier(&mut frontier, &owner, pick);
         }
 
         if cells.len() < MIN_AREA {
             for c in &cells {
-                owner.remove(c);
+                owner.remove(*c);
             }
             continue;
         }

@@ -66,6 +66,58 @@ impl Hex {
     }
 }
 
+/// Dense per-cell storage for a board of known radius: O(1) array indexing
+/// with no hashing — the hot replacement for `HashMap<Hex, T>` on lookup
+/// paths. Cells outside the axial bounding box read as empty (neighbours of
+/// rim cells probe there constantly).
+pub struct CellMap<T> {
+    radius: i32,
+    width: i32,
+    slots: Vec<Option<T>>,
+}
+
+impl<T: Copy> CellMap<T> {
+    pub fn new(radius: i32) -> Self {
+        let width = 2 * radius + 1;
+        CellMap {
+            radius,
+            width,
+            slots: vec![None; (width * width) as usize],
+        }
+    }
+
+    #[inline]
+    fn slot(&self, h: Hex) -> Option<usize> {
+        if h.q.abs() > self.radius || h.r.abs() > self.radius {
+            None
+        } else {
+            Some(((h.q + self.radius) * self.width + (h.r + self.radius)) as usize)
+        }
+    }
+
+    #[inline]
+    pub fn get(&self, h: Hex) -> Option<T> {
+        self.slot(h).and_then(|i| self.slots[i])
+    }
+
+    #[inline]
+    pub fn contains(&self, h: Hex) -> bool {
+        self.slot(h).is_some_and(|i| self.slots[i].is_some())
+    }
+
+    pub fn insert(&mut self, h: Hex, v: T) {
+        if let Some(i) = self.slot(h) {
+            self.slots[i] = Some(v);
+        }
+    }
+
+    pub fn remove(&mut self, h: Hex) {
+        if let Some(i) = self.slot(h) {
+            self.slots[i] = None;
+        }
+    }
+}
+
 /// A hexagon-shaped board of cells within `radius` of the origin.
 pub struct HexGrid {
     pub radius: i32,

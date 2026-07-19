@@ -32,6 +32,12 @@ Rules that keep output byte-identical across platforms (native and wasm):
   corrupt integers above 2^53).
 - `Tags::random` gives **every family a concrete tag**, making the
   generator the single source of truth for what an untouched family means.
+- All geometry stored on the map is **quantized to exact tenths of a
+  pixel** (radii and opacities to hundredths) the moment it is produced,
+  and the SVG writer prints coordinates with pure integer fixed-point
+  formatting — the stored values, the rendered bytes, and the float
+  pipeline's rounding are all one convention by construction (and integer
+  printing is far cheaper than exact float-to-decimal conversion).
 
 ## The cave/glade pipeline
 

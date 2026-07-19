@@ -5,6 +5,7 @@ use crate::grid::Hex;
 use crate::outline::Point;
 use crate::{CaveMap, GridStyle, Mode};
 use std::collections::HashSet;
+use std::fmt;
 use std::fmt::Write;
 
 /// Colour scheme, chosen per map mode.
@@ -84,6 +85,36 @@ const MUD_OPACITY: f64 = 0.55;
 const WATER_OPACITY: f64 = 0.6;
 const DEEP_OPACITY: f64 = 0.85;
 
+/// Fixed-point coordinate displays: geometry is quantized at the source
+/// (see `outline::quantize`), so these print with pure integer formatting —
+/// far cheaper than the exact float-to-decimal path of `{:.1}`, and
+/// byte-stable by construction. D0/D1/D2 print 0/1/2 decimal places.
+struct D0(f64);
+struct D1(f64);
+struct D2(f64);
+
+impl fmt::Display for D0 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.round() as i64)
+    }
+}
+
+impl fmt::Display for D1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let t = (self.0 * 10.0).round() as i64;
+        let sign = if t < 0 { "-" } else { "" };
+        write!(f, "{sign}{}.{}", t.abs() / 10, t.abs() % 10)
+    }
+}
+
+impl fmt::Display for D2 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let t = (self.0 * 100.0).round() as i64;
+        let sign = if t < 0 { "-" } else { "" };
+        write!(f, "{sign}{}.{:02}", t.abs() / 100, t.abs() % 100)
+    }
+}
+
 const PALETTE: [&str; 12] = [
     "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6",
     "#bfef45", "#fabed4", "#469990", "#dcbeff",
@@ -115,6 +146,8 @@ pub fn svg(map: &CaveMap) -> String {
     let vw = (max_x - min_x + 2.0 * margin).max(title_width + margin);
     let vh = max_y - min_y + 2.0 * margin + title_band;
 
+    let (vxd, vyd, vwd, vhd) = (D1(vx), D1(vy), D1(vw), D1(vh));
+    let (vw0, vh0) = (D0(vw), D0(vh));
     let floor_path = outline_path(&map.outline);
     let style = match map.mode {
         Mode::Cave => &CAVE_STYLE,
@@ -124,11 +157,11 @@ pub fn svg(map: &CaveMap) -> String {
     let mut s = String::new();
     let _ = write!(
         s,
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vx:.1} {vy:.1} {vw:.1} {vh:.1}" width="{vw:.0}" height="{vh:.0}">"##
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vxd} {vyd} {vwd} {vhd}" width="{vw0}" height="{vh0}">"##
     );
     let _ = write!(
         s,
-        r##"<rect x="{vx:.1}" y="{vy:.1}" width="{vw:.1}" height="{vh:.1}" fill="{}"/>"##,
+        r##"<rect x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}" fill="{}"/>"##,
         style.bg
     );
     // Nonzero winding everywhere: overlapping area loops (e.g. a projected
@@ -143,7 +176,7 @@ pub fn svg(map: &CaveMap) -> String {
     // barrier between them and bands never spill onto a floor.
     let _ = write!(
         s,
-        r##"<mask id="rock" maskUnits="userSpaceOnUse" x="{vx:.1}" y="{vy:.1}" width="{vw:.1}" height="{vh:.1}"><rect x="{vx:.1}" y="{vy:.1}" width="{vw:.1}" height="{vh:.1}" fill="white"/><path d="{floor_path}" fill="black" fill-rule="nonzero"/></mask>"##
+        r##"<mask id="rock" maskUnits="userSpaceOnUse" x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}"><rect x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}" fill="white"/><path d="{floor_path}" fill="black" fill-rule="nonzero"/></mask>"##
     );
 
     // Border trees sit behind the floor fill: the clearing covers their
@@ -161,7 +194,7 @@ pub fn svg(map: &CaveMap) -> String {
                     continue;
                 }
                 let pts: Vec<String> =
-                    tree.iter().map(|(x, y)| format!("{x:.1},{y:.1}")).collect();
+                    tree.iter().map(|(x, y)| format!("{},{}", D1(*x), D1(*y))).collect();
                 let _ = write!(s, r##"<polygon points="{}"/>"##, pts.join(" "));
             }
             s.push_str("</g>");
@@ -191,22 +224,22 @@ pub fn svg(map: &CaveMap) -> String {
                         if i > 0 {
                             s.push(' ');
                         }
-                        let _ = write!(s, "{x:.1},{y:.1}");
+                        let _ = write!(s, "{},{}", D1(*x), D1(*y));
                     }
                     let _ = write!(s, r##"" fill="{}"/>"##, style.mosaic[*shade as usize]);
                 }
                 PatternElem::Curve { from, ctrl, to } => {
                     let _ = write!(
                         curves,
-                        "M{:.1} {:.1}Q{:.1} {:.1} {:.1} {:.1}",
-                        from.0, from.1, ctrl.0, ctrl.1, to.0, to.1
+                        "M{} {}Q{} {} {} {}",
+                        D1(from.0), D1(from.1), D1(ctrl.0), D1(ctrl.1), D1(to.0), D1(to.1)
                     );
                 }
                 PatternElem::Elbow { from, tip, to } => {
                     let _ = write!(
                         elbows,
-                        "M{:.1} {:.1}L{:.1} {:.1}L{:.1} {:.1}",
-                        from.0, from.1, tip.0, tip.1, to.0, to.1
+                        "M{} {}L{} {}L{} {}",
+                        D1(from.0), D1(from.1), D1(tip.0), D1(tip.1), D1(to.0), D1(to.1)
                     );
                 }
             }
@@ -296,7 +329,7 @@ pub fn svg(map: &CaveMap) -> String {
             );
             for k in k0..=k1 {
                 let x = (k as f64 + 0.5) * step;
-                let _ = write!(d, "M{x:.1} {min_y:.1}L{x:.1} {max_y:.1}");
+                let _ = write!(d, "M{x} {mn}L{x} {mx}", x = D1(x), mn = D1(min_y), mx = D1(max_y));
             }
             let (m0, m1) = (
                 (min_y / step).floor() as i64,
@@ -304,7 +337,7 @@ pub fn svg(map: &CaveMap) -> String {
             );
             for m in m0..=m1 {
                 let y = (m as f64 + 0.5) * step;
-                let _ = write!(d, "M{min_x:.1} {y:.1}L{max_x:.1} {y:.1}");
+                let _ = write!(d, "M{mn} {y}L{mx} {y}", y = D1(y), mn = D1(min_x), mx = D1(max_x));
             }
             let _ = write!(
                 s,
@@ -322,7 +355,7 @@ pub fn svg(map: &CaveMap) -> String {
             style.stone, style.line
         );
         for stone in &map.stones {
-            let pts: Vec<String> = stone.iter().map(|(x, y)| format!("{x:.1},{y:.1}")).collect();
+            let pts: Vec<String> = stone.iter().map(|(x, y)| format!("{},{}", D1(*x), D1(*y))).collect();
             let _ = write!(s, r##"<polygon points="{}"/>"##, pts.join(" "));
         }
         s.push_str("</g>");
@@ -339,11 +372,11 @@ pub fn svg(map: &CaveMap) -> String {
             let hull: Vec<String> = fan
                 .hull
                 .iter()
-                .map(|(x, y)| format!("{x:.1},{y:.1}"))
+                .map(|(x, y)| format!("{},{}", D1(*x), D1(*y)))
                 .collect();
             let mut d = String::new();
             for ((x1, y1), (x2, y2)) in &fan.strokes {
-                let _ = write!(d, "M{x1:.1} {y1:.1}L{x2:.1} {y2:.1}");
+                let _ = write!(d, "M{} {}L{} {}", D1(*x1), D1(*y1), D1(*x2), D1(*y2));
             }
             let _ = write!(
                 s,
@@ -363,7 +396,11 @@ pub fn svg(map: &CaveMap) -> String {
         for &((x, y), r, a) in &map.dots {
             let _ = write!(
                 s,
-                r##"<circle cx="{x:.1}" cy="{y:.1}" r="{r:.2}" fill-opacity="{a:.2}"/>"##
+                r##"<circle cx="{cx}" cy="{cy}" r="{rr}" fill-opacity="{aa}"/>"##,
+                cx = D1(x),
+                cy = D1(y),
+                rr = D2(r),
+                aa = D2(a)
             );
         }
         s.push_str("</g>");
@@ -388,7 +425,7 @@ pub fn svg(map: &CaveMap) -> String {
             style.tile, style.tree_line
         );
         for t in &map.tiles {
-            let pts: Vec<String> = t.iter().map(|(x, y)| format!("{x:.1},{y:.1}")).collect();
+            let pts: Vec<String> = t.iter().map(|(x, y)| format!("{},{}", D1(*x), D1(*y))).collect();
             let _ = write!(s, r##"<polygon points="{}"/>"##, pts.join(" "));
         }
         s.push_str("</g>");
@@ -404,9 +441,9 @@ pub fn svg(map: &CaveMap) -> String {
 
     let _ = write!(
         s,
-        r##"<text x="{:.1}" y="{:.1}" fill="{}" font-family="Georgia, serif" font-size="22" font-style="italic">{}</text>"##,
-        vx + 16.0,
-        vy + 34.0,
+        r##"<text x="{}" y="{}" fill="{}" font-family="Georgia, serif" font-size="22" font-style="italic">{}</text>"##,
+        D1(vx + 16.0),
+        D1(vy + 34.0),
         style.title,
         map.title,
     );
@@ -419,7 +456,7 @@ fn outline_path(loops: &[Vec<Point>]) -> String {
     for lp in loops {
         for (i, &(x, y)) in lp.iter().enumerate() {
             let cmd = if i == 0 { "M" } else { "L" };
-            let _ = write!(d, "{cmd}{x:.1} {y:.1}");
+            let _ = write!(d, "{cmd}{} {}", D1(x), D1(y));
         }
         d.push('Z');
     }
@@ -441,15 +478,17 @@ pub fn debug_svg(map: &CaveMap) -> String {
     let vy = min_y - MARGIN;
     let vw = max_x - min_x + 2.0 * MARGIN;
     let vh = max_y - min_y + 2.0 * MARGIN;
+    let (vxd, vyd, vwd, vhd) = (D1(vx), D1(vy), D1(vw), D1(vh));
+    let (vw0, vh0) = (D0(vw), D0(vh));
 
     let mut s = String::new();
     let _ = write!(
         s,
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vx:.1} {vy:.1} {vw:.1} {vh:.1}" width="{vw:.0}" height="{vh:.0}">"##
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vxd} {vyd} {vwd} {vhd}" width="{vw0}" height="{vh0}">"##
     );
     let _ = write!(
         s,
-        r##"<rect x="{vx:.1}" y="{vy:.1}" width="{vw:.1}" height="{vh:.1}" fill="#16161e"/>"##
+        r##"<rect x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}" fill="#16161e"/>"##
     );
 
     s.push_str(r##"<g stroke="#2c2c38" stroke-width="0.5" fill="none">"##);
@@ -484,9 +523,9 @@ pub fn debug_svg(map: &CaveMap) -> String {
     let n_corridors = map.topology.is_corridor.iter().filter(|&&c| c).count();
     let _ = write!(
         s,
-        r##"<text x="{:.1}" y="{:.1}" fill="#aaaab4" font-family="monospace" font-size="11">seed {} | tags: {} | {} areas, {} doors, {} corridors, {} exits</text>"##,
-        vx + 6.0,
-        vy + 14.0,
+        r##"<text x="{}" y="{}" fill="#aaaab4" font-family="monospace" font-size="11">seed {} | tags: {} | {} areas, {} doors, {} corridors, {} exits</text>"##,
+        D1(vx + 6.0),
+        D1(vy + 14.0),
         map.seed,
         map.tags,
         map.areas.count(),
@@ -502,7 +541,7 @@ pub fn debug_svg(map: &CaveMap) -> String {
 fn hex_points(h: Hex) -> String {
     h.corners(HEX_SIZE)
         .iter()
-        .map(|(x, y)| format!("{x:.2},{y:.2}"))
+        .map(|(x, y)| format!("{},{}", D2(*x), D2(*y)))
         .collect::<Vec<_>>()
         .join(" ")
 }

@@ -2,7 +2,7 @@
 //! hatching along the outside of the cave walls.
 
 use crate::grid::Hex;
-use crate::outline::Point;
+use crate::outline::{Point, quantize2, quantize_pt};
 use rand::Rng;
 use rand::seq::SliceRandom;
 use std::collections::HashSet;
@@ -38,7 +38,7 @@ pub fn stones<R: Rng>(
         for i in 0..k {
             let angle = i as f64 / k as f64 * std::f64::consts::TAU + rng.random_range(-0.25..0.25);
             let r = radius * rng.random_range(0.7..1.3);
-            poly.push((cx + r * angle.cos(), cy + r * angle.sin()));
+            poly.push(quantize_pt((cx + r * angle.cos(), cy + r * angle.sin())));
         }
         out.push(poly);
     }
@@ -98,13 +98,13 @@ pub fn hatching<R: Rng>(
                     let d = 0.4 + u * u * 9.5;
                     let t = (d / 10.0).min(1.0);
                     let r = (0.95 - 0.55 * t) * rng.random_range(0.7..1.2);
-                    let alpha = 0.85 - 0.6 * t;
+                    let alpha = quantize2(0.85 - 0.6 * t);
                     dots.push((
-                        (
+                        quantize_pt((
                             p.0 + dir.0 * along + nrm.0 * d,
                             p.1 + dir.1 * along + nrm.1 * d,
-                        ),
-                        r,
+                        )),
+                        quantize2(r),
                         alpha,
                     ));
                 }
@@ -136,8 +136,8 @@ pub fn hatching<R: Rng>(
                 );
                 let half = (base_len + grow * k as f64) / 2.0;
                 strokes.push((
-                    (c.0 - perp.0 * half, c.1 - perp.1 * half),
-                    (c.0 + perp.0 * half, c.1 + perp.1 * half),
+                    quantize_pt((c.0 - perp.0 * half, c.1 - perp.1 * half)),
+                    quantize_pt((c.0 + perp.0 * half, c.1 + perp.1 * half)),
                 ));
             }
             let hull = fan_hull(&strokes, 1.5);
@@ -162,7 +162,7 @@ fn fan_hull(strokes: &[(Point, Point)], pad: f64) -> Vec<Point> {
         .iter()
         .map(|&(x, y)| {
             let d = (x - cx).hypot(y - cy).max(1e-9);
-            (x + (x - cx) / d * pad, y + (y - cy) / d * pad)
+            quantize_pt((x + (x - cx) / d * pad, y + (y - cy) / d * pad))
         })
         .collect()
 }
@@ -289,10 +289,10 @@ fn tile<R: Rng>(p: Point, dir: (f64, f64), n: (f64, f64), rng: &mut R) -> Vec<Po
     corners
         .iter()
         .map(|&(t, d)| {
-            (
+            quantize_pt((
                 p.0 + dir.0 * t + n.0 * d + rng.random_range(-0.25..0.25),
                 p.1 + dir.1 * t + n.1 * d + rng.random_range(-0.25..0.25),
-            )
+            ))
         })
         .collect()
 }
@@ -340,10 +340,10 @@ fn corner_tile<R: Rng>(
     ];
     pts.iter()
         .map(|&(x, y)| {
-            (
+            quantize_pt((
                 x + rng.random_range(-0.25..0.25),
                 y + rng.random_range(-0.25..0.25),
-            )
+            ))
         })
         .collect()
 }
@@ -363,7 +363,7 @@ fn canopy<R: Rng>(c: Point, r: f64, rng: &mut R) -> Vec<Point> {
             } else {
                 r * rng.random_range(0.5..0.72)
             };
-            (c.0 + rad * angle.cos(), c.1 + rad * angle.sin())
+            quantize_pt((c.0 + rad * angle.cos(), c.1 + rad * angle.sin()))
         })
         .collect()
 }
@@ -459,7 +459,7 @@ pub fn floor_pattern<R: Rng>(
                     let pts = cell
                         .corners(s)
                         .iter()
-                        .map(|&(x, y)| (cx + (x - cx) * 0.86, cy + (y - cy) * 0.86))
+                        .map(|&(x, y)| quantize_pt((cx + (x - cx) * 0.86, cy + (y - cy) * 0.86)))
                         .collect();
                     out.push(PatternElem::Poly { pts, shade });
                 }
@@ -480,11 +480,15 @@ pub fn floor_pattern<R: Rng>(
                     for (a, b) in connections {
                         let from = mid[(a + rot) % 6];
                         let to = mid[(b + rot) % 6];
-                        let ctrl = (
+                        let ctrl = quantize_pt((
                             cx + 0.45 * ((from.0 + to.0) / 2.0 - cx),
                             cy + 0.45 * ((from.1 + to.1) / 2.0 - cy),
-                        );
-                        out.push(PatternElem::Curve { from, ctrl, to });
+                        ));
+                        out.push(PatternElem::Curve {
+                            from: quantize_pt(from),
+                            ctrl,
+                            to: quantize_pt(to),
+                        });
                     }
                 }
             }
@@ -496,8 +500,12 @@ pub fn floor_pattern<R: Rng>(
                         let p2 = mid[(i + 1) % 6];
                         if denom.abs() > 1e-6 {
                             let t = ((p2.0 - p1.0) * s2 - (p2.1 - p1.1) * c2) / denom;
-                            let tip = (p1.0 + t * c1, p1.1 + t * s1);
-                            out.push(PatternElem::Elbow { from: p1, tip, to: p2 });
+                            let tip = quantize_pt((p1.0 + t * c1, p1.1 + t * s1));
+                            out.push(PatternElem::Elbow {
+                                from: quantize_pt(p1),
+                                tip,
+                                to: quantize_pt(p2),
+                            });
                         }
                     }
                 }

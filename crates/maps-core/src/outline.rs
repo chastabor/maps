@@ -16,6 +16,26 @@ use std::collections::{HashMap, HashSet};
 
 pub type Point = (f64, f64);
 
+/// Quantize a coordinate to an exact tenth of a pixel. All geometry stored
+/// on `CaveMap` goes through this (or `quantize2` for radii), so the SVG
+/// writer can print coordinates with pure integer formatting and the stored
+/// values equal the rendered ones exactly.
+#[inline]
+pub(crate) fn quantize(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+/// Quantize to an exact hundredth (small radii keep more precision).
+#[inline]
+pub(crate) fn quantize2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
+#[inline]
+pub(crate) fn quantize_pt(p: Point) -> Point {
+    (quantize(p.0), quantize(p.1))
+}
+
 /// Directions indexed by centre-to-centre angle `60k` degrees (pointy-top,
 /// y-down). Edge `(cell, k)` runs from corner `k` to corner `k+1`, where
 /// corner `i` sits at angle `60i - 30`.
@@ -210,7 +230,11 @@ pub(crate) fn smooth_loops<R: Rng>(
             for _ in 0..params.chaikin_iters {
                 flat = chaikin(&flat);
             }
-            remove_bowties(decimate(flat, 0.8))
+            let mut lp = remove_bowties(decimate(flat, 0.8));
+            for p in lp.iter_mut() {
+                *p = quantize_pt(*p);
+            }
+            lp
         })
         .collect()
 }

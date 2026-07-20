@@ -323,6 +323,13 @@ border, so the caps merge into the wall line. Each door carries a `DoorStyle`:
 `Wood` (plain leaf), `Metal` (leaf + reinforcing band), `Portcullis` (a row of
 five rings).
 
+Doors on **adjacent cells** carve a merged double-wide mouth that one bar
+can't close, so `door_layer` clusters them (union-find over cell adjacency;
+even members that touch no dungeon widen the mouth and extend the span) and
+draws one **double door** across the whole opening: a longer bar with a seam
+per leaf, or a longer portcullis (five rings per member), taking the
+strongest member style (portcullis > metal > wood).
+
 Determinism is per-seed only (same seed + options → identical map, including
 wasm); all dungeon decisions ride the shape stream. (Connector-passage door
 placement and locally-mirrored symmetric wings are the remaining steps; see

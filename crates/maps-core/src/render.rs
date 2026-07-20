@@ -479,99 +479,159 @@ const DOOR_CAP_R: f64 = 0.30;
 /// Radius of one portcullis bar (drawn as a ring).
 const DOOR_BAR_R: f64 = 0.14;
 
+/// The wall tangent of `shape` nearest to point `p`: horizontal over a
+/// rectangle's top/bottom wall, vertical beside its sides, the circle tangent
+/// on a round room. `None` for halls (never dungeon rooms) or a degenerate
+/// point.
+fn wall_tangent(shape: RuinShape, p: Point) -> Option<(f64, f64)> {
+    match shape {
+        RuinShape::Rect { cx, cy, hw, hh } => {
+            let (dx, dy) = (p.0 - cx, p.1 - cy);
+            if dx.abs() / hw > dy.abs() / hh {
+                Some((0.0, 1.0)) // beside a vertical wall
+            } else {
+                Some((1.0, 0.0)) // above/below a horizontal wall
+            }
+        }
+        RuinShape::Circle { cx, cy, .. } => {
+            let n = (p.0 - cx, p.1 - cy);
+            let len = n.0.hypot(n.1);
+            (len > 1e-6).then(|| (-n.1 / len, n.0 / len))
+        }
+        _ => None,
+    }
+}
+
 /// The doors layer: for every opening onto a dungeon room, a bar spanning the
-/// doorway with a dark jamb cap at each end, **aligned to the room's wall**:
-/// the bar runs along the wall tangent at the door (horizontal on a
-/// rectangle's top/bottom wall, vertical on its sides, tangent on a circle),
-/// so it always reads as set flush into the wall. Drawn as one group so the
-/// caller can slip it *under* the wall border, where the caps merge into the
-/// wall line. Returns `""` when the map has no dungeon doors.
+/// doorway with a dark jamb cap at each end, aligned to the room's **wall
+/// tangent** so it always reads as set flush into the wall.
+///
+/// Doors whose cells are hex-adjacent carve a merged, double-wide mouth that
+/// a single-cell bar can't close, so such doors are clustered and drawn as
+/// one **double door** spanning the whole opening: a longer bar with a seam
+/// per leaf (or a longer portcullis). Drawn as one group so the caller can
+/// slip it *under* the wall border, where the caps merge into the wall line.
+/// Returns `""` when the map has no dungeon doors.
 fn door_layer(map: &CaveMap, style: &Style) -> String {
-    let ap = HEX_SIZE * HEX_APOTHEM; // half the doorway span
+    let ap = HEX_SIZE * HEX_APOTHEM; // half a single doorway's span
     let lw = DOOR_LEAF_HALF * HEX_SIZE;
     let cr = DOOR_CAP_R * HEX_SIZE;
     let pr = DOOR_BAR_R * HEX_SIZE;
     let mut caps = String::new(); // jamb caps (wall colour, filled)
     let mut leaves = String::new(); // wood/metal leaf rectangles (floor-filled)
-    let mut marks = String::new(); // metal reinforcing bands (stroke only)
+    let mut marks = String::new(); // metal bands + leaf seams (stroke only)
     let mut bars = String::new(); // portcullis bars (rings)
-    for (i, d) in map.topology.doors.iter().enumerate() {
-        if !(map.is_dungeon(d.a) || map.is_dungeon(d.b)) {
-            continue;
+
+    // Cluster doors on adjacent cells (union-find): their mouths merge into
+    // one opening, covered below by one merged glyph.
+    let doors = &map.topology.doors;
+    let mut root: Vec<usize> = (0..doors.len()).collect();
+    fn find(root: &mut [usize], mut i: usize) -> usize {
+        while root[i] != i {
+            root[i] = root[root[i]];
+            i = root[i];
         }
-        let Some((c, u)) = door_axes(d, &map.areas, HEX_SIZE) else {
+        i
+    }
+    for i in 0..doors.len() {
+        for j in i + 1..doors.len() {
+            if doors[i].cell.distance(doors[j].cell) <= 1 {
+                let (a, b) = (find(&mut root, i), find(&mut root, j));
+                root[a] = b;
+            }
+        }
+    }
+    let mut clusters: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
+    for i in 0..doors.len() {
+        let r = find(&mut root, i);
+        clusters.entry(r).or_default().push(i);
+    }
+
+    for members in clusters.values() {
+        // A cluster is rendered iff any member opens onto a dungeon room —
+        // non-dungeon members still widen the mouth, so they extend the span.
+        let Some(&lead) =
+            members.iter().find(|&&i| map.is_dungeon(doors[i].a) || map.is_dungeon(doors[i].b))
+        else {
             continue;
         };
-        // Bar direction: along the dungeon room's wall nearest the door — the
-        // door cell sits just outside the room, so the bar takes that wall's
-        // tangent (horizontal over a rect's top/bottom wall, vertical beside
-        // its sides, the circle tangent on a round room). Fallback (no
-        // shape): nearest across-flats hex axis to the passage's
-        // perpendicular.
+        let centers: Vec<Point> = members.iter().map(|&i| doors[i].cell.center(HEX_SIZE)).collect();
+        let c0 = centers.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+        let c0 = (c0.0 / centers.len() as f64, c0.1 / centers.len() as f64);
+        // Bar direction: the lead dungeon room's wall tangent at the cluster
+        // centre; fallback (no shape): nearest across-flats hex axis to the
+        // lead door's cross-passage direction.
+        let d = &doors[lead];
         let shape = if map.is_dungeon(d.a) { map.ruins[d.a] } else { None }
             .or(if map.is_dungeon(d.b) { map.ruins[d.b] } else { None });
-        let axis = shape
-            .and_then(|sh| match sh {
-                RuinShape::Rect { cx, cy, hw, hh } => {
-                    // Which wall is the door outside of?
-                    let (dx, dy) = (c.0 - cx, c.1 - cy);
-                    if dx.abs() / hw > dy.abs() / hh {
-                        Some((0.0, 1.0)) // beside a vertical wall
-                    } else {
-                        Some((1.0, 0.0)) // above/below a horizontal wall
-                    }
-                }
-                RuinShape::Circle { cx, cy, .. } => {
-                    let n = (c.0 - cx, c.1 - cy);
-                    let len = n.0.hypot(n.1);
-                    (len > 1e-6).then(|| (-n.1 / len, n.0 / len))
-                }
-                // Halls never classify as dungeon rooms.
-                _ => None,
+        let axis = shape.and_then(|sh| wall_tangent(sh, c0)).or_else(|| {
+            let (_, u) = door_axes(d, &map.areas, HEX_SIZE)?;
+            let t = (-u.1, u.0); // across the passage
+            DOOR_AXES.into_iter().max_by(|a, b| {
+                (t.0 * a.0 + t.1 * a.1).abs().total_cmp(&(t.0 * b.0 + t.1 * b.1).abs())
             })
-            .unwrap_or_else(|| {
-                let t = (-u.1, u.0); // across the passage
-                DOOR_AXES
-                    .into_iter()
-                    .max_by(|a, b| {
-                        (t.0 * a.0 + t.1 * a.1)
-                            .abs()
-                            .total_cmp(&(t.0 * b.0 + t.1 * b.1).abs())
-                    })
-                    .unwrap()
-            });
+        });
+        let Some(axis) = axis else { continue };
         let perp = (-axis.1, axis.0);
-        // Endpoints on the two opposite edge midpoints; the caps sit there.
-        let e1 = (c.0 + axis.0 * ap, c.1 + axis.1 * ap);
-        let e2 = (c.0 - axis.0 * ap, c.1 - axis.1 * ap);
+        // Span: every member's mouth projected onto the bar axis.
+        let mut ts: Vec<f64> = centers
+            .iter()
+            .map(|p| (p.0 - c0.0) * axis.0 + (p.1 - c0.1) * axis.1)
+            .collect();
+        ts.sort_by(f64::total_cmp);
+        let (t0, t1) = (ts[0] - ap, ts[ts.len() - 1] + ap);
+        let at = |t: f64| (c0.0 + axis.0 * t, c0.1 + axis.1 * t);
+        let (e1, e2) = (at(t0), at(t1));
         let _ = write!(
             caps,
             r##"<circle cx="{}" cy="{}" r="{cr}"/><circle cx="{}" cy="{}" r="{cr}"/>"##,
             D1(e1.0), D1(e1.1), D1(e2.0), D1(e2.1), cr = D1(cr),
         );
-        match map.door_styles[i] {
+        // One glyph for the whole mouth; a double door takes the "strongest"
+        // member style so a portcullis half never downgrades to plain wood.
+        let rank = |s: DoorStyle| match s {
+            DoorStyle::Wood => 0,
+            DoorStyle::Metal => 1,
+            DoorStyle::Portcullis => 2,
+        };
+        let kind = members
+            .iter()
+            .filter(|&&i| map.is_dungeon(doors[i].a) || map.is_dungeon(doors[i].b))
+            .map(|&i| map.door_styles[i])
+            .max_by_key(|&s| rank(s))
+            .unwrap_or_default();
+        match kind {
             DoorStyle::Portcullis => {
-                // A row of five bars between the caps.
-                for k in -2..=2 {
-                    let t = k as f64 / 3.0;
-                    let p = (c.0 + axis.0 * ap * t, c.1 + axis.1 * ap * t);
+                // Five bars per leaf, evenly spread across the mouth.
+                let n = 5 * members.len();
+                let (b0, b1) = (t0 + 0.33 * ap, t1 - 0.33 * ap);
+                for k in 0..n {
+                    let t = b0 + (b1 - b0) * (k as f64 + 0.5) / n as f64;
+                    let p = at(t);
                     let _ = write!(bars, r##"<circle cx="{}" cy="{}" r="{}"/>"##, D1(p.0), D1(p.1), D1(pr));
                 }
             }
             kind => {
-                // Wood or metal leaf: a rectangle spanning the two caps.
-                let corner = |st: f64, sp: f64| {
-                    (c.0 + axis.0 * ap * st + perp.0 * lw * sp, c.1 + axis.1 * ap * st + perp.1 * lw * sp)
+                // A leaf rectangle spanning the mouth.
+                let corner = |t: f64, sp: f64| {
+                    (c0.0 + axis.0 * t + perp.0 * lw * sp, c0.1 + axis.1 * t + perp.1 * lw * sp)
                 };
-                let (p1, p2, p3, p4) = (corner(1.0, 1.0), corner(-1.0, 1.0), corner(-1.0, -1.0), corner(1.0, -1.0));
+                let (p1, p2, p3, p4) =
+                    (corner(t1, 1.0), corner(t0, 1.0), corner(t0, -1.0), corner(t1, -1.0));
                 let _ = write!(
                     leaves,
                     "M{} {}L{} {}L{} {}L{} {}Z",
                     D1(p1.0), D1(p1.1), D1(p2.0), D1(p2.1), D1(p3.0), D1(p3.1), D1(p4.0), D1(p4.1),
                 );
+                // Double doors: a seam between each pair of leaves.
+                for w in ts.windows(2) {
+                    let m = (w[0] + w[1]) / 2.0;
+                    let (a, b) = (corner(m, 1.0), corner(m, -1.0));
+                    let _ = write!(marks, "M{} {}L{} {}", D1(a.0), D1(a.1), D1(b.0), D1(b.1));
+                }
                 if kind == DoorStyle::Metal {
-                    // A band down the leaf's length.
-                    let (a, b) = ((c.0 + axis.0 * ap * 0.72, c.1 + axis.1 * ap * 0.72), (c.0 - axis.0 * ap * 0.72, c.1 - axis.1 * ap * 0.72));
+                    // A band down the whole bar.
+                    let (a, b) = (at(t0 + 0.28 * ap), at(t1 - 0.28 * ap));
                     let _ = write!(marks, "M{} {}L{} {}", D1(a.0), D1(a.1), D1(b.0), D1(b.1));
                 }
             }

@@ -86,28 +86,28 @@ impl RuinShape {
 /// Area of a unit-side hexagon: 3*sqrt(3)/2.
 const CELL_AREA: f64 = 2.598_076_211_353_316;
 
-/// Fit each geometric (ruin/dungeon — see `Areas::kind`, classified before
-/// growth) area with a geometric shape (rooms: rectangles/circles; corridors:
-/// straight/arcing halls) and *reshape its cells* to the rasterized shape,
-/// exactly as if the node had grown that way. Shapes claim free cells, so a
-/// shape reaching another area's neighbourhood unions with it at the cell
-/// level — the outline then traces one loop around both and no interior border
-/// ever exists. An area whose reshaping would disconnect it or orphan a door
-/// keeps its organic cells and is **demoted back to organic**, so
-/// ruin/dungeon ⇔ actually reshaped always holds.
+/// Fit each **ruin** area (see `Areas::kind`, classified before growth) with a
+/// geometric shape (rooms: rectangles/circles; corridors: straight/arcing
+/// halls) and *reshape its cells* to the rasterized shape, exactly as if the
+/// node had grown that way. Shapes claim free cells, so a shape reaching
+/// another area's neighbourhood unions with it at the cell level — the outline
+/// then traces one loop around both and no interior border ever exists (but
+/// never a free cell beside a **dungeon** room: its clean walls take no
+/// seams). An area whose reshaping would disconnect it or orphan a door keeps
+/// its organic cells and is **demoted back to organic**, so ruin ⇔ actually
+/// reshaped always holds. Dungeon rooms grow as their final shape
+/// (`growth::RoomPlan`) and are untouched here.
 pub fn build<R: Rng>(
     areas: &mut Areas,
     topology: &Topology,
     grid: &HexGrid,
     hex_size: f64,
     rng: &mut R,
-) -> Vec<Option<RuinShape>> {
-    let mut out = vec![None; areas.count()];
-    // Range loop: the body mutates `areas` (reshape / set_kind), so iterating
-    // a borrow of it is not an option.
-    #[allow(clippy::needless_range_loop)]
+) {
     for i in 0..areas.count() {
-        if areas.kind(i) == AreaKind::Organic {
+        // Only ruins reshape. Dungeon rooms already grew as their final
+        // geometry (growth::grow_room) and organic areas stay as grown.
+        if areas.kind(i) != AreaKind::Ruin {
             continue;
         }
         let shape = if topology.is_corridor[i] {
@@ -117,12 +117,11 @@ pub fn build<R: Rng>(
         };
         match shape {
             Some(shape) if reshape(areas, topology, grid, i, shape, hex_size) => {
-                out[i] = Some(shape);
+                areas.set_shape(i, Some(shape));
             }
             _ => areas.set_kind(i, AreaKind::Organic),
         }
     }
-    out
 }
 
 /// Cell → shape map used for wall projection and decor classification.
@@ -133,11 +132,8 @@ pub fn build<R: Rng>(
 /// door-adjacent originals kept for connectivity, which can sit entirely
 /// outside the fitted geometry) stay organic too — projecting them would
 /// collapse their connecting stub onto the distant shape wall.
-pub fn ruin_cell_map(
-    areas: &Areas,
-    shapes: &[Option<RuinShape>],
-    hex_size: f64,
-) -> std::collections::HashMap<Hex, RuinShape> {
+pub fn ruin_cell_map(areas: &Areas, hex_size: f64) -> std::collections::HashMap<Hex, RuinShape> {
+    let shapes = areas.shapes();
     let mut map = std::collections::HashMap::new();
     for (i, shape) in shapes.iter().enumerate() {
         let Some(shape) = shape else { continue };
@@ -190,6 +186,15 @@ fn reshape(
             grid.contains(c)
                 && areas.owner_of(c).is_none_or(|o| o == i)
                 && shape.covers(c.center(s), s)
+                // A ruin may union with organic/ruin neighbours, but never
+                // seam onto a dungeon room's clean wall: leave the rock gap.
+                && c.neighbors()
+                    .iter()
+                    .all(|n| {
+                        areas
+                            .owner_of(*n)
+                            .is_none_or(|o| o == i || areas.kind(o) != AreaKind::Dungeon)
+                    })
         })
         .collect();
 

@@ -1,6 +1,7 @@
 //! Doorways, corridors and exits: turning the grown areas into a connected
 //! cave system.
 
+use crate::AreaKind;
 use crate::grid::{Hex, HexGrid};
 use crate::growth::{Areas, weighted_index};
 use crate::tags::{ConnectTag, ExitTag, LayoutTag, Tags};
@@ -37,6 +38,9 @@ pub fn build<R: Rng>(grid: &HexGrid, areas: &mut Areas, tags: &Tags, rng: &mut R
     let edges = cull_edges(pairs.keys().copied().collect(), areas.count(), tags, rng);
     let doors: Vec<Door> = edges
         .iter()
+        // A fused pair (two dungeon rooms sharing an edge) is one open
+        // compound room — a doorway beside the seam would be noise.
+        .filter(|&&(a, b)| !cell_adjacent(areas, a, b))
         .map(|&(a, b)| {
             let cells = &pairs[&(a, b)];
             Door {
@@ -55,6 +59,14 @@ pub fn build<R: Rng>(grid: &HexGrid, areas: &mut Areas, tags: &Tags, rng: &mut R
         exits,
         is_corridor,
     }
+}
+
+/// Whether two areas share a cell edge (fused dungeon rooms).
+fn cell_adjacent(areas: &Areas, a: usize, b: usize) -> bool {
+    let (small, other) = if areas.cells[a].len() <= areas.cells[b].len() { (a, b) } else { (b, a) };
+    areas.cells[small]
+        .iter()
+        .any(|c| c.neighbors().iter().any(|n| areas.owner_of(*n) == Some(other)))
 }
 
 /// Free cells adjacent to two or more areas, grouped by unordered area pair.
@@ -250,7 +262,9 @@ fn shrink_corridors<R: Rng>(
     let mut is_corridor = vec![false; n];
     for i in 0..n {
         let n_doors = door_cells[i].len();
-        if n_doors < 2 || (hub && i == 0) {
+        // Dungeon rooms are grown as their final shape and must keep it —
+        // never shrink one into a winding corridor.
+        if n_doors < 2 || (hub && i == 0) || areas.kind(i) == AreaKind::Dungeon {
             continue;
         }
         let mut p = 0.2 + 0.12 * (n_doors as f64 - 2.0);

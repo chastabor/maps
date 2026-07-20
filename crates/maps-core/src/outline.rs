@@ -107,25 +107,30 @@ pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology) -> (HashSet<H
 /// Closed smoothed loops (outer boundaries and holes, distinguishable only
 /// by winding; render with fill-rule="evenodd"). `ruin_cells` maps cells of
 /// reshaped areas to their geometry (seam cells already excluded — see
-/// `ruins::ruin_cell_map`).
+/// `ruins::ruin_cell_map`). `dungeon_cells` are the dungeon rooms' cells:
+/// their wall vertices stay on the exact traced hex boundary, exempt from
+/// every smoothing/erosion pass, so a dungeon wall is whole crisp hex faces.
 pub fn build_outline<R: Rng>(
     areas: &Areas,
     topology: &Topology,
     ruin_cells: &HashMap<Hex, RuinShape>,
+    dungeon_cells: &HashSet<Hex>,
     params: &OutlineParams,
     rng: &mut R,
 ) -> Vec<Vec<Point>> {
     let (floor, narrow) = floor_and_narrow(areas, topology);
-    smooth_loops(trace_loops(&floor), &narrow, ruin_cells, params, rng)
+    smooth_loops(trace_loops(&floor), &narrow, ruin_cells, dungeon_cells, params, rng)
 }
 
 /// Run any cell-set boundary through the full smoothing pipeline. Vertices
 /// owned by ruin cells are projected onto their geometric shape and locked
-/// against all jitter, so those wall sections stay crisp.
+/// against all jitter, so those wall sections stay crisp; vertices owned by
+/// dungeon cells are locked in place from the start (raw hex boundary).
 pub(crate) fn smooth_loops<R: Rng>(
     loops: Vec<Vec<(Hex, usize)>>,
     narrow: &HashSet<Hex>,
     ruin_cells: &HashMap<Hex, RuinShape>,
+    dungeon_cells: &HashSet<Hex>,
     params: &OutlineParams,
     rng: &mut R,
 ) -> Vec<Vec<Point>> {
@@ -134,13 +139,15 @@ pub(crate) fn smooth_loops<R: Rng>(
         .into_iter()
         .map(|lp| {
             // Tagged points: position, the owning cell's centre if that cell
-            // is a narrow tunnel, and its ruin shape if it has one.
-            let mut pts: Vec<(Point, Option<Point>, Option<RuinShape>)> = lp
+            // is a narrow tunnel, its ruin shape if it has one, and whether
+            // it belongs to a dungeon room (held on the raw hex boundary).
+            let mut pts: Vec<TaggedPoint> = lp
                 .iter()
                 .map(|&(cell, corner)| {
                     let tag = narrow.contains(&cell).then(|| cell.center(size));
                     let ruin = ruin_cells.get(&cell).copied();
-                    (corner_point(cell, corner, size), tag, ruin)
+                    let dungeon = dungeon_cells.contains(&cell);
+                    (corner_point(cell, corner, size), tag, ruin, dungeon)
                 })
                 .collect();
 
@@ -148,7 +155,10 @@ pub(crate) fn smooth_loops<R: Rng>(
             for _ in 0..params.smooth_passes {
                 smooth(&mut pts, params.bumpiness);
             }
-            for (p, tag, _) in pts.iter_mut() {
+            for (p, tag, _, dungeon) in pts.iter_mut() {
+                if *dungeon {
+                    continue;
+                }
                 if let Some(c) = tag {
                     p.0 += (c.0 - p.0) * params.narrow_pull;
                     p.1 += (c.1 - p.1) * params.narrow_pull;
@@ -163,7 +173,7 @@ pub(crate) fn smooth_loops<R: Rng>(
             const RAMP: f64 = 3.0;
             let n = pts.len();
             let mut dist = vec![u32::MAX; n];
-            for (i, &(_, _, ruin)) in pts.iter().enumerate() {
+            for (i, &(_, _, ruin, _)) in pts.iter().enumerate() {
                 if ruin.is_none() {
                     dist[i] = 0;
                 }
@@ -181,10 +191,15 @@ pub(crate) fn smooth_loops<R: Rng>(
                     }
                 }
             }
-            let mut locked = vec![false; n];
+            // Dungeon wall vertices project HARD onto their room's exact
+            // geometry (no organic ramp) and stay locked against every later
+            // pass; ruin vertices blend as before. A dungeon vertex without a
+            // shape (seam/contested cells of a fused compound) stays locked
+            // on the raw traced hex boundary instead.
+            let mut locked: Vec<bool> = pts.iter().map(|&(_, _, _, dungeon)| dungeon).collect();
             for i in 0..n {
                 if let Some(shape) = pts[i].2 {
-                    let w_run = if dist[i] == u32::MAX {
+                    let w_run = if pts[i].3 || dist[i] == u32::MAX {
                         1.0
                     } else {
                         (dist[i] as f64 / RAMP).min(1.0)
@@ -218,7 +233,7 @@ pub(crate) fn smooth_loops<R: Rng>(
             let mut plain: Vec<(Point, bool)> = pts
                 .into_iter()
                 .zip(locked)
-                .map(|((p, _, _), l)| (p, l))
+                .map(|((p, _, _, _), l)| (p, l))
                 .collect();
             jitter_unlocked(&mut plain, params.irregularity * size, rng);
             for round in 0..2 {
@@ -226,10 +241,12 @@ pub(crate) fn smooth_loops<R: Rng>(
                 let mag = params.roughness * size / (round + 1) as f64;
                 jitter_unlocked(&mut plain, mag, rng);
             }
-            let mut flat: Vec<Point> = plain.into_iter().map(|(p, _)| p).collect();
+            // Lock-aware corner cutting: locked runs (dungeon walls, fully
+            // projected ruin walls) keep their exact corners.
             for _ in 0..params.chaikin_iters {
-                flat = chaikin(&flat);
+                plain = chaikin_locked(&plain);
             }
+            let flat: Vec<Point> = plain.into_iter().map(|(p, _)| p).collect();
             let mut lp = remove_bowties(decimate(flat, 0.8));
             for p in lp.iter_mut() {
                 *p = quantize_pt(*p);
@@ -392,15 +409,16 @@ impl Hex {
     }
 }
 
-type TaggedPoint = (Point, Option<Point>, Option<RuinShape>);
+/// (position, narrow-cell centre, ruin shape, dungeon-wall flag).
+type TaggedPoint = (Point, Option<Point>, Option<RuinShape>, bool);
 
 fn subdivide_tagged(pts: &[TaggedPoint]) -> Vec<TaggedPoint> {
     let mut out = Vec::with_capacity(pts.len() * 2);
     for i in 0..pts.len() {
-        let (p, tag, ruin) = pts[i];
-        let (q, _, _) = pts[(i + 1) % pts.len()];
-        out.push((p, tag, ruin));
-        out.push((((p.0 + q.0) / 2.0, (p.1 + q.1) / 2.0), tag, ruin));
+        let (p, tag, ruin, dungeon) = pts[i];
+        let (q, _, _, _) = pts[(i + 1) % pts.len()];
+        out.push((p, tag, ruin, dungeon));
+        out.push((((p.0 + q.0) / 2.0, (p.1 + q.1) / 2.0), tag, ruin, dungeon));
     }
     out
 }
@@ -418,8 +436,12 @@ fn subdivide_locked(pts: &[(Point, bool)]) -> Vec<(Point, bool)> {
 
 fn smooth(pts: &mut [TaggedPoint], t: f64) {
     let n = pts.len();
-    let orig: Vec<Point> = pts.iter().map(|&(p, _, _)| p).collect();
+    let orig: Vec<Point> = pts.iter().map(|&(p, _, _, _)| p).collect();
     for i in 0..n {
+        // Dungeon walls stay on the exact hex boundary.
+        if pts[i].3 {
+            continue;
+        }
         let prev = orig[(i + n - 1) % n];
         let next = orig[(i + 1) % n];
         let mid = ((prev.0 + next.0) / 2.0, (prev.1 + next.1) / 2.0);
@@ -458,14 +480,22 @@ fn jitter_unlocked<R: Rng>(pts: &mut [(Point, bool)], mag: f64, rng: &mut R) {
     }
 }
 
-/// One round of Chaikin corner cutting on a closed polyline.
-fn chaikin(pts: &[Point]) -> Vec<Point> {
+/// One round of Chaikin corner cutting on a closed polyline, honouring locks:
+/// an edge whose BOTH endpoints are locked is kept verbatim (its first
+/// endpoint is emitted unchanged), so locked runs — dungeon walls, fully
+/// projected ruin walls — keep their exact corners while everything else
+/// rounds as before. Transition edges into organic wall cut normally.
+fn chaikin_locked(pts: &[(Point, bool)]) -> Vec<(Point, bool)> {
     let mut out = Vec::with_capacity(pts.len() * 2);
     for i in 0..pts.len() {
-        let p = pts[i];
-        let q = pts[(i + 1) % pts.len()];
-        out.push((0.75 * p.0 + 0.25 * q.0, 0.75 * p.1 + 0.25 * q.1));
-        out.push((0.25 * p.0 + 0.75 * q.0, 0.25 * p.1 + 0.75 * q.1));
+        let (p, pl) = pts[i];
+        let (q, ql) = pts[(i + 1) % pts.len()];
+        if pl && ql {
+            out.push((p, true));
+        } else {
+            out.push(((0.75 * p.0 + 0.25 * q.0, 0.75 * p.1 + 0.25 * q.1), false));
+            out.push(((0.25 * p.0 + 0.75 * q.0, 0.25 * p.1 + 0.75 * q.1), false));
+        }
     }
     out
 }

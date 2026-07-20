@@ -107,10 +107,16 @@ pub fn build_water<R: Rng>(
         chaikin_iters: 3,
         ..params.clone()
     };
+    // Water is a natural element: no ruin projection, no dungeon locking —
+    // its edges smooth organically even inside a dungeon room.
     let no_ruins = std::collections::HashMap::new();
-    let mud_loops = smooth_loops(trace_loops(&mud), &HashSet::new(), &no_ruins, &wparams, rng);
-    let pools = smooth_loops(trace_loops(&water), &HashSet::new(), &no_ruins, &wparams, rng);
-    let deep_loops = smooth_loops(trace_loops(&deep), &HashSet::new(), &no_ruins, &wparams, rng);
+    let no_dungeon = HashSet::new();
+    let mud_loops =
+        smooth_loops(trace_loops(&mud), &HashSet::new(), &no_ruins, &no_dungeon, &wparams, rng);
+    let pools =
+        smooth_loops(trace_loops(&water), &HashSet::new(), &no_ruins, &no_dungeon, &wparams, rng);
+    let deep_loops =
+        smooth_loops(trace_loops(&deep), &HashSet::new(), &no_ruins, &no_dungeon, &wparams, rng);
 
     Water {
         cells: water,

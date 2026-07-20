@@ -277,32 +277,56 @@ from weathered ruin to clean dungeon room:
     ruin     = ruins_level · (1 − dungeon_level)
     dungeon  = ruins_level · dungeon_level
 
-The `dungeon` tag sets the level's default (0.6); `natural` forces 0. A
-dungeon area shares the ruin geometry (same Rect/Circle/Hall reshaping) but
-takes the *clean* wall treatment — its cells are held out of the ruin decor
-so no stipple or masonry lands on them, leaving a bare wall line. Every
-opening onto a dungeon area (a `topology` door where either side is
-`AreaKind::Dungeon`) is drawn as a **hex-aligned door bar** (`render::
-door_layer`): the passage direction is snapped to the nearest of the three
-across-flats hex axes (`DOOR_AXES`, 0°/±60°) so the bar aligns to the tile and
-spans it edge-midpoint to edge-midpoint, with a dark **jamb cap** at each end.
-The whole layer is emitted *under* the wall border, so the caps merge into the
-wall line rather than floating on the floor. Each door carries a `DoorStyle`
-(`lib.rs`, one per door, aligned with `topology.doors`): `Wood` is a plain
-floor-filled leaf, `Metal` adds a reinforcing band down the leaf's length, and
-`Portcullis` replaces the leaf with a row of five bars (rings). Styles are
-rolled on the salt-4 stream right after the dungeon-area selection, so a map
-with no dungeon areas makes zero extra draws and stays byte-identical.
-(Locally-mirrored symmetric wings are the remaining step; see
-`plan/dungeon-mode.md`.)
+The `dungeon` tag sets the level's default (0.6); `natural` forces 0.
 
-Determinism: the geometric set is still chosen on the shape stream exactly as
-before, so ruins output is unchanged. Splitting that set into ruin vs dungeon
-draws from a dedicated **salt-4 sub-stream** of the shape seed
-(`sub_seed(shape_seed, 4)`), so `dungeon_level = 0` leaves shape, decor and
-name streams byte-identical. Adding the `dungeon` family to `Tags::random`
-appends one draw (kept last), so seed-rolled maps gain a dungeon tag without
-shifting any other family's roll.
+Unlike ruins (reshaped after the fact), a dungeon room is **built door-ready
+from the start**:
+
+- **Classified first.** Area kinds (organic/ruin/dungeon) are assigned to the
+  growth slots *before* growth (`lib.rs::classify_slots`), and every area
+  carries its kind (`growth::Areas::kind`).
+- **Grown as its true geometry.** A dungeon slot grows via `growth::grow_room`
+  as a circle (concentric rings) or a rectangle (one whole side-strip at a
+  time, random side order). Every increment is all-or-nothing: if any cell of
+  the next ring/strip is blocked, that increment is refused — a rectangle
+  tries its other sides, a circle stops — so the footprint is an exact
+  rect/circle raster at every step and can never deform around a neighbour.
+  The room records its wall (`RuinShape` on `Areas::shape`, wall
+  `ROOM_WALL_PAD` outside the outermost cell centres); the cells are just the
+  ownership raster — the drawn wall is the true geometry, cutting through the
+  boundary hexes. Dungeon slots grow before everything else for space.
+- **Fusion is pairwise and opt-in.** Each dungeon room rolls whether it is
+  open to fusing (`FUSE_P`); two rooms may sit cell-adjacent — one compound
+  room, e.g. a rectangle with an attached silo — only when **both** rolled
+  open ([`AreaKind::may_fuse`] plus the growth-time allowance), and a used
+  allowance is spent, so compounds stay pairwise instead of percolating.
+  Fused pairs get no door (`topology`), and no other kind pair ever touches:
+  ruin reshaping explicitly refuses to claim a free cell beside a dungeon.
+- **Walls never erode.** Dungeon cells are threaded into
+  `outline::smooth_loops`, where their wall vertices project **hard** onto the
+  room's exact geometry (no organic ramp) and lock: exempt from Laplacian
+  smoothing, narrow-pull, jitter/roughness, and — via lock-aware Chaikin
+  (`chaikin_locked`, which also keeps fully-projected ruin corners exact) —
+  from corner rounding. A dungeon wall is a perfectly straight or round line
+  with exact corners; erosion happens only on organic and ruin walls. Dungeon
+  rooms are also exempt from corridor shrinking, keep their cells out of the
+  weathered decor (stipple/masonry), and still take floor patterns
+  (`pattern` tag) like any geometric area.
+
+Every opening onto a dungeon area (a `topology` door where either side is
+`AreaKind::Dungeon`) is drawn as a **wall-aligned door bar**
+(`render::door_layer`): the bar runs along the room's wall tangent at the door
+— horizontal over a rectangle's top/bottom wall, vertical beside its sides,
+the tangent on a circle — with a dark **jamb cap** at each end, so it always
+reads as set flush into the wall. The layer is emitted *under* the wall
+border, so the caps merge into the wall line. Each door carries a `DoorStyle`:
+`Wood` (plain leaf), `Metal` (leaf + reinforcing band), `Portcullis` (a row of
+five rings).
+
+Determinism is per-seed only (same seed + options → identical map, including
+wasm); all dungeon decisions ride the shape stream. (Connector-passage door
+placement and locally-mirrored symmetric wings are the remaining steps; see
+`plan/dungeon-mode.md`.)
 
 ## Verification
 

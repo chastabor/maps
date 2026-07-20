@@ -4,6 +4,7 @@
 use crate::grid::Hex;
 use crate::growth::Areas;
 use crate::outline::Point;
+use crate::ruins::RuinShape;
 use crate::topology::Door;
 use crate::{AreaKind, CaveMap, DoorStyle, GridStyle, Mode};
 use std::collections::HashSet;
@@ -478,12 +479,15 @@ const DOOR_CAP_R: f64 = 0.30;
 /// Radius of one portcullis bar (drawn as a ring).
 const DOOR_BAR_R: f64 = 0.14;
 
-/// The doors layer: for every opening onto a dungeon room, a hex-aligned bar
-/// spanning the doorway with a dark jamb cap at each end. Drawn as one group
-/// so the caller can slip it *under* the wall border, where the caps merge
-/// into the wall line. Returns `""` when the map has no dungeon doors.
+/// The doors layer: for every opening onto a dungeon room, a bar spanning the
+/// doorway with a dark jamb cap at each end, **aligned to the room's wall**:
+/// the bar runs along the wall tangent at the door (horizontal on a
+/// rectangle's top/bottom wall, vertical on its sides, tangent on a circle),
+/// so it always reads as set flush into the wall. Drawn as one group so the
+/// caller can slip it *under* the wall border, where the caps merge into the
+/// wall line. Returns `""` when the map has no dungeon doors.
 fn door_layer(map: &CaveMap, style: &Style) -> String {
-    let ap = HEX_SIZE * HEX_APOTHEM; // centre to edge midpoint
+    let ap = HEX_SIZE * HEX_APOTHEM; // half the doorway span
     let lw = DOOR_LEAF_HALF * HEX_SIZE;
     let cr = DOOR_CAP_R * HEX_SIZE;
     let pr = DOOR_BAR_R * HEX_SIZE;
@@ -498,11 +502,44 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
         let Some((c, u)) = door_axes(d, &map.areas, HEX_SIZE) else {
             continue;
         };
-        // Snap the passage direction to the nearest across-flats hex axis.
-        let axis = DOOR_AXES
-            .into_iter()
-            .max_by(|a, b| (u.0 * a.0 + u.1 * a.1).abs().total_cmp(&(u.0 * b.0 + u.1 * b.1).abs()))
-            .unwrap();
+        // Bar direction: along the dungeon room's wall nearest the door — the
+        // door cell sits just outside the room, so the bar takes that wall's
+        // tangent (horizontal over a rect's top/bottom wall, vertical beside
+        // its sides, the circle tangent on a round room). Fallback (no
+        // shape): nearest across-flats hex axis to the passage's
+        // perpendicular.
+        let shape = if map.is_dungeon(d.a) { map.ruins[d.a] } else { None }
+            .or(if map.is_dungeon(d.b) { map.ruins[d.b] } else { None });
+        let axis = shape
+            .and_then(|sh| match sh {
+                RuinShape::Rect { cx, cy, hw, hh } => {
+                    // Which wall is the door outside of?
+                    let (dx, dy) = (c.0 - cx, c.1 - cy);
+                    if dx.abs() / hw > dy.abs() / hh {
+                        Some((0.0, 1.0)) // beside a vertical wall
+                    } else {
+                        Some((1.0, 0.0)) // above/below a horizontal wall
+                    }
+                }
+                RuinShape::Circle { cx, cy, .. } => {
+                    let n = (c.0 - cx, c.1 - cy);
+                    let len = n.0.hypot(n.1);
+                    (len > 1e-6).then(|| (-n.1 / len, n.0 / len))
+                }
+                // Halls never classify as dungeon rooms.
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                let t = (-u.1, u.0); // across the passage
+                DOOR_AXES
+                    .into_iter()
+                    .max_by(|a, b| {
+                        (t.0 * a.0 + t.1 * a.1)
+                            .abs()
+                            .total_cmp(&(t.0 * b.0 + t.1 * b.1).abs())
+                    })
+                    .unwrap()
+            });
         let perp = (-axis.1, axis.0);
         // Endpoints on the two opposite edge midpoints; the caps sit there.
         let e1 = (c.0 + axis.0 * ap, c.1 + axis.1 * ap);

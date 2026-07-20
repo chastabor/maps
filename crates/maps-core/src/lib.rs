@@ -270,14 +270,14 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // byte-compatibility to older output.
     let slot_kinds = classify_slots(params.sizes.len(), ruins_level, dungeon_level, &mut rng);
     let grid = HexGrid::hexagon(grid_radius(&params));
-    let mut areas = grow_areas(&grid, &mut rng, &params, &slot_kinds);
+    let mut areas = grow_areas(&grid, &mut rng, &params, &slot_kinds, oparams.hex_size);
     let topology = topology::build(&grid, &mut areas, &tags, &mut rng);
-    // Reshape the geometric areas (ruin ∪ dungeon, per `areas.kind`) to the
-    // rasterized geometry, so all downstream layers (outline, water, stones,
-    // decor) see the real footprint and touching shapes union at the cell
-    // level. Areas that can't reshape are demoted back to organic inside.
-    let ruin_shapes = ruins::build(&mut areas, &topology, &grid, oparams.hex_size, &mut rng);
-    let ruin_map = ruins::ruin_cell_map(&areas, &ruin_shapes, oparams.hex_size);
+    // Reshape the ruin areas to their rasterized geometry, so all downstream
+    // layers (outline, water, stones, decor) see the real footprint and
+    // touching shapes union at the cell level. Ruins that can't reshape are
+    // demoted back to organic inside; dungeon rooms grew as their geometry.
+    ruins::build(&mut areas, &topology, &grid, oparams.hex_size, &mut rng);
+    let ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
 
     // Style each door that opens onto a dungeon room; other doors keep a
     // default entry and draw nothing.
@@ -303,7 +303,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         .flat_map(|i| areas.cells[i].iter().copied())
         .collect();
 
-    let outline = build_outline(&areas, &topology, &ruin_map, oparams, &mut rng);
+    let outline = build_outline(&areas, &topology, &ruin_map, &dungeon_cells, oparams, &mut rng);
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
     let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
     let stones = decor::stones(&floor, &narrow, &w.cells, oparams.hex_size, &mut rng);
@@ -339,14 +339,13 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
             (Vec::new(), Vec::new(), trees, tiles)
         }
     };
-    // Ruin floor tiles, after the other decor so `plain` maps keep their
-    // exact output. One sorted cell list per reshaped area.
+    // Floor tiles on every geometric area — weathered ruins and clean dungeon
+    // rooms alike — after the other decor so `plain` maps keep their exact
+    // output. One sorted cell list per area.
     let pattern_tag = tags.pattern.unwrap_or(tags::PatternTag::Plain);
-    let ruin_area_cells: Vec<Vec<grid::Hex>> = ruin_shapes
-        .iter()
-        .enumerate()
-        .filter(|(_, sh)| sh.is_some())
-        .map(|(i, _)| {
+    let ruin_area_cells: Vec<Vec<grid::Hex>> = (0..areas.count())
+        .filter(|&i| areas.kind(i) != AreaKind::Organic)
+        .map(|i| {
             let mut v = areas.cells[i].clone();
             v.sort_unstable();
             v
@@ -355,6 +354,8 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     let floor_pattern =
         decor::floor_pattern(&ruin_area_cells, pattern_tag, oparams.hex_size, &mut decor_rng);
 
+    // Snapshot the shapes before `areas` moves into the map.
+    let ruin_shapes = areas.shapes().to_vec();
     let title = match opts.title.as_deref().map(str::trim) {
         Some(t) if !t.is_empty() => t.to_string(),
         _ => {

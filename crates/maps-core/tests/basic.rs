@@ -39,22 +39,34 @@ fn explicit_tags_deterministic() {
 
 #[test]
 fn organic_areas_never_touch() {
-    // Ruin-reshaped areas may deliberately reach a neighbour (cell-level
-    // union); organic areas must still keep their one-cell buffer.
+    // Two areas may share an edge only when (a) both are dungeon rooms (they
+    // fuse into a compound room), or (b) a ruin-reshaped area deliberately
+    // reached a non-dungeon neighbour (cell-level union). Organic pairs keep
+    // their one-cell buffer, and a dungeon's clean wall never takes a seam
+    // from any other kind.
+    use maps_core::AreaKind;
     for seed in 0..25 {
         let map: CaveMap = generate(seed, None);
         for (i, area) in map.areas.cells.iter().enumerate() {
-            if map.ruins[i].is_some() {
-                continue;
-            }
             for &c in area {
-                let _ = c;
                 for n in c.neighbors() {
                     if let Some(o) = map.areas.owner_of(n) {
-                        assert!(
-                            o == i || map.ruins[o].is_some(),
-                            "seed {seed}: organic areas {i} and {o} touch at {n:?}"
-                        );
+                        if o == i {
+                            continue;
+                        }
+                        let (ki, ko) = (map.areas.kind(i), map.areas.kind(o));
+                        if ki == AreaKind::Dungeon || ko == AreaKind::Dungeon {
+                            assert!(
+                                ki.may_fuse(ko),
+                                "seed {seed}: dungeon area seamed to a {:?} ({i}↔{o} at {n:?})",
+                                if ki == AreaKind::Dungeon { ko } else { ki }
+                            );
+                        } else {
+                            assert!(
+                                map.ruins[i].is_some() || map.ruins[o].is_some(),
+                                "seed {seed}: organic areas {i} and {o} touch at {n:?}"
+                            );
+                        }
                     }
                 }
             }
@@ -207,6 +219,8 @@ fn areas_meet_minimum_size() {
 
 #[test]
 fn doors_connect_all_areas() {
+    // Connectivity = doors plus fused dungeon pairs (rooms sharing a cell
+    // edge form one open compound room and get no door).
     for seed in 0..30 {
         let map = generate(seed, None);
         let n = map.areas.count();
@@ -217,6 +231,17 @@ fn doors_connect_all_areas() {
         for d in &map.topology.doors {
             adj[d.a].push(d.b);
             adj[d.b].push(d.a);
+        }
+        for (i, cells) in map.areas.cells.iter().enumerate() {
+            for &c in cells {
+                for nb in c.neighbors() {
+                    if let Some(j) = map.areas.owner_of(nb) {
+                        if j != i {
+                            adj[i].push(j);
+                        }
+                    }
+                }
+            }
         }
         let mut seen = vec![false; n];
         seen[0] = true;
@@ -506,22 +531,20 @@ fn dungeon_level_splits_geometric_areas() {
         )
     };
 
-    // Every area is classified, and the geometric (reshaped) set is exactly
-    // the non-organic kinds.
+    // Every area is classified, and every geometric area carries its wall
+    // shape: dungeon rooms from growth, ruins from reshaping.
     let full = at("large,chamber,ruins,dungeon", Some(1.0));
     assert_eq!(full.areas.kinds().len(), full.areas.count());
-    let geometric = full.ruins.iter().filter(|r| r.is_some()).count();
-    assert!(geometric > 0, "no geometric areas to split");
     for (i, k) in full.areas.kinds().iter().enumerate() {
         assert_eq!(
             full.ruins[i].is_some(),
             *k != AreaKind::Organic,
-            "area {i}: geometry and kind disagree"
+            "area {i}: wall geometry and kind disagree"
         );
     }
-    // dungeon_level 1.0 promotes every geometric area; none stay Ruin.
+    // dungeon_level 1.0 promotes every geometric slot; none stay Ruin.
     let dungeon = full.areas.kinds().iter().filter(|k| **k == AreaKind::Dungeon).count();
-    assert_eq!(dungeon, geometric, "level 1.0 should promote every geometric area");
+    assert!(dungeon > 0, "level 1.0 should produce dungeon rooms");
     assert!(full.areas.kinds().iter().all(|k| *k != AreaKind::Ruin));
 
     // dungeon_level 0 and the `natural` tag leave nothing a dungeon.
@@ -536,10 +559,11 @@ fn dungeon_level_splits_geometric_areas() {
         .iter()
         .all(|k| *k != AreaKind::Dungeon));
 
-    // A partial level splits the geometric areas into both kinds.
+    // A partial level splits the geometric slots into both kinds.
     let half = at("large,chamber,ruins,dungeon", Some(0.5));
     let half_dungeon = half.areas.kinds().iter().filter(|k| **k == AreaKind::Dungeon).count();
-    assert!(half_dungeon > 0 && half_dungeon < geometric, "0.5 should split, got {half_dungeon}/{geometric}");
+    let half_ruin = half.areas.kinds().iter().filter(|k| **k == AreaKind::Ruin).count();
+    assert!(half_dungeon > 0 && half_ruin > 0, "0.5 should split, got {half_dungeon} dungeon / {half_ruin} ruin");
 
     // Clean dungeon walls shed the ruin stipple: an all-dungeon cave has none,
     // while the same map left as ruins does.
@@ -627,7 +651,7 @@ fn growth_only_dungeons_fuse() {
             })
             .collect();
         let grid = HexGrid::hexagon(grid_radius(&params));
-        let areas = grow_areas(&grid, &mut rng, &params, &slot_kinds);
+        let areas = grow_areas(&grid, &mut rng, &params, &slot_kinds, 12.0);
         assert_eq!(areas.cells.len(), areas.kinds().len());
 
         for (i, cells) in areas.cells.iter().enumerate() {

@@ -43,20 +43,20 @@ const CASES: &[Case] = &[
 
 /// Expected (svg, debug_svg) FNV-1a hashes, one pair per case above.
 const GOLDEN: &[(u64, u64)] = &[
-    (0x1041f0e4fd15575c, 0x33ab03ac36723785),
-    (0x57e1fa431d0b86d6, 0xe014d36ab27070e3),
-    (0xc74c435895404486, 0x56901131758157f2),
-    (0x9fc6ef0dbdc3ea03, 0x311f9421c2126725),
-    (0x11522166744a091c, 0x6ea2e6c138f5ea7b),
-    (0xd9af56561cc815f1, 0xb5ac0e35d5943f93),
-    (0x714b6500ac907bf5, 0xe47fe0de14ae26eb),
-    (0xbaee194cfc14ff8c, 0xcc9a2f51fba97a42),
-    (0xbd31e89524273152, 0x751390cce51b96fe),
-    (0xf822a1e78b985eee, 0x572fffa08eb5fe7a),
-    (0x21a4bc045516ce21, 0xaf2dd98b5abbc70d),
-    (0x43b817be68767858, 0x7a005dbd5d630b4e),
-    (0x7a4d9300e672439e, 0xbf70339fc3ca3501),
-    (0x3d3b54c9e5ed9bbb, 0x07d17817228d7c07),
+    (0x9feafdd5e2caea36, 0x001aafd5eb5a7ea0),
+    (0x3e9d82dc04477173, 0x14c826b69ab9805f),
+    (0x813d3624ba4c358b, 0x390a31e1c1a4aa05),
+    (0x7a3cb76efdb36b8a, 0x3016b8431c8979af),
+    (0xd828d101e38ac881, 0x07df8211b7c87b02),
+    (0xce1ad94e21d167f6, 0x7f5f1d3fcba533dc),
+    (0xb347d8a0089df946, 0x2eb2b20989f053db),
+    (0x3948215648b7a397, 0x1c53b4bcf1b97a72),
+    (0xdf45a7f512727f66, 0x5dfefa40f7d15a1c),
+    (0x5e815f5295d09e72, 0x3509ce8ca9218ee0),
+    (0xa8089f813ffd3869, 0x08901af2552b82a9),
+    (0x12661acfcd40d79e, 0x9d8f63f6766e8393),
+    (0x7dfc779156d3026f, 0x0106ddbf93c548c9),
+    (0x61a6175c054b1255, 0xbdc2f20027459728),
 ];
 
 fn fnv1a(bytes: &[u8]) -> u64 {

@@ -10,6 +10,7 @@ pub mod naming;
 pub mod outline;
 pub mod render;
 pub mod ruins;
+pub mod symmetry;
 pub mod tags;
 pub mod topology;
 pub mod water;
@@ -270,6 +271,9 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // byte-compatibility to older output.
     let slot_kinds = classify_slots(params.sizes.len(), ruins_level, dungeon_level, &mut rng);
     let grid = HexGrid::hexagon(grid_radius(&params));
+    // Staggered simultaneous growth: dungeon rooms grow as their geometry and
+    // symmetric wings grow as lockstep sibling orbits (symmetry is chosen
+    // inside, from the shape stream).
     let mut areas = grow_areas(&grid, &mut rng, &params, &slot_kinds, oparams.hex_size);
     let topology = topology::build(&grid, &mut areas, &tags, &mut rng);
     // Reshape the ruin areas to their rasterized geometry, so all downstream

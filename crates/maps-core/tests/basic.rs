@@ -38,13 +38,10 @@ fn explicit_tags_deterministic() {
 }
 
 #[test]
-fn organic_areas_never_touch() {
-    // Two areas may share an edge only when (a) both are dungeon rooms (they
-    // fuse into a compound room), or (b) a ruin-reshaped area deliberately
-    // reached a non-dungeon neighbour (cell-level union). Organic pairs keep
-    // their one-cell buffer, and a dungeon's clean wall never takes a seam
-    // from any other kind.
-    use maps_core::AreaKind;
+fn areas_keep_their_gap() {
+    // The staggered growth engine keeps a one-cell rock gap between every pair
+    // of areas, except where a ruin was reshaped and deliberately reached a
+    // neighbour (cell-level union).
     for seed in 0..25 {
         let map: CaveMap = generate(seed, None);
         for (i, area) in map.areas.cells.iter().enumerate() {
@@ -54,19 +51,10 @@ fn organic_areas_never_touch() {
                         if o == i {
                             continue;
                         }
-                        let (ki, ko) = (map.areas.kind(i), map.areas.kind(o));
-                        if ki == AreaKind::Dungeon || ko == AreaKind::Dungeon {
-                            assert!(
-                                ki.may_fuse(ko),
-                                "seed {seed}: dungeon area seamed to a {:?} ({i}↔{o} at {n:?})",
-                                if ki == AreaKind::Dungeon { ko } else { ki }
-                            );
-                        } else {
-                            assert!(
-                                map.ruins[i].is_some() || map.ruins[o].is_some(),
-                                "seed {seed}: organic areas {i} and {o} touch at {n:?}"
-                            );
-                        }
+                        assert!(
+                            map.ruins[i].is_some() || map.ruins[o].is_some(),
+                            "seed {seed}: areas {i} and {o} touch at {n:?} without a reshape"
+                        );
                     }
                 }
             }
@@ -626,51 +614,3 @@ fn parse_tags() {
     assert_eq!(Tags::parse("").unwrap(), Tags::default());
 }
 
-#[test]
-fn growth_only_dungeons_fuse() {
-    // Kind-aware growth (step 1): two areas may share an edge only if BOTH are
-    // dungeon; every other pair keeps the one-cell doorway gap. Also assert the
-    // rule is not vacuous — dungeon fusion actually happens across seeds.
-    use maps_core::AreaKind;
-    use maps_core::grid::HexGrid;
-    use maps_core::growth::{grid_radius, grow_areas, resolve};
-    use rand::SeedableRng;
-    use rand_pcg::Pcg64;
-
-    let tags = Tags::parse("large,chamber,dry").unwrap();
-    let mut fusions = 0usize;
-    for seed in 0..60u64 {
-        let mut rng = Pcg64::seed_from_u64(seed);
-        let params = resolve(&tags, &mut rng);
-        // Deterministic mix so both fuse (dungeon-dungeon) and gap cases arise.
-        let slot_kinds: Vec<AreaKind> = (0..params.sizes.len())
-            .map(|i| match i % 3 {
-                0 => AreaKind::Dungeon,
-                1 => AreaKind::Ruin,
-                _ => AreaKind::Organic,
-            })
-            .collect();
-        let grid = HexGrid::hexagon(grid_radius(&params));
-        let areas = grow_areas(&grid, &mut rng, &params, &slot_kinds, 12.0);
-        assert_eq!(areas.cells.len(), areas.kinds().len());
-
-        for (i, cells) in areas.cells.iter().enumerate() {
-            for &c in cells {
-                for nb in c.neighbors() {
-                    if let Some(j) = areas.owner_of(nb) {
-                        if j != i {
-                            assert!(
-                                areas.kind(i).may_fuse(areas.kind(j)),
-                                "seed {seed}: areas {i}({:?}) and {j}({:?}) touch but are not both dungeon",
-                                areas.kind(i),
-                                areas.kind(j)
-                            );
-                            fusions += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    assert!(fusions > 0, "expected some dungeon-dungeon fusion across seeds, got none");
-}

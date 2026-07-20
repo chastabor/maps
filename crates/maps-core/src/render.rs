@@ -558,15 +558,41 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
         let centers: Vec<Point> = members.iter().map(|&i| doors[i].cell.center(HEX_SIZE)).collect();
         let c0 = centers.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
         let c0 = (c0.0 / centers.len() as f64, c0.1 / centers.len() as f64);
-        // Bar direction: the lead dungeon room's wall tangent at the cluster
-        // centre; fallback (no shape): nearest across-flats hex axis to the
-        // lead door's cross-passage direction.
-        let d = &doors[lead];
-        let shape = if map.is_dungeon(d.a) { map.ruins[d.a] } else { None }
-            .or(if map.is_dungeon(d.b) { map.ruins[d.b] } else { None });
-        let axis = shape.and_then(|sh| wall_tangent(sh, c0)).or_else(|| {
-            let (_, u) = door_axes(d, &map.areas, HEX_SIZE)?;
-            let t = (-u.1, u.0); // across the passage
+        // Bar direction = the opening's cross-section. Which dungeon rooms
+        // does the cluster touch?
+        let mut rooms: Vec<usize> = members
+            .iter()
+            .flat_map(|&i| [doors[i].a, doors[i].b])
+            .filter(|&r| map.is_dungeon(r))
+            .collect();
+        rooms.sort_unstable();
+        rooms.dedup();
+        // One room touched → its exact wall tangent (a flush door on that
+        // wall). Two rooms — an inside corner, or a door between two rooms —
+        // → perpendicular to the mean travel direction (oriented away from
+        // the rooms), which lands on the diagonal across the corner.
+        let axis = if rooms.len() == 1 {
+            map.ruins[rooms[0]].and_then(|sh| wall_tangent(sh, c0))
+        } else {
+            None
+        }
+        .or_else(|| {
+            let mut acc = (0.0, 0.0);
+            for &i in members {
+                let d = &doors[i];
+                if let Some((_, u)) = door_axes(d, &map.areas, HEX_SIZE) {
+                    // u runs a→b; flip so it always points away from a room.
+                    let t = if map.is_dungeon(d.a) { u } else { (-u.0, -u.1) };
+                    acc = (acc.0 + t.0, acc.1 + t.1);
+                }
+            }
+            let len = acc.0.hypot(acc.1);
+            (len > 1e-6).then(|| (-acc.1 / len, acc.0 / len))
+        })
+        .or_else(|| {
+            // Degenerate mean → nearest across-flats hex axis to the lead.
+            let (_, u) = door_axes(&doors[lead], &map.areas, HEX_SIZE)?;
+            let t = (-u.1, u.0);
             DOOR_AXES.into_iter().max_by(|a, b| {
                 (t.0 * a.0 + t.1 * a.1).abs().total_cmp(&(t.0 * b.0 + t.1 * b.1).abs())
             })

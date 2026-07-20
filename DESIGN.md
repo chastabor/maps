@@ -314,21 +314,29 @@ from the start**:
   (`pattern` tag) like any geometric area.
 
 Every opening onto a dungeon area (a `topology` door where either side is
-`AreaKind::Dungeon`) is drawn as a **wall-aligned door bar**
-(`render::door_layer`): the bar runs along the room's wall tangent at the door
-— horizontal over a rectangle's top/bottom wall, vertical beside its sides,
-the tangent on a circle — with a dark **jamb cap** at each end, so it always
-reads as set flush into the wall. The layer is emitted *under* the wall
-border, so the caps merge into the wall line. Each door carries a `DoorStyle`:
-`Wood` (plain leaf), `Metal` (leaf + reinforcing band), `Portcullis` (a row of
-five rings).
+`AreaKind::Dungeon`) is drawn as a **door bar spanning the opening's
+cross-section** (`render::door_layer`), with a dark **jamb cap** at each end,
+emitted *under* the wall border so the caps merge into the wall line. Each
+door carries a `DoorStyle`: `Wood` (plain leaf), `Metal` (leaf + reinforcing
+band), `Portcullis` (a row of five rings).
 
-Doors on **adjacent cells** carve a merged double-wide mouth that one bar
-can't close, so `door_layer` clusters them (union-find over cell adjacency;
-even members that touch no dungeon widen the mouth and extend the span) and
-draws one **double door** across the whole opening: a longer bar with a seam
-per leaf, or a longer portcullis (five rings per member), taking the
-strongest member style (portcullis > metal > wood).
+The bar direction is the crux (`door_layer` computes it per opening):
+- Doors on **adjacent cells** carve a merged double-wide mouth that one bar
+  can't close, so they are clustered (union-find over cell adjacency; even
+  members touching no dungeon widen the mouth and extend the span) and drawn
+  as one **double door** across the whole opening — a longer bar with a seam
+  per leaf, or a longer portcullis (five rings per member), taking the
+  strongest member style (portcullis > metal > wood).
+- A cluster touching **one** dungeon room takes that room's exact wall tangent
+  (`wall_tangent`) — flush and horizontal over a rectangle's top/bottom wall,
+  vertical beside its sides, tangent on a circle.
+- A cluster bridging **two** rooms (an inside corner, or a door between two
+  rooms) takes the perpendicular to the members' **mean travel direction**
+  (each oriented away from its room). Where the two rooms' walls meet at a
+  corner, that mean is diagonal, so the door spans the corner opening
+  diagonally rather than picking one wall. (Because step-2 rooms are true
+  rectangles/circles, a top/bottom door is already flush horizontal — the
+  earlier 2-hex-connector idea is unnecessary.)
 
 Determinism is per-seed only (same seed + options → identical map, including
 wasm); all dungeon decisions ride the shape stream. (Connector-passage door

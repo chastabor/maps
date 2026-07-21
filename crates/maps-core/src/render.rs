@@ -501,21 +501,19 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
         let c0 = (m.wall.0 + m.out.0 * off, m.wall.1 + m.out.1 * off);
         let axis = m.axis;
         let perp = (-axis.1, axis.0);
-        let ts = &m.ts;
-        let (t0, t1) = (ts[0] - ap, ts[ts.len() - 1] + ap);
+        // The bar spans the mouth's controlled opening — the same width the
+        // outline cuts into the wall — centred on the member cells.
+        let t_c = crate::doorway::opening_mid(m);
+        let (t0, t1) = (t_c - m.opening / 2.0, t_c + m.opening / 2.0);
         let at = |t: f64| (c0.0 + axis.0 * t, c0.1 + axis.1 * t);
-        let (e1, e2) = (at(t0), at(t1));
-        let _ = write!(
-            caps,
-            r##"<circle cx="{}" cy="{}" r="{cr}"/><circle cx="{}" cy="{}" r="{cr}"/>"##,
-            D1(e1.0), D1(e1.1), D1(e2.0), D1(e2.1), cr = D1(cr),
-        );
         // One glyph for the whole mouth; a double door takes the "strongest"
-        // member style so a portcullis half never downgrades to plain wood.
+        // member style, so a portcullis half never downgrades to plain wood
+        // and a doored half never loses its leaf to an `Open` sibling.
         let rank = |s: DoorStyle| match s {
-            DoorStyle::Wood => 0,
-            DoorStyle::Metal => 1,
-            DoorStyle::Portcullis => 2,
+            DoorStyle::Open => 0,
+            DoorStyle::Wood => 1,
+            DoorStyle::Metal => 2,
+            DoorStyle::Portcullis => 3,
         };
         let kind = m
             .members
@@ -524,10 +522,23 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
             .map(|&i| map.door_styles[i])
             .max_by_key(|&s| rank(s))
             .unwrap_or_default();
+        if kind == DoorStyle::Open {
+            // An open doorway: the framed gap stands on its own — no bar, no
+            // caps.
+            continue;
+        }
+        let (e1, e2) = (at(t0), at(t1));
+        let _ = write!(
+            caps,
+            r##"<circle cx="{}" cy="{}" r="{cr}"/><circle cx="{}" cy="{}" r="{cr}"/>"##,
+            D1(e1.0), D1(e1.1), D1(e2.0), D1(e2.1), cr = D1(cr),
+        );
+        // One leaf per hex of opening (a double/triple door for wide mouths).
+        let leaves_n = (m.opening / (2.0 * ap)).round().max(1.0) as usize;
         match kind {
             DoorStyle::Portcullis => {
                 // Five bars per leaf, evenly spread across the mouth.
-                let n = 5 * m.members.len();
+                let n = 5 * leaves_n;
                 let (b0, b1) = (t0 + 0.33 * ap, t1 - 0.33 * ap);
                 for k in 0..n {
                     let t = b0 + (b1 - b0) * (k as f64 + 0.5) / n as f64;
@@ -548,8 +559,8 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
                     D1(p1.0), D1(p1.1), D1(p2.0), D1(p2.1), D1(p3.0), D1(p3.1), D1(p4.0), D1(p4.1),
                 );
                 // Double doors: a seam between each pair of leaves.
-                for w in ts.windows(2) {
-                    let mid = (w[0] + w[1]) / 2.0;
+                for k in 1..leaves_n {
+                    let mid = t0 + m.opening * k as f64 / leaves_n as f64;
                     let (a, b) = (corner(mid, 1.0), corner(mid, -1.0));
                     let _ = write!(marks, "M{} {}L{} {}", D1(a.0), D1(a.1), D1(b.0), D1(b.1));
                 }

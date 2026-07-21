@@ -53,12 +53,17 @@ pub struct Mouth {
     /// Unit wall tangent — the direction the door bar runs.
     pub axis: Point,
     /// Member door-cell centres projected on `axis`, relative to `wall`,
-    /// ascending. The mouth spans `[ts[0]-apothem, ts[last]+apothem]`.
+    /// ascending. The opening is centred on their midpoint.
     pub ts: Vec<f64>,
     /// Member cell centres' farthest reach along `out`, from `wall`.
     pub reach: f64,
     /// Wall-to-wall distance for `Midgap` (0 otherwise).
     pub gap: f64,
+    /// Controlled full width of the opening cut into the wall: one hex per
+    /// member door (capped), never less than one hex — the door bar, the
+    /// throat and the wall gap all take this same size, so a bar always
+    /// closes its passage and a passage never pinches below a doorway.
+    pub opening: f64,
 }
 
 /// Cluster the map's doors into mouths. Only clusters that touch a dungeon
@@ -66,15 +71,21 @@ pub struct Mouth {
 pub fn mouths(topology: &Topology, areas: &Areas, s: f64) -> Vec<Mouth> {
     let find = crate::growth::find;
     let doors = &topology.doors;
+    let dungeon = |i: usize| areas.kind(i) == AreaKind::Dungeon;
     let mut root: Vec<usize> = (0..doors.len()).collect();
-    // Two doors merge into one mouth only when they carve one opening: cells
-    // hex-adjacent AND joining the same two areas. Adjacent cells serving
-    // different pairs pierce different walls — merging them would hang one
-    // long door bar across open floor between the two openings.
-    let pair = |d: &Door| (d.a.min(d.b), d.a.max(d.b));
+    // Two doors merge into one mouth only when they carve one opening in one
+    // room's wall: cells hex-adjacent AND sharing a dungeon room. (Adjacent
+    // cells serving unrelated rooms pierce different walls — merging them
+    // would hang one long door bar across open floor between the openings.)
+    let shared_room = |a: &Door, b: &Door| {
+        [a.a, a.b]
+            .into_iter()
+            .filter(|&r| dungeon(r))
+            .any(|r| r == b.a || r == b.b)
+    };
     for i in 0..doors.len() {
         for j in i + 1..doors.len() {
-            if doors[i].cell.distance(doors[j].cell) <= 1 && pair(&doors[i]) == pair(&doors[j]) {
+            if doors[i].cell.distance(doors[j].cell) <= 1 && shared_room(&doors[i], &doors[j]) {
                 let (a, b) = (find(&mut root, i), find(&mut root, j));
                 root[a] = b;
             }
@@ -86,7 +97,6 @@ pub fn mouths(topology: &Topology, areas: &Areas, s: f64) -> Vec<Mouth> {
         let r = find(&mut root, i);
         clusters.entry(r).or_default().push(i);
     }
-    let dungeon = |i: usize| areas.kind(i) == AreaKind::Dungeon;
     clusters
         .into_values()
         .filter(|members| members.iter().any(|&i| dungeon(doors[i].a) || dungeon(doors[i].b)))
@@ -126,23 +136,41 @@ fn mouth(members: Vec<usize>, doors: &[Door], areas: &Areas, s: f64) -> Option<M
     };
 
     // One room touched → anchored on its wall, the lip perpendicular to it.
-    // Two rooms → anchored midway between the two pierced walls. Otherwise
-    // (no shape / degenerate) → free: the mean passage direction, or the
-    // nearest across-flats hex axis.
+    // Two rooms → **flush placement**: only when their pierced walls face
+    // each other squarely (parallel, openings collinear) does the lip sit
+    // centered between them; otherwise the door belongs to one room — the
+    // one whose wall the passage hits most squarely — and sits flush in its
+    // wall, never averaged askew across the gap. Otherwise (no shape /
+    // degenerate) → free: the mean passage direction, or the nearest
+    // across-flats hex axis.
+    let ap = HEX_APOTHEM * s;
+    let flush = |(wall, out, axis)| (Anchor::Wall, wall, out, axis, 0.0);
     let anchored = match rooms[..] {
-        [r] => shapes[r]
-            .and_then(|sh| wall_anchor(sh, c0, travel))
-            .map(|(wall, out, axis)| (Anchor::Wall, wall, out, axis, 0.0)),
-        [ra, rb] => shapes[ra].zip(shapes[rb]).and_then(|(sa, sb)| {
-            let (wa, wb) = (sa.project(c0), sb.project(c0));
-            let d = (wb.0 - wa.0, wb.1 - wa.1);
-            let len = d.0.hypot(d.1);
-            (len > 1e-6).then(|| {
-                let out = (d.0 / len, d.1 / len);
-                let wall = ((wa.0 + wb.0) / 2.0, (wa.1 + wb.1) / 2.0);
-                (Anchor::Midgap, wall, out, (-out.1, out.0), len)
-            })
-        }),
+        [r] => shapes[r].and_then(|sh| wall_anchor(sh, c0, travel)).map(flush),
+        [ra, rb] => {
+            let a = shapes[ra].and_then(|sh| wall_anchor(sh, c0, travel));
+            let b = shapes[rb].and_then(|sh| wall_anchor(sh, c0, travel));
+            match (a, b) {
+                (Some((wa, oa, aa)), Some((wb, ob, ab))) => {
+                    let d = (wb.0 - wa.0, wb.1 - wa.1);
+                    let len = d.0.hypot(d.1);
+                    let parallel = (aa.0 * ab.0 + aa.1 * ab.1).abs() > 0.98;
+                    let lateral = (d.0 * aa.0 + d.1 * aa.1).abs();
+                    if parallel && lateral < 0.35 * ap && len > 1e-6 {
+                        let out = (d.0 / len, d.1 / len);
+                        let wall = ((wa.0 + wb.0) / 2.0, (wa.1 + wb.1) / 2.0);
+                        Some((Anchor::Midgap, wall, out, (-out.1, out.0), len))
+                    } else {
+                        // Squarest wall wins; ties go to the lower room index.
+                        let da = travel.map_or(0.0, |t| (t.0 * oa.0 + t.1 * oa.1).abs());
+                        let db = travel.map_or(0.0, |t| (t.0 * ob.0 + t.1 * ob.1).abs());
+                        Some(flush(if da >= db { (wa, oa, aa) } else { (wb, ob, ab) }))
+                    }
+                }
+                (Some(w), None) | (None, Some(w)) => Some(flush(w)),
+                _ => None,
+            }
+        }
         _ => None,
     };
     let (anchor, wall, out, axis, gap) = anchored.or_else(|| {
@@ -168,43 +196,72 @@ fn mouth(members: Vec<usize>, doors: &[Door], areas: &Areas, s: f64) -> Option<M
         .iter()
         .map(|p| (p.0 - wall.0) * out.0 + (p.1 - wall.1) * out.1)
         .fold(0.0, f64::max);
-    Some(Mouth { members, anchor, wall, out, axis, ts, reach, gap })
+    // One hex of opening per member door, capped at a triple gate.
+    let opening = members.len().min(3) as f64 * 2.0 * ap;
+    Some(Mouth { members, anchor, wall, out, axis, ts, reach, gap, opening })
+}
+
+/// The opening's centre offset along the wall tangent, relative to `wall`.
+pub(crate) fn opening_mid(m: &Mouth) -> f64 {
+    (m.ts[0] + m.ts[m.ts.len() - 1]) / 2.0
+}
+
+/// The opening's centre point (on the wall).
+fn opening_center(m: &Mouth) -> Point {
+    let mid = opening_mid(m);
+    (m.wall.0 + m.axis.0 * mid, m.wall.1 + m.axis.1 * mid)
+}
+
+/// A doorway jamb anchor for the outline's wall splice: the room's shape, the
+/// opening centre projected onto that wall, and the half-opening width. The
+/// splice snaps its run endpoints to `center ± half` along the wall, so the
+/// gap cut into the exact wall matches the door bar's span.
+pub struct Jamb {
+    pub shape: RuinShape,
+    pub center: Point,
+    pub half: f64,
 }
 
 /// Insert every doorway and dungeon-exit plug into `ruin_map`, so the
 /// outline pipeline projects those cells onto their straight throats.
-/// Returns `(plug_cells, lip_cells)`: all plugged cells (excluded from the
-/// weathered ruin decor) and the subset that keeps the clean doorframe
-/// treatment — door cells and each exit's mouth cell; an exit stub's
-/// farther walls hatch like any organic passage.
+/// Returns `(plug_cells, clean_shapes)`: all plugged cells (excluded from
+/// the weathered ruin decor) and the wall geometry that keeps the clean
+/// treatment — the dungeon rooms themselves, each doorway plug, and a short
+/// **lip hall** at each exit mouth (an exit stub's farther walls hatch like
+/// any organic passage). Decor classifies against these shapes rather than
+/// cells: a cell lookup misses e.g. a rectangle's corners, which no hex
+/// cell contains, and hatched them organic.
 pub fn apply_plugs(
     ruin_map: &mut HashMap<Hex, RuinShape>,
     mouths: &[Mouth],
     topology: &Topology,
     areas: &Areas,
     s: f64,
-) -> (HashSet<Hex>, HashSet<Hex>) {
+) -> (HashSet<Hex>, Vec<RuinShape>) {
     let mut plug_cells = HashSet::new();
-    let mut lip_cells = HashSet::new();
+    let mut clean_shapes: Vec<RuinShape> = (0..areas.count())
+        .filter(|&i| areas.kind(i) == AreaKind::Dungeon)
+        .filter_map(|i| areas.shapes()[i])
+        .collect();
     for m in mouths {
         if let Some(hall) = plug(m, s) {
             for &i in &m.members {
                 ruin_map.insert(topology.doors[i].cell, hall);
                 plug_cells.insert(topology.doors[i].cell);
-                lip_cells.insert(topology.doors[i].cell);
             }
+            clean_shapes.push(hall);
         }
     }
     for e in &topology.exits {
-        if let Some(hall) = exit_plug(e, areas, s) {
+        if let Some((full, lip)) = exit_plug(e, areas, s) {
             for &c in &e.stub {
-                ruin_map.insert(c, hall);
+                ruin_map.insert(c, full);
                 plug_cells.insert(c);
             }
-            lip_cells.insert(e.stub[0]);
+            clean_shapes.push(lip);
         }
     }
-    (plug_cells, lip_cells)
+    (plug_cells, clean_shapes)
 }
 
 /// The straight throat a mouth's door cells project onto: a hall through the
@@ -216,10 +273,7 @@ fn plug(m: &Mouth, s: f64) -> Option<RuinShape> {
     if m.anchor == Anchor::Free {
         return None;
     }
-    let ap = HEX_APOTHEM * s;
-    let (t0, t1) = (m.ts[0] - ap, m.ts[m.ts.len() - 1] + ap);
-    let mid = (t0 + t1) / 2.0;
-    let c = (m.wall.0 + m.axis.0 * mid, m.wall.1 + m.axis.1 * mid);
+    let c = opening_center(m);
     // Start just inside the wall and reach past the farthest member cell, so
     // every door-cell vertex projects sideways onto the jamb walls rather
     // than radially around an end cap.
@@ -230,14 +284,48 @@ fn plug(m: &Mouth, s: f64) -> Option<RuinShape> {
         ay: c.1 - m.out.1 * back,
         bx: c.0 + m.out.0 * fwd,
         by: c.1 + m.out.1 * fwd,
-        hw: (t1 - t0) / 2.0,
+        hw: m.opening / 2.0,
     })
+}
+
+/// Jamb anchors for the outline's wall splice: for every dungeon room a
+/// mouth or exit pierces, its opening on that room's wall (see [`Jamb`]).
+pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Vec<Jamb> {
+    let mut out = Vec::new();
+    for m in mouths {
+        let p = opening_center(m);
+        let mut rooms: Vec<usize> = m
+            .members
+            .iter()
+            .flat_map(|&i| [topology.doors[i].a, topology.doors[i].b])
+            .filter(|&r| areas.kind(r) == AreaKind::Dungeon)
+            .collect();
+        rooms.sort_unstable();
+        rooms.dedup();
+        for r in rooms {
+            if let Some(sh) = areas.shapes()[r] {
+                out.push(Jamb { shape: sh, center: sh.project(p), half: m.opening / 2.0 });
+            }
+        }
+    }
+    for e in &topology.exits {
+        if areas.kind(e.area) == AreaKind::Dungeon && !e.stub.is_empty() {
+            if let Some(sh) = areas.shapes()[e.area] {
+                let center = sh.project(e.stub[0].center(s));
+                out.push(Jamb { shape: sh, center, half: HEX_APOTHEM * s });
+            }
+        }
+    }
+    out
 }
 
 /// The straight throat for a dungeon room's exit passage: like [`plug`], but
 /// through the room wall along the stub, so the exit mouth gets the same
-/// crisp lip instead of bulging as raw locked hex cells.
-fn exit_plug(e: &Exit, areas: &Areas, s: f64) -> Option<RuinShape> {
+/// crisp lip instead of bulging as raw locked hex cells. Returns the full
+/// hall (projection: the whole stub straightens, fading organic with
+/// distance) and the short **lip hall** at the mouth (clean decor: only the
+/// doorframe skips hatching, not the whole passage).
+fn exit_plug(e: &Exit, areas: &Areas, s: f64) -> Option<(RuinShape, RuinShape)> {
     if areas.kind(e.area) != AreaKind::Dungeon || e.stub.is_empty() {
         return None;
     }
@@ -257,13 +345,23 @@ fn exit_plug(e: &Exit, areas: &Areas, s: f64) -> Option<RuinShape> {
         }
         (v.0 / len, v.1 / len)
     };
-    Some(RuinShape::StraightHall {
-        ax: wall.0 - u.0 * 0.3 * s,
-        ay: wall.1 - u.1 * 0.3 * s,
+    let hw = HEX_APOTHEM * s;
+    let (ax, ay) = (wall.0 - u.0 * 0.3 * s, wall.1 - u.1 * 0.3 * s);
+    let full = RuinShape::StraightHall {
+        ax,
+        ay,
         bx: last.0 + u.0 * 1.0 * s,
         by: last.1 + u.1 * 1.0 * s,
-        hw: HEX_APOTHEM * s,
-    })
+        hw,
+    };
+    let lip = RuinShape::StraightHall {
+        ax,
+        ay,
+        bx: wall.0 + u.0 * 1.0 * s,
+        by: wall.1 + u.1 * 1.0 * s,
+        hw,
+    };
+    Some((full, lip))
 }
 
 /// Anchor a mouth at `p` on the wall of `shape` it pierces: `(wall point,

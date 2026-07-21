@@ -41,7 +41,7 @@ fn stages() {
         let t = Instant::now();
         let ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
         let outline =
-            build_outline(&areas, &topo, &ruin_map, &std::collections::HashSet::new(), &oparams, &mut rng);
+            build_outline(&areas, &topo, &ruin_map, &std::collections::HashMap::new(), &[], &oparams, &mut rng);
         acc[3] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();
@@ -50,9 +50,7 @@ fn stages() {
 
         let t = Instant::now();
         let ruin_cells: std::collections::HashSet<_> = ruin_map.keys().copied().collect();
-        let dungeon_cells = std::collections::HashSet::new();
-        let _fans =
-            maps_core::decor::hatching(&outline, &ruin_cells, &dungeon_cells, 12.0, &mut rng);
+        let _fans = maps_core::decor::hatching(&outline, &ruin_cells, &[], 12.0, &mut rng);
         acc[5] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();

@@ -7,6 +7,7 @@
 //! (irregularity) -> two rounds of subdivide + finer jitter (roughness) ->
 //! Chaikin corner cutting.
 
+use crate::doorway::Jamb;
 use crate::grid::Hex;
 use crate::growth::Areas;
 use crate::ruins::RuinShape;
@@ -107,30 +108,33 @@ pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology) -> (HashSet<H
 /// Closed smoothed loops (outer boundaries and holes, distinguishable only
 /// by winding; render with fill-rule="evenodd"). `ruin_cells` maps cells of
 /// reshaped areas to their geometry (seam cells already excluded — see
-/// `ruins::ruin_cell_map`). `dungeon_cells` are the dungeon rooms' cells:
-/// their wall vertices stay on the exact traced hex boundary, exempt from
-/// every smoothing/erosion pass, so a dungeon wall is whole crisp hex faces.
+/// `ruins::ruin_cell_map`). `dungeon_cells` maps every dungeon room cell to
+/// its room's shape: those boundary runs are **spliced** onto the exact
+/// geometry (shape-tile tracing) and locked against every pass.
 pub fn build_outline<R: Rng>(
     areas: &Areas,
     topology: &Topology,
     ruin_cells: &HashMap<Hex, RuinShape>,
-    dungeon_cells: &HashSet<Hex>,
+    dungeon_cells: &HashMap<Hex, RuinShape>,
+    jambs: &[Jamb],
     params: &OutlineParams,
     rng: &mut R,
 ) -> Vec<Vec<Point>> {
     let (floor, narrow) = floor_and_narrow(areas, topology);
-    smooth_loops(trace_loops(&floor), &narrow, ruin_cells, dungeon_cells, params, rng)
+    smooth_loops(trace_loops(&floor), &narrow, ruin_cells, dungeon_cells, jambs, params, rng)
 }
 
 /// Run any cell-set boundary through the full smoothing pipeline. Vertices
 /// owned by ruin cells are projected onto their geometric shape and locked
-/// against all jitter, so those wall sections stay crisp; vertices owned by
-/// dungeon cells are locked in place from the start (raw hex boundary).
+/// against all jitter, so those wall sections stay crisp; runs owned by
+/// dungeon cells are replaced wholesale by the room's exact wall (see
+/// `splice_dungeon_runs`) and locked from the start.
 pub(crate) fn smooth_loops<R: Rng>(
     loops: Vec<Vec<(Hex, usize)>>,
     narrow: &HashSet<Hex>,
     ruin_cells: &HashMap<Hex, RuinShape>,
-    dungeon_cells: &HashSet<Hex>,
+    dungeon_cells: &HashMap<Hex, RuinShape>,
+    jambs: &[Jamb],
     params: &OutlineParams,
     rng: &mut R,
 ) -> Vec<Vec<Point>> {
@@ -140,16 +144,22 @@ pub(crate) fn smooth_loops<R: Rng>(
         .map(|lp| {
             // Tagged points: position, the owning cell's centre if that cell
             // is a narrow tunnel, its ruin shape if it has one, and whether
-            // it belongs to a dungeon room (held on the raw hex boundary).
+            // it belongs to a dungeon room. A dungeon cell's shape comes from
+            // `dungeon_cells` (every room cell, even ones `ruin_cell_map`
+            // excludes as contested — the splice overrides those).
             let mut pts: Vec<TaggedPoint> = lp
                 .iter()
                 .map(|&(cell, corner)| {
                     let tag = narrow.contains(&cell).then(|| cell.center(size));
-                    let ruin = ruin_cells.get(&cell).copied();
-                    let dungeon = dungeon_cells.contains(&cell);
-                    (corner_point(cell, corner, size), tag, ruin, dungeon)
+                    let dungeon_shape = dungeon_cells.get(&cell).copied();
+                    let ruin = dungeon_shape.or_else(|| ruin_cells.get(&cell).copied());
+                    (corner_point(cell, corner, size), tag, ruin, dungeon_shape.is_some())
                 })
                 .collect();
+
+            // Shape-tile tracing: swap each dungeon run's raster vertices for
+            // the exact wall before any smoothing or random pass sees them.
+            splice_dungeon_runs(&mut pts, jambs, size);
 
             pts = subdivide_tagged(&pts);
             for _ in 0..params.smooth_passes {
@@ -411,6 +421,143 @@ impl Hex {
 
 /// (position, narrow-cell centre, ruin shape, dungeon-wall flag).
 type TaggedPoint = (Point, Option<Point>, Option<RuinShape>, bool);
+
+/// Shape-tile tracing (D1): replace every maximal run of dungeon-owned
+/// vertices with a resampling of the room's exact wall between the run's
+/// endpoints. Projecting vertices one-by-one kept the wall hostage to the
+/// ragged cell raster — an axis-aligned rectangle cannot tile cleanly on
+/// staggered hex rows, and cells excluded as contested eroded organic. The
+/// splice *discards* the raster vertices instead: edges between corners come
+/// out straight and corners exact by construction. Spliced vertices keep the
+/// dungeon flag and shape tag, so every later pass holds them locked and the
+/// hard projection is an identity.
+fn splice_dungeon_runs(pts: &mut Vec<TaggedPoint>, jambs: &[Jamb], s: f64) {
+    // A vertex is splicable when it belongs to a dungeon room *and* carries a
+    // room shape (one with a perimeter — rooms, not halls); `perimeter()` is
+    // the single source of truth for that.
+    let splicable = |t: &TaggedPoint| t.3 && t.2.is_some_and(|sh| sh.perimeter().is_some());
+    if pts.len() < 3 || !pts.iter().any(splicable) {
+        return;
+    }
+    // A run endpoint lands wherever the raster happened to leave the wall;
+    // snap it to the mouth's jamb (opening centre ± half-opening along the
+    // wall) so the gap cut into the wall is exactly the doorway the bar
+    // spans — closing gaps that sprawl wider and relieving pinches narrower.
+    let snap_range = 2.2 * crate::grid::SQRT3 / 2.0 * s;
+    let snap = |shape: &RuinShape, t: f64| -> f64 {
+        let per = shape.perimeter().unwrap_or(0.0);
+        let cyc = |a: f64, b: f64| {
+            let d = (a - b).rem_euclid(per);
+            d.min(per - d)
+        };
+        let mut best = (snap_range, t);
+        for jamb in jambs.iter().filter(|j| &j.shape == shape) {
+            let tw = shape.wall_param(jamb.center);
+            for j in [(tw - jamb.half).rem_euclid(per), (tw + jamb.half).rem_euclid(per)] {
+                let d = cyc(t, j);
+                if d < best.0 {
+                    best = (d, j);
+                }
+            }
+        }
+        best.1
+    };
+    // Rotate a non-dungeon vertex to index 0 so runs never wrap. A loop that
+    // is wall end to end (a room bounded only by open gaps) becomes the full
+    // perimeter.
+    match (0..pts.len()).find(|&i| !splicable(&pts[i])) {
+        Some(start) => pts.rotate_left(start),
+        None => {
+            let shape = pts[0].2.unwrap();
+            let t0 = shape.wall_param(shape.project(pts[0].0));
+            *pts = wall_walk(&shape, t0, 1.0, shape.perimeter().unwrap_or(0.0), s, true)
+                .into_iter()
+                .map(|p| (p, None, Some(shape), true))
+                .collect();
+            return;
+        }
+    }
+    let n = pts.len();
+    let mut out: Vec<TaggedPoint> = Vec::with_capacity(n + 16);
+    let mut i = 0;
+    while i < n {
+        if !splicable(&pts[i]) {
+            out.push(pts[i]);
+            i += 1;
+            continue;
+        }
+        let shape = pts[i].2.unwrap();
+        let mut j = i;
+        while j + 1 < n && splicable(&pts[j + 1]) && pts[j + 1].2 == Some(shape) {
+            j += 1;
+        }
+        // Replace run i..=j with the exact wall between the projected (and
+        // jamb-snapped) run ends, following whichever way around the run
+        // itself goes (its middle vertex disambiguates; trivially short runs
+        // take the short way).
+        let per = shape.perimeter().unwrap_or(0.0);
+        let (raw_a, raw_b) = (
+            shape.wall_param(shape.project(pts[i].0)),
+            shape.wall_param(shape.project(pts[j].0)),
+        );
+        let fwd_raw = (raw_b - raw_a).rem_euclid(per);
+        let forward = if j - i <= 1 {
+            fwd_raw <= per - fwd_raw
+        } else {
+            let tm = shape.wall_param(shape.project(pts[i + (j - i) / 2].0));
+            (tm - raw_a).rem_euclid(per) <= fwd_raw + 1e-9
+        };
+        // A snap that folds the run to nothing (both ends grabbed by one
+        // jamb) falls back to the raw endpoints.
+        let len_of = |a: f64, b: f64| {
+            if forward { (b - a).rem_euclid(per) } else { (a - b).rem_euclid(per) }
+        };
+        let mut ta = snap(&shape, raw_a);
+        let mut len = len_of(ta, snap(&shape, raw_b));
+        if len < 1e-6 && fwd_raw > 1e-6 {
+            ta = raw_a;
+            len = len_of(raw_a, raw_b);
+        }
+        let dir = if forward { 1.0 } else { -1.0 };
+        for p in wall_walk(&shape, ta, dir, len, s, false) {
+            if out.last().map(|&(q, _, _, _)| q) != Some(p) {
+                out.push((p, None, Some(shape), true));
+            }
+        }
+        i = j + 1;
+    }
+    *pts = out;
+}
+
+/// Walk a room shape's wall from parameter `ta`, `len` far in direction
+/// `dir`, emitting the start point, every feature in between (the shape's
+/// corners, plus circle arc samples about every half-cell), and the end
+/// point. With `closed` the walk covers the whole perimeter and skips the
+/// duplicate endpoint.
+fn wall_walk(shape: &RuinShape, ta: f64, dir: f64, len: f64, s: f64, closed: bool) -> Vec<Point> {
+    let per = shape.perimeter().unwrap_or(0.0);
+    let mut out = vec![shape.wall_point(ta)];
+    // Corner seams that fall within the walked span...
+    let mut marks: Vec<f64> = shape
+        .wall_corners()
+        .into_iter()
+        .map(|c| (dir * (c - ta)).rem_euclid(per))
+        .filter(|&off| off > 1e-6 && off < len - 1e-6)
+        .collect();
+    // ...plus even arc samples for a smooth circle.
+    if matches!(shape, RuinShape::Circle { .. }) {
+        let k = (len / (0.5 * s)).ceil().max(1.0) as usize;
+        marks.extend((1..k).map(|i| len * i as f64 / k as f64));
+    }
+    marks.sort_by(f64::total_cmp);
+    for off in marks {
+        out.push(shape.wall_point((ta + dir * off).rem_euclid(per)));
+    }
+    if !closed && len > 1e-6 {
+        out.push(shape.wall_point((ta + dir * len).rem_euclid(per)));
+    }
+    out
+}
 
 fn subdivide_tagged(pts: &[TaggedPoint]) -> Vec<TaggedPoint> {
     let mut out = Vec::with_capacity(pts.len() * 2);

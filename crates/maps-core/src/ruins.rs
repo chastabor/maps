@@ -71,6 +71,109 @@ impl RuinShape {
 }
 
 impl RuinShape {
+    /// Distance from a pixel point to the shape's wall locus (the perimeter
+    /// for rooms, the two side walls for halls). Used to classify wall decor
+    /// samples geometrically — a cell lookup misses e.g. a rectangle's
+    /// corners, which no hex cell contains.
+    pub fn wall_dist(&self, p: Point) -> f64 {
+        match *self {
+            // Nearest-edge inside, clamped-perimeter outside — distinct from
+            // `project`'s radial interior push, so it can't defer to it.
+            RuinShape::Rect { cx, cy, hw, hh } => {
+                let (ox, oy) = ((p.0 - cx).abs() - hw, (p.1 - cy).abs() - hh);
+                if ox > 0.0 || oy > 0.0 {
+                    ox.max(0.0).hypot(oy.max(0.0))
+                } else {
+                    (-ox).min(-oy)
+                }
+            }
+            // The other walls are equidistant loci, so the distance is just
+            // how far the point moved when projected onto them.
+            _ => {
+                let q = self.project(p);
+                (p.0 - q.0).hypot(p.1 - q.1)
+            }
+        }
+    }
+
+    /// Wall length of a **room** shape (rect perimeter / circle circumference);
+    /// `None` for halls, which have no closed room wall. The room shapes are
+    /// exactly those whose walls the outline splices onto exact geometry, so
+    /// `perimeter().is_some()` is the single source of truth for "splicable".
+    pub fn perimeter(&self) -> Option<f64> {
+        match *self {
+            RuinShape::Rect { hw, hh, .. } => Some(4.0 * (hw + hh)),
+            RuinShape::Circle { r, .. } => Some(std::f64::consts::TAU * r),
+            _ => None,
+        }
+    }
+
+    /// Arc-length parameter of a perimeter point (pass a point through
+    /// `project` first). Rect walls run top L→R, right T→B, bottom R→L, left
+    /// B→T with corners at the seams; circles run by angle from +x. Meaningful
+    /// only where `perimeter()` is `Some`.
+    pub fn wall_param(&self, p: Point) -> f64 {
+        match *self {
+            RuinShape::Rect { cx, cy, hw, hh } => {
+                let (x0, x1, y0, y1) = (cx - hw, cx + hw, cy - hh, cy + hh);
+                let (w, h) = (2.0 * hw, 2.0 * hh);
+                let (dt, dr, db, dl) =
+                    ((p.1 - y0).abs(), (x1 - p.0).abs(), (y1 - p.1).abs(), (p.0 - x0).abs());
+                let m = dt.min(dr).min(db).min(dl);
+                if m == dt {
+                    (p.0 - x0).clamp(0.0, w)
+                } else if m == dr {
+                    w + (p.1 - y0).clamp(0.0, h)
+                } else if m == db {
+                    w + h + (x1 - p.0).clamp(0.0, w)
+                } else {
+                    2.0 * w + h + (y1 - p.1).clamp(0.0, h)
+                }
+            }
+            RuinShape::Circle { cx, cy, r } => {
+                (p.1 - cy).atan2(p.0 - cx).rem_euclid(std::f64::consts::TAU) * r
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// Inverse of [`wall_param`](Self::wall_param).
+    pub fn wall_point(&self, t: f64) -> Point {
+        match *self {
+            RuinShape::Rect { cx, cy, hw, hh } => {
+                let (x0, x1, y0, y1) = (cx - hw, cx + hw, cy - hh, cy + hh);
+                let (w, h) = (2.0 * hw, 2.0 * hh);
+                let t = t.rem_euclid(4.0 * (hw + hh));
+                if t < w {
+                    (x0 + t, y0)
+                } else if t < w + h {
+                    (x1, y0 + (t - w))
+                } else if t < 2.0 * w + h {
+                    (x1 - (t - w - h), y1)
+                } else {
+                    (x0, y1 - (t - 2.0 * w - h))
+                }
+            }
+            RuinShape::Circle { cx, cy, r } => {
+                let a = t / r;
+                (cx + r * a.cos(), cy + r * a.sin())
+            }
+            _ => (0.0, 0.0),
+        }
+    }
+
+    /// Arc-length positions of a rect's corners (the wall-parameter seams);
+    /// empty for shapes without corners. Feature points for wall resampling.
+    pub fn wall_corners(&self) -> Vec<f64> {
+        match *self {
+            RuinShape::Rect { hw, hh, .. } => {
+                let (w, h) = (2.0 * hw, 2.0 * hh);
+                vec![0.0, w, w + h, 2.0 * w + h]
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Whether a pixel point is covered by the shape for rasterization,
     /// with a margin so the claimed cells extend slightly past the exact
     /// geometry — the traced cell boundary then lies outside the shape and

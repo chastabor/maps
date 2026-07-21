@@ -3,6 +3,7 @@
 
 use crate::grid::Hex;
 use crate::outline::{Point, quantize2, quantize_pt};
+use crate::ruins::RuinShape;
 use rand::Rng;
 use rand::seq::SliceRandom;
 use std::collections::HashSet;
@@ -62,10 +63,18 @@ pub type Canopy = (Vec<Point>, usize);
 pub type Tile = Vec<Point>;
 
 /// True if the wall at this sample backs onto a cell in `cells`: step half a
-/// cell toward the floor side and look the cell up. Used both for ruin walls
-/// (weathered decor) and dungeon walls (skipped, left clean).
+/// cell toward the floor side and look the cell up. Used for ruin walls
+/// (weathered decor).
 fn wall_over(p: Point, nrm: (f64, f64), cells: &HashSet<Hex>, s: f64) -> bool {
     !cells.is_empty() && cells.contains(&Hex::at((p.0 - nrm.0 * 0.6 * s, p.1 - nrm.1 * 0.6 * s), s))
+}
+
+/// True if this wall sample lies on clean geometry (a dungeon room's wall or
+/// a doorway lip) — skipped by every weathered/organic decor pass. Tested
+/// against the shapes themselves rather than cells: no hex cell contains a
+/// rectangle's exact corner, so a cell lookup hatched corners organic.
+fn wall_clean(p: Point, shapes: &[RuinShape], s: f64) -> bool {
+    shapes.iter().any(|sh| sh.wall_dist(p) < 0.3 * s)
 }
 
 /// Wall hatching as cone units, the counterpart of the forest's border
@@ -78,11 +87,11 @@ fn wall_over(p: Point, nrm: (f64, f64), cells: &HashSet<Hex>, s: f64) -> bool {
 /// Wall sections owned by ruin areas get *faded stipple dots* instead of
 /// fans: circles in a band outside the wall, returned as
 /// `(centre, radius, opacity)` — larger and darker at the line, fading out.
-/// Walls of `dungeon_cells` get neither: a clean wall line, no decoration.
+/// Clean walls (`clean_shapes`) get neither: a bare line, no decoration.
 pub fn hatching<R: Rng>(
     loops: &[Vec<Point>],
     ruin_cells: &HashSet<Hex>,
-    dungeon_cells: &HashSet<Hex>,
+    clean_shapes: &[RuinShape],
     hex_size: f64,
     rng: &mut R,
 ) -> (Vec<HatchFan>, Vec<(Point, f64, f64)>) {
@@ -91,8 +100,8 @@ pub fn hatching<R: Rng>(
     for lp in loops {
         for (p, dir) in resample(lp, 8.0) {
             let nrm = (dir.1, -dir.0);
-            // Dungeon walls stay clean: no fan, no stipple.
-            if wall_over(p, nrm, dungeon_cells, hex_size) {
+            // Dungeon walls and doorway lips stay clean: no fan, no stipple.
+            if wall_clean(p, clean_shapes, hex_size) {
                 continue;
             }
             if wall_over(p, nrm, ruin_cells, hex_size) {
@@ -186,7 +195,7 @@ fn fan_hull(strokes: &[(Point, Point)], pad: f64) -> Vec<Point> {
 pub fn trees<R: Rng>(
     loops: &[Vec<Point>],
     ruin_cells: &HashSet<Hex>,
-    dungeon_cells: &HashSet<Hex>,
+    clean_shapes: &[RuinShape],
     hex_size: f64,
     rng: &mut R,
 ) -> (Vec<Canopy>, Vec<Tile>) {
@@ -231,7 +240,7 @@ pub fn trees<R: Rng>(
         // overlap into a continuous band.
         for (p, dir) in resample(lp, 5.5) {
             let n = (dir.1, -dir.0);
-            if wall_over(p, n, ruin_cells, hex_size) || wall_over(p, n, dungeon_cells, hex_size) {
+            if wall_over(p, n, ruin_cells, hex_size) || wall_clean(p, clean_shapes, hex_size) {
                 continue;
             }
             let r = rng.random_range(3.5..8.5);
@@ -246,7 +255,7 @@ pub fn trees<R: Rng>(
         for (p, dir) in resample(lp, 8.0) {
             let n = (dir.1, -dir.0);
             if wall_over(p, n, ruin_cells, hex_size)
-                || wall_over(p, n, dungeon_cells, hex_size)
+                || wall_clean(p, clean_shapes, hex_size)
                 || rng.random_bool(0.2)
             {
                 continue;
@@ -263,7 +272,7 @@ pub fn trees<R: Rng>(
         for (p, dir) in resample(lp, 8.0) {
             let n = (dir.1, -dir.0);
             if wall_over(p, n, ruin_cells, hex_size)
-                || wall_over(p, n, dungeon_cells, hex_size)
+                || wall_clean(p, clean_shapes, hex_size)
                 || rng.random_bool(0.15)
             {
                 continue;

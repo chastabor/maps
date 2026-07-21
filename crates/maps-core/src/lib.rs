@@ -69,17 +69,20 @@ impl AreaKind {
     }
 }
 
-/// How one door onto a dungeon room is drawn. All three are a hex-aligned bar
-/// across the doorway with jamb caps at each end; they differ in the leaf:
-/// `Wood` is a plain leaf, `Metal` adds a reinforcing band down its length,
-/// `Portcullis` is a row of bars (drawn as circles) instead of a leaf. One per
-/// `topology` door; entries for doors that touch no dungeon area are unused.
+/// How one door onto a dungeon room is drawn. The three leaf styles are a
+/// hex-aligned bar across the doorway with jamb caps at each end: `Wood` is a
+/// plain leaf, `Metal` adds a reinforcing band down its length, `Portcullis`
+/// is a row of bars (drawn as circles) instead of a leaf. `Open` draws no
+/// glyph at all — the doorway stays a plain framed gap (not every room-to-
+/// room opening has a door). One per `topology` door; entries for doors that
+/// touch no dungeon area are unused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum DoorStyle {
     #[default]
     Wood,
     Metal,
     Portcullis,
+    Open,
 }
 
 pub struct CaveMap {
@@ -291,51 +294,72 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // Doorway mouths onto dungeon rooms. Each mouth's door cells (and each
     // dungeon exit's stub cells) project onto a straight throat through the
     // wall — the crisp doorway lip — instead of the old whole-cell raw-hex
-    // lock, which bulged a full hexagon at every opening. Plug cells stay out
-    // of the weathered ruin decor so the lip keeps a clean wall line.
+    // lock, which bulged a full hexagon at every opening. `clean_shapes` is
+    // the wall geometry (rooms, plugs, exit lips) whose decor stays a clean
+    // line.
     let mouths = doorway::mouths(&topology, &areas, oparams.hex_size);
-    let (plug_cells, lip_cells) =
+    let (plug_cells, clean_shapes) =
         doorway::apply_plugs(&mut ruin_map, &mouths, &topology, &areas, oparams.hex_size);
 
     // Style each door that opens onto a dungeon room; other doors keep a
-    // default entry and draw nothing.
+    // default entry and draw nothing. A door directly between two dungeon
+    // rooms is sometimes left `Open` — a framed gap with no leaf; not every
+    // room needs a door.
     let door_styles: Vec<DoorStyle> = topology
         .doors
         .iter()
         .map(|d| {
-            if areas.kind(d.a) == AreaKind::Dungeon || areas.kind(d.b) == AreaKind::Dungeon {
-                match rng.random_range(0..100) {
-                    0..22 => DoorStyle::Metal,
-                    22..37 => DoorStyle::Portcullis,
-                    _ => DoorStyle::Wood,
+            let (ka, kb) = (areas.kind(d.a), areas.kind(d.b));
+            if ka == AreaKind::Dungeon || kb == AreaKind::Dungeon {
+                let room_to_room = ka == AreaKind::Dungeon && kb == AreaKind::Dungeon;
+                let roll = rng.random_range(0..100);
+                if room_to_room {
+                    // 15% open; the leaf styles keep their relative shares.
+                    match roll {
+                        0..15 => DoorStyle::Open,
+                        15..34 => DoorStyle::Metal,
+                        34..47 => DoorStyle::Portcullis,
+                        _ => DoorStyle::Wood,
+                    }
+                } else {
+                    match roll {
+                        0..22 => DoorStyle::Metal,
+                        22..37 => DoorStyle::Portcullis,
+                        _ => DoorStyle::Wood,
+                    }
                 }
             } else {
                 DoorStyle::default()
             }
         })
         .collect();
-    // Dungeon-area cells: their walls take the clean treatment, so they are
-    // held out of the weathered ruin decor (stipple / masonry) below.
-    let dungeon_cells: std::collections::HashSet<grid::Hex> = (0..areas.count())
+    // Every dungeon-area cell, mapped to its room's shape: the outline
+    // splices these boundary runs onto the exact geometry (even cells
+    // `ruin_cell_map` excludes as contested), and the set keeps them out of
+    // the weathered ruin decor (stipple / masonry) below.
+    let dungeon_cells: std::collections::HashMap<grid::Hex, ruins::RuinShape> = (0..areas.count())
         .filter(|&i| areas.kind(i) == AreaKind::Dungeon)
-        .flat_map(|i| areas.cells[i].iter().copied())
+        .filter_map(|i| areas.shapes()[i].map(|sh| (i, sh)))
+        .flat_map(|(i, sh)| areas.cells[i].iter().map(move |&c| (c, sh)))
         .collect();
-    let outline = build_outline(&areas, &topology, &ruin_map, &dungeon_cells, oparams, &mut rng);
+    // Jamb anchors: the outline snaps each wall gap to its mouth's opening
+    // width, so wall, throat and door bar always agree.
+    let jambs = doorway::jambs(&mouths, &topology, &areas, oparams.hex_size);
+    let outline =
+        build_outline(&areas, &topology, &ruin_map, &dungeon_cells, &jambs, oparams, &mut rng);
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
     let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
     let stones = decor::stones(&floor, &narrow, &w.cells, oparams.hex_size, &mut rng);
 
     // Only weathered (ruin) walls get stipple/masonry; dungeon and doorway
-    // plug cells are excluded here. Dungeon rooms and doorway lips also skip
-    // the organic hatching (clean line); the rest of an exit stub hatches
-    // like any passage.
+    // plug cells are excluded here. Clean walls (rooms, lips) skip the
+    // organic hatching too, classified against `clean_shapes` geometry; the
+    // rest of an exit stub hatches like any passage.
     let ruin_cells: std::collections::HashSet<grid::Hex> = ruin_map
         .keys()
         .copied()
-        .filter(|h| !dungeon_cells.contains(h) && !plug_cells.contains(h))
+        .filter(|h| !dungeon_cells.contains_key(h) && !plug_cells.contains(h))
         .collect();
-    let mut clean_cells = dungeon_cells;
-    clean_cells.extend(lip_cells);
 
     let mut decor_rng = Pcg64::seed_from_u64(decor_seed);
     let (hatching, dots, trees, tiles) = match mode {
@@ -343,7 +367,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
             let (fans, dots) = decor::hatching(
                 &outline,
                 &ruin_cells,
-                &clean_cells,
+                &clean_shapes,
                 oparams.hex_size,
                 &mut decor_rng,
             );
@@ -353,7 +377,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
             let (trees, tiles) = decor::trees(
                 &outline,
                 &ruin_cells,
-                &clean_cells,
+                &clean_shapes,
                 oparams.hex_size,
                 &mut decor_rng,
             );

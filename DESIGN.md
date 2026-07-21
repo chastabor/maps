@@ -333,47 +333,57 @@ from the start**:
   reflection/180°, so radial orbits grow disks. Generators are seeded first
   (they need clean space); the copies are ordinary dungeon areas that get
   doors, walls and decor like any room.
-- **Doorway buffer.** The cells forming an opening onto a dungeon room — the
-  door cell and any exit-stub cells — are added to the crisp/locked set passed
-  to the outline (`lib.rs`), even though they carry no room shape (they lock on
-  the raw hex boundary). This keeps the doorway jambs solid and pushes the
-  corridor's erosion one cell out, so it never eats into the dungeon wall or
-  rounds the corners next to a door.
-- **Walls never erode.** Dungeon cells are threaded into
-  `outline::smooth_loops`, where their wall vertices project **hard** onto the
-  room's exact geometry (no organic ramp) and lock: exempt from Laplacian
-  smoothing, narrow-pull, jitter/roughness, and — via lock-aware Chaikin
-  (`chaikin_locked`, which also keeps fully-projected ruin corners exact) —
-  from corner rounding. A dungeon wall is a perfectly straight or round line
-  with exact corners; erosion happens only on organic and ruin walls. Dungeon
-  rooms are also exempt from corridor shrinking, keep their cells out of the
-  weathered decor (stipple/masonry), and still take floor patterns
-  (`pattern` tag) like any geometric area.
+- **Walls are traced from the shape, not the raster.** A hex raster cannot
+  tile an axis-aligned rectangle cleanly — the staggered rows leave corner
+  cells unfilled and edges ragged — so *projecting* each traced vertex left
+  the wall hostage to the raster (chamfered corners, eroded edges wherever a
+  neighbour's geometry overlapped a cell). Instead, **shape-tile tracing**
+  (`outline::splice_dungeon_runs`): a dungeon room's boundary always forms
+  contiguous runs in the traced loop, and each run is **replaced wholesale**
+  by a resampling of the room's exact wall between the run's endpoints —
+  rect corners emitted exactly with straight edges, circle arcs sampled every
+  half-cell. The raster vertices are discarded, so the wall is exact by
+  construction. Spliced vertices carry the room's shape and stay locked
+  through every later pass (smoothing, jitter, Chaikin are all identities on
+  them). A dungeon room is its own convex loop (rooms never fuse), so this
+  can't fold; `remove_bowties` still backstops the rare shape-overlap seam.
+- **Doorway mouths, openings and lips** (`doorway.rs`). Doors onto dungeon
+  rooms are clustered into **mouths** — two doors merge only when their cells
+  are hex-adjacent *and* share a dungeon room (adjacent doors onto *different*
+  neighbours pierce different walls and stay separate). Each mouth has a
+  controlled **opening** width — one hex per member door (capped at three,
+  never below one) — and this single width drives everything: the door cells
+  (and each dungeon exit's stub) get a `StraightHall` **plug** of that
+  half-width in the ruin cell map (the crisp **lip**, fading organic down the
+  corridor via the hall displacement falloff), and the splice **snaps** its
+  run endpoints to the mouth's jambs (opening centre ± half-opening on the
+  wall), so the gap cut into the exact wall is exactly the doorway the bar
+  spans — sprawling gaps close, pinched passages open. Wall decor is
+  classified **geometrically** (`RuinShape::wall_dist`): samples on a dungeon
+  room's perimeter or a lip stay clean — a cell lookup would hatch the
+  unfilled corners organic. Dungeon rooms are also exempt from corridor
+  shrinking and still take floor patterns (`pattern` tag).
 
-Every opening onto a dungeon area (a `topology` door where either side is
-`AreaKind::Dungeon`) is drawn as a **door bar spanning the opening's
-cross-section** (`render::door_layer`), with a dark **jamb cap** at each end,
-emitted *under* the wall border so the caps merge into the wall line. Each
-door carries a `DoorStyle`: `Wood` (plain leaf), `Metal` (leaf + reinforcing
-band), `Portcullis` (a row of five rings).
+Every mouth onto a dungeon room is drawn from its anchor (`render::door_layer`
+consumes `map.mouths`): a **door bar spanning the opening** with a dark **jamb
+cap** at each end, emitted *under* the wall border so the caps merge into the
+wall line, the bar set `0.25·s` outside the wall — inside the lip. Each door
+carries a `DoorStyle`: `Wood` (plain leaf), `Metal` (leaf + band),
+`Portcullis` (a row of rings), or `Open` — no glyph at all, a bare framed gap
+(15% of doors directly between two dungeon rooms roll open; not every room
+needs a door). The bar spans the mouth's full opening width with one leaf per
+hex, so a two- or three-hex mouth becomes a **double/triple door** — leaf
+rectangles seamed per hex, or a longer portcullis — taking the strongest
+member style (portcullis > metal > wood > open).
 
-The bar direction is the crux (`door_layer` computes it per opening):
-- Doors on **adjacent cells** carve a merged double-wide mouth that one bar
-  can't close, so they are clustered (union-find over cell adjacency; even
-  members touching no dungeon widen the mouth and extend the span) and drawn
-  as one **double door** across the whole opening — a longer bar with a seam
-  per leaf, or a longer portcullis (five rings per member), taking the
-  strongest member style (portcullis > metal > wood).
-- A cluster touching **one** dungeon room takes that room's exact wall tangent
-  (`wall_tangent`) — flush and horizontal over a rectangle's top/bottom wall,
-  vertical beside its sides, tangent on a circle.
-- A cluster bridging **two** rooms (an inside corner, or a door between two
-  rooms) takes the perpendicular to the members' **mean travel direction**
-  (each oriented away from its room). Where the two rooms' walls meet at a
-  corner, that mean is diagonal, so the door spans the corner opening
-  diagonally rather than picking one wall. (Because step-2 rooms are true
-  rectangles/circles, a top/bottom door is already flush horizontal — the
-  earlier 2-hex-connector idea is unnecessary.)
+Placement is **flush** (`doorway::mouth`): a mouth touching one dungeon room
+sits in that room's wall — perpendicular to a rectangle's pierced wall (chosen
+by passage direction; position ratios misclassify corner-adjacent doors) or on
+the circle tangent. A door between **two** dungeon rooms is never averaged
+askew across the gap: if the two pierced walls face each other squarely
+(parallel tangents, openings collinear) the lip sits centered between them
+with the throat width unchanged; otherwise the door goes flush into the wall
+the passage hits most squarely, and the other room keeps a plain gap.
 
 Determinism is per-seed only (same seed + options → identical map, including
 wasm); all dungeon decisions ride the shape stream. (Connector-passage door

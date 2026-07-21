@@ -4,6 +4,7 @@
 //! natively and from wasm.
 
 pub mod decor;
+pub mod doorway;
 pub mod grid;
 pub mod growth;
 pub mod naming;
@@ -125,6 +126,10 @@ pub struct CaveMap {
     /// touch a `Dungeon` area are rendered; the rest carry default entries.
     /// (Per-area kinds live on `areas` — see [`growth::Areas::kind`].)
     pub door_styles: Vec<DoorStyle>,
+    /// Doorway mouths onto dungeon rooms (clustered doors + lip geometry);
+    /// the outline's door plugs and the rendered door glyphs both follow
+    /// these.
+    pub mouths: Vec<doorway::Mouth>,
     /// Floor tile pattern elements on ruin-area cells (pattern tag).
     pub floor_pattern: Vec<decor::PatternElem>,
     pub title: String,
@@ -281,7 +286,16 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // touching shapes union at the cell level. Ruins that can't reshape are
     // demoted back to organic inside; dungeon rooms grew as their geometry.
     ruins::build(&mut areas, &topology, &grid, oparams.hex_size, &mut rng);
-    let ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
+    let mut ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
+
+    // Doorway mouths onto dungeon rooms. Each mouth's door cells (and each
+    // dungeon exit's stub cells) project onto a straight throat through the
+    // wall — the crisp doorway lip — instead of the old whole-cell raw-hex
+    // lock, which bulged a full hexagon at every opening. Plug cells stay out
+    // of the weathered ruin decor so the lip keeps a clean wall line.
+    let mouths = doorway::mouths(&topology, &areas, oparams.hex_size);
+    let (plug_cells, lip_cells) =
+        doorway::apply_plugs(&mut ruin_map, &mouths, &topology, &areas, oparams.hex_size);
 
     // Style each door that opens onto a dungeon room; other doors keep a
     // default entry and draw nothing.
@@ -306,19 +320,22 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         .filter(|&i| areas.kind(i) == AreaKind::Dungeon)
         .flat_map(|i| areas.cells[i].iter().copied())
         .collect();
-
     let outline = build_outline(&areas, &topology, &ruin_map, &dungeon_cells, oparams, &mut rng);
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
     let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
     let stones = decor::stones(&floor, &narrow, &w.cells, oparams.hex_size, &mut rng);
 
-    // Only weathered (ruin) walls get stipple/masonry; dungeon cells are
-    // excluded here and their walls skipped in decor, leaving a clean line.
+    // Only weathered (ruin) walls get stipple/masonry; dungeon and doorway
+    // plug cells are excluded here. Dungeon rooms and doorway lips also skip
+    // the organic hatching (clean line); the rest of an exit stub hatches
+    // like any passage.
     let ruin_cells: std::collections::HashSet<grid::Hex> = ruin_map
         .keys()
         .copied()
-        .filter(|h| !dungeon_cells.contains(h))
+        .filter(|h| !dungeon_cells.contains(h) && !plug_cells.contains(h))
         .collect();
+    let mut clean_cells = dungeon_cells;
+    clean_cells.extend(lip_cells);
 
     let mut decor_rng = Pcg64::seed_from_u64(decor_seed);
     let (hatching, dots, trees, tiles) = match mode {
@@ -326,7 +343,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
             let (fans, dots) = decor::hatching(
                 &outline,
                 &ruin_cells,
-                &dungeon_cells,
+                &clean_cells,
                 oparams.hex_size,
                 &mut decor_rng,
             );
@@ -336,7 +353,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
             let (trees, tiles) = decor::trees(
                 &outline,
                 &ruin_cells,
-                &dungeon_cells,
+                &clean_cells,
                 oparams.hex_size,
                 &mut decor_rng,
             );
@@ -390,6 +407,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         tiles,
         ruins: ruin_shapes,
         door_styles,
+        mouths,
         floor_pattern,
         title,
     }

@@ -2,10 +2,7 @@
 //! `debug_svg` shows the raw hex cells, one colour per area.
 
 use crate::grid::Hex;
-use crate::growth::Areas;
 use crate::outline::Point;
-use crate::ruins::RuinShape;
-use crate::topology::Door;
 use crate::{AreaKind, CaveMap, DoorStyle, GridStyle, Mode};
 use std::collections::HashSet;
 use std::fmt;
@@ -466,48 +463,21 @@ pub fn svg(map: &CaveMap) -> String {
 }
 
 /// √3/2 — the apothem of a unit-side hex (centre to edge midpoint).
-const HEX_APOTHEM: f64 = crate::grid::SQRT3 / 2.0;
-/// The three across-flats hex axes (edge-midpoint to opposite edge-midpoint),
-/// as unit vectors at 0°, 60° and 120°. A door bar snaps to whichever a door's
-/// passage runs most nearly along, so it aligns to the tile and spans it.
-const DOOR_AXES: [(f64, f64); 3] =
-    [(1.0, 0.0), (0.5, HEX_APOTHEM), (-0.5, HEX_APOTHEM)];
+const HEX_APOTHEM: f64 = crate::doorway::HEX_APOTHEM;
 /// Half-width of a door leaf, across the bar, in hex-size units.
 const DOOR_LEAF_HALF: f64 = 0.26;
 /// Radius of a jamb cap (the dark stub anchoring a door into the wall).
 const DOOR_CAP_R: f64 = 0.30;
 /// Radius of one portcullis bar (drawn as a ring).
 const DOOR_BAR_R: f64 = 0.14;
+/// How far outside the room wall a wall-anchored door bar sits, in hex-size
+/// units — inside the doorway lip, so the glyph reads as set into the frame.
+const DOOR_BAR_OFF: f64 = 0.25;
 
-/// The wall tangent of `shape` nearest to point `p`: horizontal over a
-/// rectangle's top/bottom wall, vertical beside its sides, the circle tangent
-/// on a round room. `None` for halls (never dungeon rooms) or a degenerate
-/// point.
-fn wall_tangent(shape: RuinShape, p: Point) -> Option<(f64, f64)> {
-    match shape {
-        RuinShape::Rect { cx, cy, hw, hh } => {
-            let (dx, dy) = (p.0 - cx, p.1 - cy);
-            if dx.abs() / hw > dy.abs() / hh {
-                Some((0.0, 1.0)) // beside a vertical wall
-            } else {
-                Some((1.0, 0.0)) // above/below a horizontal wall
-            }
-        }
-        RuinShape::Circle { cx, cy, .. } => {
-            let n = (p.0 - cx, p.1 - cy);
-            let len = n.0.hypot(n.1);
-            (len > 1e-6).then(|| (-n.1 / len, n.0 / len))
-        }
-        _ => None,
-    }
-}
-
-/// The doors layer: for every opening onto a dungeon room, a bar spanning the
-/// doorway with a dark jamb cap at each end, aligned to the room's **wall
-/// tangent** so it always reads as set flush into the wall.
-///
-/// Doors whose cells are hex-adjacent carve a merged, double-wide mouth that
-/// a single-cell bar can't close, so such doors are clustered and drawn as
+/// The doors layer: for every mouth onto a dungeon room (see
+/// [`crate::doorway`]) a bar spanning the doorway with a dark jamb cap at
+/// each end, drawn inside the mouth's lip: just outside the pierced wall, or
+/// midway between the two walls of a two-room door. A multi-door mouth gets
 /// one **double door** spanning the whole opening: a longer bar with a seam
 /// per leaf (or a longer portcullis). Drawn as one group so the caller can
 /// slip it *under* the wall border, where the caps merge into the wall line.
@@ -522,89 +492,16 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
     let mut marks = String::new(); // metal bands + leaf seams (stroke only)
     let mut bars = String::new(); // portcullis bars (rings)
 
-    // Cluster doors on adjacent cells (union-find): their mouths merge into
-    // one opening, covered below by one merged glyph.
     let doors = &map.topology.doors;
-    let mut root: Vec<usize> = (0..doors.len()).collect();
-    fn find(root: &mut [usize], mut i: usize) -> usize {
-        while root[i] != i {
-            root[i] = root[root[i]];
-            i = root[i];
-        }
-        i
-    }
-    for i in 0..doors.len() {
-        for j in i + 1..doors.len() {
-            if doors[i].cell.distance(doors[j].cell) <= 1 {
-                let (a, b) = (find(&mut root, i), find(&mut root, j));
-                root[a] = b;
-            }
-        }
-    }
-    let mut clusters: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
-    for i in 0..doors.len() {
-        let r = find(&mut root, i);
-        clusters.entry(r).or_default().push(i);
-    }
-
-    for members in clusters.values() {
-        // A cluster is rendered iff any member opens onto a dungeon room —
-        // non-dungeon members still widen the mouth, so they extend the span.
-        let Some(&lead) =
-            members.iter().find(|&&i| map.is_dungeon(doors[i].a) || map.is_dungeon(doors[i].b))
-        else {
-            continue;
+    for m in &map.mouths {
+        let off = match m.anchor {
+            crate::doorway::Anchor::Wall => DOOR_BAR_OFF * HEX_SIZE,
+            crate::doorway::Anchor::Midgap | crate::doorway::Anchor::Free => 0.0,
         };
-        let centers: Vec<Point> = members.iter().map(|&i| doors[i].cell.center(HEX_SIZE)).collect();
-        let c0 = centers.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
-        let c0 = (c0.0 / centers.len() as f64, c0.1 / centers.len() as f64);
-        // Bar direction = the opening's cross-section. Which dungeon rooms
-        // does the cluster touch?
-        let mut rooms: Vec<usize> = members
-            .iter()
-            .flat_map(|&i| [doors[i].a, doors[i].b])
-            .filter(|&r| map.is_dungeon(r))
-            .collect();
-        rooms.sort_unstable();
-        rooms.dedup();
-        // One room touched → its exact wall tangent (a flush door on that
-        // wall). Two rooms — an inside corner, or a door between two rooms —
-        // → perpendicular to the mean travel direction (oriented away from
-        // the rooms), which lands on the diagonal across the corner.
-        let axis = if rooms.len() == 1 {
-            map.ruins[rooms[0]].and_then(|sh| wall_tangent(sh, c0))
-        } else {
-            None
-        }
-        .or_else(|| {
-            let mut acc = (0.0, 0.0);
-            for &i in members {
-                let d = &doors[i];
-                if let Some((_, u)) = door_axes(d, &map.areas, HEX_SIZE) {
-                    // u runs a→b; flip so it always points away from a room.
-                    let t = if map.is_dungeon(d.a) { u } else { (-u.0, -u.1) };
-                    acc = (acc.0 + t.0, acc.1 + t.1);
-                }
-            }
-            let len = acc.0.hypot(acc.1);
-            (len > 1e-6).then(|| (-acc.1 / len, acc.0 / len))
-        })
-        .or_else(|| {
-            // Degenerate mean → nearest across-flats hex axis to the lead.
-            let (_, u) = door_axes(&doors[lead], &map.areas, HEX_SIZE)?;
-            let t = (-u.1, u.0);
-            DOOR_AXES.into_iter().max_by(|a, b| {
-                (t.0 * a.0 + t.1 * a.1).abs().total_cmp(&(t.0 * b.0 + t.1 * b.1).abs())
-            })
-        });
-        let Some(axis) = axis else { continue };
+        let c0 = (m.wall.0 + m.out.0 * off, m.wall.1 + m.out.1 * off);
+        let axis = m.axis;
         let perp = (-axis.1, axis.0);
-        // Span: every member's mouth projected onto the bar axis.
-        let mut ts: Vec<f64> = centers
-            .iter()
-            .map(|p| (p.0 - c0.0) * axis.0 + (p.1 - c0.1) * axis.1)
-            .collect();
-        ts.sort_by(f64::total_cmp);
+        let ts = &m.ts;
         let (t0, t1) = (ts[0] - ap, ts[ts.len() - 1] + ap);
         let at = |t: f64| (c0.0 + axis.0 * t, c0.1 + axis.1 * t);
         let (e1, e2) = (at(t0), at(t1));
@@ -620,7 +517,8 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
             DoorStyle::Metal => 1,
             DoorStyle::Portcullis => 2,
         };
-        let kind = members
+        let kind = m
+            .members
             .iter()
             .filter(|&&i| map.is_dungeon(doors[i].a) || map.is_dungeon(doors[i].b))
             .map(|&i| map.door_styles[i])
@@ -629,7 +527,7 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
         match kind {
             DoorStyle::Portcullis => {
                 // Five bars per leaf, evenly spread across the mouth.
-                let n = 5 * members.len();
+                let n = 5 * m.members.len();
                 let (b0, b1) = (t0 + 0.33 * ap, t1 - 0.33 * ap);
                 for k in 0..n {
                     let t = b0 + (b1 - b0) * (k as f64 + 0.5) / n as f64;
@@ -651,8 +549,8 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
                 );
                 // Double doors: a seam between each pair of leaves.
                 for w in ts.windows(2) {
-                    let m = (w[0] + w[1]) / 2.0;
-                    let (a, b) = (corner(m, 1.0), corner(m, -1.0));
+                    let mid = (w[0] + w[1]) / 2.0;
+                    let (a, b) = (corner(mid, 1.0), corner(mid, -1.0));
                     let _ = write!(marks, "M{} {}L{} {}", D1(a.0), D1(a.1), D1(b.0), D1(b.1));
                 }
                 if kind == DoorStyle::Metal {
@@ -694,39 +592,6 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
     out
 }
 
-/// A door's cell centre `c` and the unit passage direction `u` (a-side to
-/// b-side centroid). `None` if the door's two sides can't be located — never
-/// for a built map, since every door touches both its areas.
-fn door_axes(d: &Door, areas: &Areas, s: f64) -> Option<(Point, Point)> {
-    let c = d.cell.center(s);
-    let (mut a_acc, mut a_n) = ((0.0, 0.0), 0u32);
-    let (mut b_acc, mut b_n) = ((0.0, 0.0), 0u32);
-    for n in d.cell.neighbors() {
-        let p = n.center(s);
-        match areas.owner_of(n) {
-            Some(o) if o == d.a => {
-                a_acc = (a_acc.0 + p.0, a_acc.1 + p.1);
-                a_n += 1;
-            }
-            Some(o) if o == d.b => {
-                b_acc = (b_acc.0 + p.0, b_acc.1 + p.1);
-                b_n += 1;
-            }
-            _ => {}
-        }
-    }
-    if a_n == 0 || b_n == 0 {
-        return None;
-    }
-    let a_c = (a_acc.0 / a_n as f64, a_acc.1 / a_n as f64);
-    let b_c = (b_acc.0 / b_n as f64, b_acc.1 / b_n as f64);
-    let u = (b_c.0 - a_c.0, b_c.1 - a_c.1);
-    let len = u.0.hypot(u.1);
-    if len < 1e-6 {
-        return None;
-    }
-    Some((c, (u.0 / len, u.1 / len)))
-}
 
 fn outline_path(loops: &[Vec<Point>]) -> String {
     let mut d = String::new();

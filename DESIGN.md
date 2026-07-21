@@ -285,23 +285,40 @@ from the start**:
 - **Classified first.** Area kinds (organic/ruin/dungeon) are assigned to the
   growth slots *before* growth (`lib.rs::classify_slots`), and every area
   carries its kind (`growth::Areas::kind`).
-- **Grown as its true geometry.** A dungeon slot grows via `growth::grow_room`
-  as a circle (concentric rings) or a rectangle (one whole side-strip at a
-  time, random side order). Every increment is all-or-nothing: if any cell of
-  the next ring/strip is blocked, that increment is refused — a rectangle
-  tries its other sides, a circle stops — so the footprint is an exact
-  rect/circle raster at every step and can never deform around a neighbour.
-  The room records its wall (`RuinShape` on `Areas::shape`, wall
-  `ROOM_WALL_PAD` outside the outermost cell centres); the cells are just the
-  ownership raster — the drawn wall is the true geometry, cutting through the
-  boundary hexes. Dungeon slots grow before everything else for space.
-- **Fusion is pairwise and opt-in.** Each dungeon room rolls whether it is
-  open to fusing (`FUSE_P`); two rooms may sit cell-adjacent — one compound
-  room, e.g. a rectangle with an attached silo — only when **both** rolled
-  open ([`AreaKind::may_fuse`] plus the growth-time allowance), and a used
-  allowance is spent, so compounds stay pairwise instead of percolating.
-  Fused pairs get no door (`topology`), and no other kind pair ever touches:
-  ruin reshaping explicitly refuses to claim a free cell beside a dungeon.
+- **Staggered simultaneous growth.** `growth::grow_areas` seeds a few areas
+  every 1–3 rounds and advances all of them together each round, so which
+  seeds land first — and thus which areas win the open space and grow large —
+  varies per map (natural size variety). Every area keeps a one-cell rock gap
+  from every other (`placeable`); the gaps become doorways. Because dropping an
+  under-sized area could orphan a neighbour, growth ends by keeping only the
+  largest connected component (`keep_largest_component`), so the door graph
+  always spans the map.
+- **Grown as its true geometry.** A dungeon area grows as a circle (one
+  concentric ring per round) or a rectangle (one side-strip per round, random
+  side order). Every increment is all-or-nothing: if any cell of the next
+  ring/strip is blocked, that increment is refused — a rectangle tries its
+  other sides, a circle stops. The wall (`RuinShape` on `Areas::shape`,
+  `ROOM_WALL_PAD` outside the outermost cell centres, derived from the final
+  cells) is the true geometry cutting through the boundary hexes; the cells are
+  just the ownership raster.
+- **Symmetric wings as sibling orbits.** `symmetry::choose` picks a per-map
+  plan; some dungeon areas become orbit **generators** whose sibling copies
+  grow in **lockstep** — each round the generator adds its increment and every
+  sibling adds the transformed increment (`symmetry::Xform`), committed only if
+  all members fit, so a wing is always exactly symmetric and self-sizing (when
+  one sibling is blocked, all stop). All symmetry is one mechanism: bilateral
+  (reflect), 180°, translated ("identical") and radial (3-/6-fold) are just
+  different transform sets about a shared centre. Hex lattice rotations are
+  exact only at order 2/3/6, and a render-space rectangle only survives
+  reflection/180°, so radial orbits grow disks. Generators are seeded first
+  (they need clean space); the copies are ordinary dungeon areas that get
+  doors, walls and decor like any room.
+- **Doorway buffer.** The cells forming an opening onto a dungeon room — the
+  door cell and any exit-stub cells — are added to the crisp/locked set passed
+  to the outline (`lib.rs`), even though they carry no room shape (they lock on
+  the raw hex boundary). This keeps the doorway jambs solid and pushes the
+  corridor's erosion one cell out, so it never eats into the dungeon wall or
+  rounds the corners next to a door.
 - **Walls never erode.** Dungeon cells are threaded into
   `outline::smooth_loops`, where their wall vertices project **hard** onto the
   room's exact geometry (no organic ramp) and lock: exempt from Laplacian

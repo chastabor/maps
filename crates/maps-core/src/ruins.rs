@@ -36,8 +36,20 @@ impl RuinShape {
             }
             RuinShape::Rect { cx, cy, hw, hh } => {
                 let (dx, dy) = (p.0 - cx, p.1 - cy);
-                let k = (dx.abs() / hw).max(dy.abs() / hh).max(1e-9);
-                (cx + dx / k, cy + dy / k)
+                if dx.abs() > hw || dy.abs() > hh {
+                    // Exterior: nearest point on the perimeter. A point
+                    // beyond a corner lands on the *exact* corner, so walls
+                    // meet at a sharp 90° (a radial map would spread the
+                    // corner quadrant over both edges — a chamfer).
+                    (cx + dx.clamp(-hw, hw), cy + dy.clamp(-hh, hh))
+                } else {
+                    // Interior (the trace cuts inside where a corner cell is
+                    // unfilled): push outward along the centre ray, which
+                    // lands the diagonal cut near the corner. Nearest-edge
+                    // would split the cut across both edges and re-chamfer.
+                    let k = (dx.abs() / hw).max(dy.abs() / hh).max(1e-9);
+                    (cx + dx / k, cy + dy / k)
+                }
             }
             RuinShape::StraightHall { ax, ay, bx, by, hw } => {
                 let (abx, aby) = (bx - ax, by - ay);

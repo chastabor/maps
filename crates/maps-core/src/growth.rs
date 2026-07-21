@@ -422,6 +422,16 @@ pub fn grow_areas<R: Rng>(
     keep_largest_component(grid, areas)
 }
 
+/// Union-find root lookup with path halving, over a parent-index slice.
+/// Union by re-rooting: `root[find(a)] = find(b)`.
+pub(crate) fn find(root: &mut [usize], mut i: usize) -> usize {
+    while root[i] != i {
+        root[i] = root[root[i]];
+        i = root[i];
+    }
+    i
+}
+
 /// Two areas are connected if a free cell touches both. Keep only the areas in
 /// the largest such connected component (by cell count).
 fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
@@ -430,13 +440,6 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
         return areas;
     }
     let mut root: Vec<usize> = (0..n).collect();
-    fn find(root: &mut [usize], mut i: usize) -> usize {
-        while root[i] != i {
-            root[i] = root[root[i]];
-            i = root[i];
-        }
-        i
-    }
     for &h in grid.cells() {
         if areas.owner_of(h).is_some() {
             continue;

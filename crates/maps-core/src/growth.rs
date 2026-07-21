@@ -27,6 +27,11 @@ const MIN_AREA: usize = 4;
 /// Organic areas add up to this many cells per round.
 const ORGANIC_STEP: usize = 2;
 
+/// Growth-target multiplier. Seeds are spread across the board (see
+/// `grow_areas`), so areas must grow larger than their nominal tag size to
+/// reach neighbours and connect rather than be dropped as unreachable.
+const GROWTH_BOOST: f64 = 1.5;
+
 /// A candidate cell `c` may join area `idx` iff it is in-grid, free, and every
 /// neighbour is free or already this area's — keeping the one-cell rock gap
 /// from every other area.
@@ -315,10 +320,29 @@ struct Orbit {
     active: bool,
 }
 
-/// A unit still waiting to be seeded.
-enum Unit {
-    Single { kind: AreaKind, target: usize },
-    Orbit { target: usize },
+/// One of four overlapping corner regions: the board's central third pushed
+/// one sixth further toward a corner, covering about a quarter of the board.
+/// Because each keeps the central third, all four overlap there (so seeds in
+/// different drops can still connect); because each stops short of the far
+/// edge, seeds never sit flush against the rim.
+struct Section {
+    /// Corner direction, each component ±1.
+    sx: f64,
+    sy: f64,
+    /// The board's pixel half-extent in each axis.
+    xmax: f64,
+    ymax: f64,
+}
+
+impl Section {
+    fn contains(&self, h: Hex, s: f64) -> bool {
+        let (x, y) = h.center(s);
+        let (dx, dy) = (x * self.sx, y * self.sy);
+        dx >= -self.xmax / 3.0
+            && dx <= 2.0 * self.xmax / 3.0
+            && dy >= -self.ymax / 3.0
+            && dy <= 2.0 * self.ymax / 3.0
+    }
 }
 
 /// Grow the areas (see the module docs). `slot_kinds[i]` is the pre-assigned
@@ -344,49 +368,93 @@ pub fn grow_areas<R: Rng>(
         cands[rng.random_range(0..cands.len().max(1)).min(cands.len().saturating_sub(1))]
     };
 
-    // Build the seed queue: orbit generators first (they need clean space),
-    // then the remaining areas shuffled so dungeon/ruin/organic interleave.
+    // Seeds are placed in three drops spread across four overlapping corner
+    // sections (a quarter of the board each) rather than all crowding the
+    // centre, so areas get room and fewer starve or fragment. Dungeon rooms
+    // (and their symmetry orbits) are forced into the first drop for clean
+    // space; the rest fill the three drops to roughly even thirds by count.
+    // Each drop draws one section its single areas seed in — orbits ignore it
+    // and radiate from `centre`, where symmetric wings fit.
+    //
+    // Spread seeds sit further apart, so targets are boosted 50%: bigger
+    // areas close the gaps to their neighbours and connect (a doorway needs a
+    // free cell touching both), instead of finishing short and being dropped
+    // as an unreachable component. The board is not resized, so the extra
+    // growth fills the room the sections opened up.
+    let target = |i: usize| ((params.sizes[i] as f64 * GROWTH_BOOST).round() as usize).max(1);
     let mut dungeon_targets: Vec<usize> =
-        (0..params.sizes.len()).filter(|&i| slot_kinds[i] == AreaKind::Dungeon).map(|i| params.sizes[i]).collect();
-    let mut queue: Vec<Unit> = Vec::new();
+        (0..params.sizes.len()).filter(|&i| slot_kinds[i] == AreaKind::Dungeon).map(target).collect();
+    let mut orbit_pending: Vec<usize> = Vec::new();
     for _ in 0..n_orbits {
-        queue.push(Unit::Orbit { target: dungeon_targets.pop().unwrap() });
+        orbit_pending.push(dungeon_targets.pop().unwrap());
     }
-    let mut rest: Vec<Unit> = Vec::new();
+    let n_dungeon_singles = dungeon_targets.len();
+    let mut others: Vec<(AreaKind, usize)> = (0..params.sizes.len())
+        .filter(|&i| slot_kinds[i] != AreaKind::Dungeon)
+        .map(|i| (slot_kinds[i], target(i)))
+        .collect();
+    others.shuffle(rng);
+
+    // Partition into three drops, ~even by total unit count (orbits counted
+    // though seeded separately), dungeon singles forced into drop 0.
+    let total = n_orbits + n_dungeon_singles + others.len();
+    let third = total.div_ceil(3);
+    let mut drops: [Vec<(AreaKind, usize)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for t in dungeon_targets {
-        rest.push(Unit::Single { kind: AreaKind::Dungeon, target: t });
+        drops[0].push((AreaKind::Dungeon, t));
     }
-    for (i, &k) in slot_kinds.iter().enumerate() {
-        if k != AreaKind::Dungeon {
-            rest.push(Unit::Single { kind: k, target: params.sizes[i] });
+    let mut d0 = n_orbits + drops[0].len();
+    let mut rest = others.into_iter();
+    while d0 < third {
+        match rest.next() {
+            Some(u) => {
+                drops[0].push(u);
+                d0 += 1;
+            }
+            None => break,
         }
     }
-    rest.shuffle(rng);
-    queue.extend(rest);
-    queue.reverse(); // pop() takes from the front
+    let leftover: Vec<(AreaKind, usize)> = rest.collect();
+    let half = leftover.len().div_ceil(2);
+    for (k, u) in leftover.into_iter().enumerate() {
+        drops[if k < half { 1 } else { 2 }].push(u);
+    }
 
+    // One section per drop, drawn from the four overlapping corners.
+    let corners = [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)];
+    let (mut xmax, mut ymax) = (0.0_f64, 0.0_f64);
+    for &h in grid.cells() {
+        let (x, y) = h.center(hex_size);
+        xmax = xmax.max(x.abs());
+        ymax = ymax.max(y.abs());
+    }
+    let sections: Vec<Section> = (0..drops.len())
+        .map(|_| {
+            let (sx, sy) = corners[rng.random_range(0..corners.len())];
+            Section { sx, sy, xmax, ymax }
+        })
+        .collect();
+
+    let mut next_drop = 0usize;
     let mut seed_gap = 0u32;
     let mut rounds = 0u32;
     let max_rounds = 8 * params.sizes.len() as u32 + 400;
     loop {
         rounds += 1;
-        // Seed a batch every 1–3 rounds.
-        if !queue.is_empty() && seed_gap == 0 {
-            let batch = rng.random_range(1..=3);
-            for _ in 0..batch {
-                let Some(unit) = queue.pop() else { break };
-                match unit {
-                    Unit::Single { kind, target } => {
-                        seed_single(grid, &mut owner, &mut builds, kind, target, hex_size, rng);
-                    }
-                    Unit::Orbit { target } => {
-                        if !seed_orbit(grid, &mut owner, &mut builds, &mut orbits, plan.as_ref().unwrap(), centre, target, hex_size, rng) {
-                            // No room right now; try again in a later batch.
-                            queue.insert(0, Unit::Orbit { target });
-                        }
-                    }
-                }
+        // Seed the next drop once its gap elapses.
+        if next_drop < drops.len() && seed_gap == 0 {
+            // Orbits seed (and retry) at each drop moment, before that drop's
+            // singles fill space — they need the cleanest room.
+            if let Some(plan) = plan.as_ref() {
+                orbit_pending.retain(|&target| {
+                    !seed_orbit(grid, &mut owner, &mut builds, &mut orbits, plan, centre, target, hex_size, rng)
+                });
             }
+            let section = &sections[next_drop];
+            for &(kind, target) in &drops[next_drop] {
+                seed_single(grid, &mut owner, &mut builds, kind, target, section, hex_size, rng);
+            }
+            next_drop += 1;
             seed_gap = rng.random_range(1..=3);
         } else {
             seed_gap = seed_gap.saturating_sub(1);
@@ -407,7 +475,7 @@ pub fn grow_areas<R: Rng>(
             }
         }
 
-        if queue.is_empty() && !any_active {
+        if next_drop >= drops.len() && !any_active {
             break;
         }
         if rounds >= max_rounds {
@@ -485,8 +553,8 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
     Areas { cells, kinds, shapes, owner }
 }
 
-/// Seed one independent area beside the existing cave (or at the centre when
-/// the board is empty). Silently skips if no clean spot is free.
+/// Seed one independent area within `section` (or anywhere clean if the
+/// section is full). Silently skips if no clean spot is free at all.
 #[allow(clippy::too_many_arguments)]
 fn seed_single<R: Rng>(
     grid: &HexGrid,
@@ -494,11 +562,12 @@ fn seed_single<R: Rng>(
     builds: &mut Vec<Build>,
     kind: AreaKind,
     target: usize,
+    section: &Section,
     hex_size: f64,
     rng: &mut R,
 ) {
     let idx = builds.len() as u32;
-    let seed = pick_seed(grid, owner, builds, idx, rng);
+    let seed = pick_seed(grid, owner, idx, section, hex_size, rng);
     let Some(seed) = seed else { return };
     owner.insert(seed, idx);
     let grow = if kind == AreaKind::Dungeon {
@@ -510,39 +579,33 @@ fn seed_single<R: Rng>(
     builds.push(Build { cells: vec![seed], kind, target, active: true, grow, is_rect });
 }
 
-/// A seed for a new independent area: the board centre for the first area,
-/// otherwise a free cell two hexes out from the existing cave (so it has a
-/// doorway candidate) whose whole neighbourhood is free.
-fn pick_seed<R: Rng>(grid: &HexGrid, owner: &CellMap<u32>, builds: &[Build], idx: u32, rng: &mut R) -> Option<Hex> {
-    if builds.is_empty() {
-        let valid: Vec<Hex> = grid
-            .cells()
-            .iter()
-            .copied()
-            .filter(|&h| placeable(grid, owner, idx, h))
-            .collect();
-        if valid.is_empty() {
-            return None;
-        }
-        let central: Vec<Hex> = valid.iter().copied().filter(|h| h.distance(Hex::ORIGIN) <= grid.radius / 3).collect();
-        let seeds = if central.is_empty() { &valid } else { &central };
-        return Some(seeds[rng.random_range(0..seeds.len())]);
+/// A seed cell for a new independent area: a random placeable cell inside
+/// `section`, or — if the section has filled up — any placeable cell on the
+/// board, so a crowded section costs distribution but never a whole area.
+fn pick_seed<R: Rng>(
+    grid: &HexGrid,
+    owner: &CellMap<u32>,
+    idx: u32,
+    section: &Section,
+    hex_size: f64,
+    rng: &mut R,
+) -> Option<Hex> {
+    let in_section: Vec<Hex> = grid
+        .cells()
+        .iter()
+        .copied()
+        .filter(|&h| placeable(grid, owner, idx, h) && section.contains(h, hex_size))
+        .collect();
+    if !in_section.is_empty() {
+        return Some(in_section[rng.random_range(0..in_section.len())]);
     }
-    let mut ring: BTreeSet<Hex> = BTreeSet::new();
-    for b in builds {
-        for &c in &b.cells {
-            for n in c.neighbors() {
-                for m in n.neighbors() {
-                    ring.insert(m);
-                }
-            }
-        }
-    }
-    let ring: Vec<Hex> = ring.into_iter().filter(|&h| placeable(grid, owner, idx, h)).collect();
-    if ring.is_empty() {
-        return None;
-    }
-    Some(ring[rng.random_range(0..ring.len())])
+    let any: Vec<Hex> = grid
+        .cells()
+        .iter()
+        .copied()
+        .filter(|&h| placeable(grid, owner, idx, h))
+        .collect();
+    (!any.is_empty()).then(|| any[rng.random_range(0..any.len())])
 }
 
 /// A fresh disk or (if `allow_rect`) rectangle centred on `seed`, in the

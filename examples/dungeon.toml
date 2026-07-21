@@ -1,0 +1,16 @@
+mode = "cave"
+seed = 11
+tags = "large,burrow,tree,junction,dry,ruins,dungeon"
+output = "examples/dungeon.svg"
+
+# 0 = no water .. 1 = fully submerged.
+water_level = 0.0
+
+# Fraction of areas regrown as geometric: rectangles, circles and straight
+# halls instead of organic cave.
+ruins_level = 1.0
+
+# Fraction of those geometric areas promoted from weathered ruin to clean,
+# doored dungeon rooms: crisp walls (no stipple/hatching) and a swing-door
+# glyph drawn at every opening onto a dungeon room.
+dungeon_level = 0.5

@@ -63,9 +63,21 @@ time. Candidates are weighted `c^gamma` where `c` is how many neighbours
 are already in the area: `cavities` pins gamma at 6 (round blobs), `coral`
 uses negative gamma (tendrils), `chaotic` prefers cells with exactly two
 connections. Growth preserves a **one-cell buffer** between areas — those
-gap cells are the future doorways. Two of our refinements: the first area
-seeds near the board centre, and later areas seed at distance 2 from an
-existing area so every area is guaranteed a doorway candidate.
+gap cells are the future doorways. An area stops at its tag-resolved target
+size (`advance_single`).
+
+Seeds are placed in **three drops** across **four overlapping corner
+sections** (`grow_areas`, our refinement over seeding everything centrally).
+Each section is the board's central third pushed one sixth toward a corner —
+about a quarter of the board, off the rim, all four sharing the centre. A
+drop draws one section and seeds its areas there; areas are split into even
+thirds by count with **dungeon rooms (and their symmetry orbits) forced into
+the first drop** for clean space (orbits ignore the section and radiate from
+a central point where symmetric wings fit). Spreading seeds this way stops
+them crowding and starving each other. Because spread seeds sit further
+apart, targets are boosted 50% (`GROWTH_BOOST`) so a grown area still reaches
+its neighbours' doorway range and connects, rather than finishing short and
+being dropped as unreachable (§ "Exits" and `keep_largest_component`).
 
 ### 4. Doorways (`topology.rs`)
 
@@ -84,10 +96,18 @@ width-1 passages.
 
 ### 6. Exits (`topology.rs`)
 
-Attachment cells are weighted by squared distance from the centre; a
-passage then walks outward cell by cell until it reaches the board rim
-(candidates that cannot reach it are discarded). Counts: `sealed` 0,
-`entrance` 1, `passage` 2, `junction` 3–4.
+The article picks exits from eligible **border cells**, weighted toward the
+rim — so in it a room can reach the board edge. Ours cannot: areas seed in
+corner sections that stop short of the rim (see §3) and never touch it, so no
+room cell sits on the border and an exit cannot be a tagged border cell. It
+is instead a **carved passage** from a room outward to the rim. Candidate attach cells
+(any area cell with a free outward neighbour) keep the article's
+squared-distance-from-centre weighting; a passage then walks outward cell by
+cell until it reaches the board rim. A walk that gets boxed in before the rim
+would dead-end mid-map, so that **candidate is discarded** — dropped from the
+exit-candidate list, not removed from the map; the area stays and can still
+host an exit from another of its cells. Counts: `sealed` 0, `entrance` 1,
+`passage` 2, `junction` 3–4.
 
 ### 7. Water as terrain elevation (`water.rs`)
 

@@ -264,38 +264,76 @@ pub(crate) fn smooth_loops<R: Rng>(
                 plain = chaikin_locked(&plain);
             }
             let flat: Vec<Point> = plain.into_iter().map(|(p, _)| p).collect();
-            let mut lp = remove_bowties(decimate(flat, 0.8));
-            for p in lp.iter_mut() {
-                *p = quantize_pt(*p);
+            let mut loops_out = split_bowties(decimate(flat, 0.8));
+            for lp in loops_out.iter_mut() {
+                for p in lp.iter_mut() {
+                    *p = quantize_pt(*p);
+                }
             }
-            lp
+            loops_out
         })
+        .flatten()
         .collect();
     (out, walls)
 }
 
+/// Signed-area magnitude of a closed polygon (shoelace).
+fn polygon_area(lp: &[Point]) -> f64 {
+    let n = lp.len();
+    let mut a = 0.0;
+    for i in 0..n {
+        let (x1, y1) = lp[i];
+        let (x2, y2) = lp[(i + 1) % n];
+        a += x1 * y2 - x2 * y1;
+    }
+    (a / 2.0).abs()
+}
+
 /// Enforce simple loops: wherever the boundary crosses itself (a "bowtie" —
-/// e.g. two ruin shapes' wall loci intersecting), cut the smaller lobe off
-/// at the crossing point. Guarantees the rendered border never loops over
-/// itself regardless of what upstream projection did.
-fn remove_bowties(mut lp: Vec<Point>) -> Vec<Point> {
-    for _ in 0..4 {
-        let Some((i, j, p)) = first_crossing(&lp) else {
-            return lp;
-        };
-        let lobe = j - i;
-        if lobe <= lp.len() / 2 {
-            lp.splice(i + 1..=j, [p]);
-        } else {
-            let mut kept: Vec<Point> = lp[i + 1..=j].to_vec();
-            kept.push(p);
-            lp = kept;
+/// two boundary segments intersecting, e.g. an exact dungeon wall pulled in
+/// until it meets the opposite side of a thin neck), **split** the loop into
+/// two sub-loops at the crossing rather than discarding a side. A pinch where
+/// two real floor regions meet at a point yields two real loops — both kept —
+/// so no floor is ever amputated (the old cut-the-shorter-lobe rule deleted
+/// whole rooms when the surviving side merely had more vertices). Only lobes
+/// below `MIN_AREA` are dropped: those are genuine smoothing slivers (a
+/// near-zero-width fold), not floor. Every returned loop is simple.
+fn split_bowties(lp: Vec<Point>) -> Vec<Vec<Point>> {
+    // A real chamber or corridor is hundreds of px²; a spurious fold left by
+    // smoothing is a thin needle far below one cell.
+    const MIN_AREA: f64 = 4.0;
+    let mut out: Vec<Vec<Point>> = Vec::new();
+    let mut stack = vec![lp];
+    // Each split strictly shrinks both halves, so this terminates; the budget
+    // only guards against pathological floating-point near-coincidences.
+    let mut budget = 512;
+    while let Some(cur) = stack.pop() {
+        if cur.len() < 3 {
+            continue;
         }
-        if lp.len() < 3 {
-            return lp;
+        budget -= 1;
+        if budget < 0 {
+            out.push(cur);
+            continue;
+        }
+        if let Some((i, j, p)) = first_crossing(&cur) {
+            // Segment i..i+1 crosses segment j..j+1 at p (i < j, non-adjacent).
+            // Loop A: p, cur[i+1..=j].  Loop B: p, cur[j+1..], cur[..=i].
+            let mut a: Vec<Point> = Vec::with_capacity(j - i + 1);
+            a.push(p);
+            a.extend_from_slice(&cur[i + 1..=j]);
+            let mut b: Vec<Point> = Vec::with_capacity(cur.len() - (j - i) + 1);
+            b.push(p);
+            b.extend_from_slice(&cur[j + 1..]);
+            b.extend_from_slice(&cur[..=i]);
+            stack.push(a);
+            stack.push(b);
+        } else {
+            out.push(cur);
         }
     }
-    lp
+    out.retain(|l| l.len() >= 3 && polygon_area(l) > MIN_AREA);
+    out
 }
 
 /// First pair of non-adjacent segments that intersect, with the crossing

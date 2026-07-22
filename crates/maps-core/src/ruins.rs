@@ -191,20 +191,6 @@ impl RuinShape {
         }
     }
 
-    /// Arc-length distance from a perimeter point to the nearest corner
-    /// (`INFINITY` for a shape with no corners, e.g. a circle).
-    pub fn corner_dist(&self, p: Point) -> f64 {
-        let Some(per) = self.perimeter() else { return f64::INFINITY };
-        let t = self.wall_param(p);
-        self.wall_corners()
-            .into_iter()
-            .map(|c| {
-                let d = (t - c).rem_euclid(per);
-                d.min(per - d)
-            })
-            .fold(f64::INFINITY, f64::min)
-    }
-
     /// Whether a pixel point is covered by the shape for rasterization,
     /// with a margin so the claimed cells extend slightly past the exact
     /// geometry — the traced cell boundary then lies outside the shape and

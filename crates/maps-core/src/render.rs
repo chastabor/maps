@@ -451,6 +451,15 @@ pub fn svg(map: &CaveMap) -> String {
         let w = DUNGEON_WALL_W * HEX_SIZE;
         let mut wall_d = String::new(); // hollow-wall outline (capsule per run)
         let mut shadow_d = String::new(); // inner line only (shadowed)
+        // Emit a polyline as SVG path commands: `M` on the first point (unless
+        // `continue_path`, which keeps drawing `L` from the current pen — used
+        // to trace the capsule's inner side back onto its outer side).
+        let emit = |d: &mut String, pts: &[Point], continue_path: bool| {
+            for (i, &(x, y)) in pts.iter().enumerate() {
+                let cmd = if i == 0 && !continue_path { "M" } else { "L" };
+                let _ = write!(d, "{cmd}{} {}", D1(x), D1(y));
+            }
+        };
         for (shape, run) in &map.dungeon_walls {
             let inner = shape.shrink(w);
             let closed = run.len() > 2 && run.first() == run.last();
@@ -459,20 +468,14 @@ pub fn svg(map: &CaveMap) -> String {
                 continue;
             }
             let inner_pts: Vec<Point> = pts.iter().map(|&p| inner.project(p)).collect();
-            // Shadow follows the inner line only.
-            for (i, &(x, y)) in inner_pts.iter().enumerate() {
-                let cmd = if i == 0 { "M" } else { "L" };
-                let _ = write!(shadow_d, "{cmd}{} {}", D1(x), D1(y));
-            }
+            // Shadow follows the inner line only (closed only when the run is a
+            // full ring; an open run's shadow stays an open polyline).
+            emit(&mut shadow_d, &inner_pts, false);
             if closed {
                 shadow_d.push('Z');
                 // A room with no gaps: outer is the border, so stroke only the
                 // inner ring.
-                for (i, &(x, y)) in inner_pts.iter().enumerate() {
-                    let cmd = if i == 0 { "M" } else { "L" };
-                    let _ = write!(wall_d, "{cmd}{} {}", D1(x), D1(y));
-                }
-                wall_d.push('Z');
+                emit(&mut wall_d, &inner_pts, false);
             } else {
                 // A run bounded by door/exit gaps: trace it as a closed
                 // capsule — outer boundary forward, then the inner line back —
@@ -480,15 +483,11 @@ pub fn svg(map: &CaveMap) -> String {
                 // the outline, not centre-line stubs. This accounts for the
                 // stroke thickness (no half-width poke into the opening) and
                 // keeps the faces flush with the wall-line ends.
-                for (i, &(x, y)) in pts.iter().enumerate() {
-                    let cmd = if i == 0 { "M" } else { "L" };
-                    let _ = write!(wall_d, "{cmd}{} {}", D1(x), D1(y));
-                }
-                for &(x, y) in inner_pts.iter().rev() {
-                    let _ = write!(wall_d, "L{} {}", D1(x), D1(y));
-                }
-                wall_d.push('Z');
+                emit(&mut wall_d, pts, false);
+                let rev: Vec<Point> = inner_pts.iter().rev().copied().collect();
+                emit(&mut wall_d, &rev, true);
             }
+            wall_d.push('Z');
         }
         // Drop shadow of the inner lines only, offset into the room and
         // clipped to the floor, matching the border's own shadow depth.

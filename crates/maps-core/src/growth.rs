@@ -26,6 +26,11 @@ const ROOM_WALL_PAD: f64 = 0.4;
 const MIN_AREA: usize = 4;
 /// Organic areas add up to this many cells per round.
 const ORGANIC_STEP: usize = 2;
+// Dungeon rects are stamped down at a minimum 7-hex flower footprint up front
+// (never grown into shape and found too thin), so a rect is born valid: a
+// single-row rect would leave no interior once the wall is drawn inward and
+// pinch its own neck into a bowtie. The flower spans 3 (odd) rows, so top and
+// bottom walls share a stagger parity and stay aligned. See `rect_footprint`.
 
 /// Growth-target multiplier. Seeds are spread across the board (see
 /// `grow_areas`), so areas must grow larger than their nominal tag size to
@@ -56,10 +61,6 @@ enum Shape {
 }
 
 impl Shape {
-    fn is_rect(&self) -> bool {
-        matches!(self, Shape::Rect { .. })
-    }
-
     /// The candidate next-increments (geometric cells + the resulting state):
     /// one ring for a disk, one per untried side for a rect (in `order`).
     fn candidates(&self, grid: &HexGrid, s: f64) -> Vec<(Vec<Hex>, Shape)> {
@@ -133,6 +134,41 @@ fn derive_shape(cells: &[Hex], is_rect: bool, s: f64) -> RuinShape {
         let c = (sx / cells.len() as f64, sy / cells.len() as f64);
         let r = cells.iter().map(|h| { let p = h.center(s); (p.0 - c.0).hypot(p.1 - c.1) }).fold(0.0, f64::max);
         RuinShape::Circle { cx: c.0, cy: c.1, r: r + pad }
+    }
+}
+
+/// The seven cells of a dungeon room's minimum footprint: `seed` plus its six
+/// neighbours (the **flower** — the cells a circle occupies after one ring).
+/// The room is stamped down at this size rather than grown into it, so it is
+/// born valid: convex (no concave notch for the wall splice to preserve), 3
+/// rows tall (odd, so top and bottom walls share a stagger parity), and every
+/// rect corner lands inside an outer hex. Returns `None` if any cell is
+/// blocked. The cells are not yet owned; the caller commits them.
+fn flower_footprint(grid: &HexGrid, owner: &CellMap<u32>, idx: u32, seed: Hex) -> Option<Vec<Hex>> {
+    let cells = flower_cells(seed);
+    cells.iter().all(|&h| placeable(grid, owner, idx, h)).then_some(cells)
+}
+
+/// The seven cells of the flower footprint centred on `seed` (seed + its six
+/// neighbours). The single definition of "minimum room = one-ring flower",
+/// shared by the single-seed path and the symmetry-orbit path.
+fn flower_cells(seed: Hex) -> Vec<Hex> {
+    let mut cells = vec![seed];
+    cells.extend(seed.neighbors());
+    cells
+}
+
+/// The growth [`Shape`] a flower footprint starts from: a rect fitted to the
+/// flower's bounding box, or a disk of one-ring radius. Both cover the same
+/// seven cells; only the wall (and how it grows) differs.
+fn footprint_shape(seed: Hex, s: f64, is_rect: bool, order: [usize; 4]) -> Shape {
+    let c = seed.center(s);
+    if is_rect {
+        let hw = SQRT3 * s; // W..E span of the flower centres
+        let hh = 1.5 * s; // N..S span
+        Shape::Rect { c, x0: c.0 - hw, x1: c.0 + hw, y0: c.1 - hh, y1: c.1 + hh, order }
+    } else {
+        Shape::Disk { c, r: SQRT3 * s }
     }
 }
 
@@ -567,16 +603,38 @@ fn seed_single<R: Rng>(
     rng: &mut R,
 ) {
     let idx = builds.len() as u32;
-    let seed = pick_seed(grid, owner, idx, section, hex_size, rng);
-    let Some(seed) = seed else { return };
+    // A dungeon room is stamped down at its minimum flower footprint so it is
+    // born valid — never grown into shape and found too thin (a single-row
+    // rect leaves no interior and pinches its own neck). Retry a few seed
+    // spots; if none fit the footprint, the area is skipped. Organics seed at
+    // a point as before.
+    if kind == AreaKind::Dungeon {
+        let is_rect = rng.random_bool(0.5);
+        let mut order = [0, 1, 2, 3];
+        order.shuffle(rng);
+        for _ in 0..8 {
+            let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else { return };
+            if let Some(cells) = flower_footprint(grid, owner, idx, seed) {
+                for &c in &cells {
+                    owner.insert(c, idx);
+                }
+                let shape = footprint_shape(seed, hex_size, is_rect, order);
+                builds.push(Build { cells, kind, target, active: true, grow: Grow::Shaped(shape), is_rect });
+                return;
+            }
+        }
+        return;
+    }
+    let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else { return };
     owner.insert(seed, idx);
-    let grow = if kind == AreaKind::Dungeon {
-        Grow::Shaped(new_shape(seed, true, hex_size, rng))
-    } else {
-        Grow::Organic { frontier: BTreeSet::new() }
-    };
-    let is_rect = matches!(&grow, Grow::Shaped(s) if s.is_rect());
-    builds.push(Build { cells: vec![seed], kind, target, active: true, grow, is_rect });
+    builds.push(Build {
+        cells: vec![seed],
+        kind,
+        target,
+        active: true,
+        grow: Grow::Organic { frontier: BTreeSet::new() },
+        is_rect: false,
+    });
 }
 
 /// A seed cell for a new independent area: a random placeable cell inside
@@ -606,19 +664,6 @@ fn pick_seed<R: Rng>(
         .filter(|&h| placeable(grid, owner, idx, h))
         .collect();
     (!any.is_empty()).then(|| any[rng.random_range(0..any.len())])
-}
-
-/// A fresh disk or (if `allow_rect`) rectangle centred on `seed`, in the
-/// engine's `hex_size` pixel units.
-fn new_shape<R: Rng>(seed: Hex, allow_rect: bool, hex_size: f64, rng: &mut R) -> Shape {
-    let c = seed.center(hex_size);
-    if allow_rect && rng.random_bool(0.5) {
-        let mut order = [0, 1, 2, 3];
-        order.shuffle(rng);
-        Shape::Rect { c, x0: c.0, x1: c.0, y0: c.1, y1: c.1, order }
-    } else {
-        Shape::Disk { c, r: 0.0 }
-    }
 }
 
 /// Advance one independent area by a single round's increment.
@@ -831,29 +876,60 @@ fn seed_orbit<R: Rng>(
             return false;
         }
         let gen_seed = ring[rng.random_range(0..ring.len())];
-        let seeds: Vec<Hex> = plan.xforms.iter().map(|xf| xf.cell(centre, gen_seed)).collect();
-        // All seeds distinct, placeable, and pairwise non-adjacent.
-        let uniq: std::collections::HashSet<Hex> = seeds.iter().copied().collect();
-        if uniq.len() != seeds.len() {
-            continue;
-        }
+        // Every member is stamped down at the full flower footprint up front —
+        // mirrored from the generator's — and the orbit only seeds if the
+        // *whole* symmetric set fits (all cells placeable, and members' cells
+        // keep a one-cell gap). Checking the footprints together means a wing
+        // never seeds only to fail growing into shape later.
+        let gen_flower = flower_cells(gen_seed);
+        let per_member: Vec<Vec<Hex>> = plan
+            .xforms
+            .iter()
+            .map(|xf| gen_flower.iter().map(|&c| xf.cell(centre, c)).collect())
+            .collect();
         let base = builds.len() as u32;
-        let ok = seeds.iter().enumerate().all(|(k, &c)| placeable(grid, owner, base + k as u32, c))
-            && seeds.iter().enumerate().all(|(k, &c)| {
-                seeds.iter().enumerate().all(|(k2, &c2)| k == k2 || c.distance(c2) >= 2)
-            });
-        if !ok {
+        let all: Vec<Hex> = per_member.iter().flatten().copied().collect();
+        let uniq: std::collections::HashSet<Hex> = all.iter().copied().collect();
+        if uniq.len() != all.len() {
             continue;
         }
-        // Commit: generator first, then siblings.
-        let shape = new_shape(gen_seed, allow_rect, hex_size, rng);
-        let is_rect = shape.is_rect();
+        let placeable_ok = per_member
+            .iter()
+            .enumerate()
+            .all(|(k, cells)| cells.iter().all(|&c| placeable(grid, owner, base + k as u32, c)));
+        if !placeable_ok {
+            continue;
+        }
+        // Members' cells keep a one-cell gap from each other.
+        let mut gap_ok = true;
+        'pair: for a in 0..per_member.len() {
+            for b in a + 1..per_member.len() {
+                for &ca in &per_member[a] {
+                    for &cb in &per_member[b] {
+                        if ca.distance(cb) < 2 {
+                            gap_ok = false;
+                            break 'pair;
+                        }
+                    }
+                }
+            }
+        }
+        if !gap_ok {
+            continue;
+        }
+        // Commit: generator (member 0) first, then siblings, all as flowers.
+        let is_rect = allow_rect && rng.random_bool(0.5);
+        let mut order = [0, 1, 2, 3];
+        order.shuffle(rng);
+        let shape = footprint_shape(gen_seed, hex_size, is_rect, order);
         let mut members = Vec::new();
-        for (k, &c) in seeds.iter().enumerate() {
+        for (k, cells) in per_member.into_iter().enumerate() {
             let idx = builds.len();
-            owner.insert(c, idx as u32);
+            for &c in &cells {
+                owner.insert(c, idx as u32);
+            }
             builds.push(Build {
-                cells: vec![c],
+                cells,
                 kind: AreaKind::Dungeon,
                 target,
                 active: k == 0, // only the generator's `active` matters (orbit drives)

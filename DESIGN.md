@@ -58,13 +58,26 @@ walks directly from axial arithmetic.)
 
 ### 3. Seed growth (`growth.rs`)
 
-Each area starts at a seed cell and accretes one neighbouring cell at a
-time. Candidates are weighted `c^gamma` where `c` is how many neighbours
-are already in the area: `cavities` pins gamma at 6 (round blobs), `coral`
-uses negative gamma (tendrils), `chaotic` prefers cells with exactly two
-connections. Growth preserves a **one-cell buffer** between areas — those
-gap cells are the future doorways. An area stops at its tag-resolved target
-size (`advance_single`).
+Each organic area starts at a seed cell and accretes one neighbouring cell
+at a time. Candidates are weighted `c^gamma` where `c` is how many
+neighbours are already in the area: `cavities` pins gamma at 6 (round
+blobs), `coral` uses negative gamma (tendrils), `chaotic` prefers cells with
+exactly two connections. Growth preserves a **one-cell buffer** between
+areas — those gap cells are the future doorways. An area stops at its
+tag-resolved target size (`advance_single`).
+
+**Dungeon rooms** are instead **stamped down at a minimum footprint** — the
+seven-hex flower (a seed plus its six neighbours, the cells a circle
+occupies after one ring) — before any growth, and only if the whole flower
+fits (`flower_footprint`, retried across seed spots, else the area is
+skipped). A room is therefore *born valid*: the flower is convex and three
+rows tall (odd, so a rect's top and bottom walls share a hex-stagger parity
+and stay aligned), so a rect never grows into a single-row hallway that
+leaves no interior once its wall is drawn inward, and its wall splices to a
+clean filled rectangle with no concave notch. From the flower it grows as
+its geometry — circles by rings, rects a side-strip at a time. Symmetry
+orbits stamp the generator's flower and every mirrored copy together, so a
+wing seeds only if the entire symmetric set fits.
 
 Seeds are placed in **three drops** across **four overlapping corner
 sections** (`grow_areas`, our refinement over seeding everything centrally).

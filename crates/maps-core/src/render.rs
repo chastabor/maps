@@ -372,6 +372,13 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
         s.push_str("</g>");
     }
 
+    // Dungeon doors, drawn BENEATH the rock wall (hatching, stipple, shadow,
+    // dungeon-wall band and the outline border all layer over it) so the door
+    // sits recessed in the opening — the wall overlaps its edges and the jamb
+    // caps merge into the wall line, instead of the glyph floating on the rock.
+    // A hex-aligned bar across the doorway with a dark cap at each end.
+    s.push_str(&door_layer(map, style));
+
     // Each fan is an opaque object: its background-filled hull blanks out
     // whatever earlier fans it overlaps before its own strokes go down.
     if !map.hatching.is_empty() {
@@ -509,11 +516,6 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
             style.line
         );
     }
-
-    // Dungeon doors, drawn UNDER the wall border so the jamb caps merge into
-    // the wall line: a hex-aligned bar across the doorway with a dark cap at
-    // each end. Wood / metal (banded) / portcullis (barred).
-    s.push_str(&door_layer(map, style));
 
     // The wall border: cell-level unions guarantee simple loops with no
     // interior segments, so a plain full-weight stroke on top is correct.

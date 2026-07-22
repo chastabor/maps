@@ -437,47 +437,70 @@ pub fn svg(map: &CaveMap) -> String {
         s.push_str("</g>");
     }
 
-    // Dungeon wall band: the spliced wall runs stroked as thick as a door,
-    // so a flush door bar reads as a segment of the wall itself (no interior
-    // recess) and the band swallows the seam where an organic corridor meets
-    // the gap cut into the exact wall. The thickness grows INWARD only: each
-    // run is offset half the band into its room, so the band's outer face
-    // stays on the traced boundary and external passages connect at the
-    // door's outer face. Exactly the runs the outline traced — never a full
-    // shape perimeter, which would stroke across the floor of an overlapping
-    // neighbour shape. Gaps between runs (the doorway and exit openings)
-    // stay unstroked.
+    // Dungeon wall: a HOLLOW wall drawn as two thin lines, each the weight of
+    // the organic border. The outer face is the traced boundary (stroked by
+    // the border pass below); here we add the INNER face — each run offset one
+    // band-width into its room. The gap between the two lines stays floor, so
+    // the wall reads as a clean double line at organic thickness (no abrupt
+    // thick→thin step where it meets a weathered wall) and the decor pass can
+    // later fill the hollow with any masonry/pattern. Exactly the runs the
+    // outline traced — never a full shape perimeter, which would stroke across
+    // an overlapping neighbour's floor. Gaps between runs (doorway and exit
+    // openings) stay unstroked.
     if !map.dungeon_walls.is_empty() {
         let w = DUNGEON_WALL_W * HEX_SIZE;
-        let mut d = String::new();
+        let mut wall_d = String::new(); // hollow-wall outline (capsule per run)
+        let mut shadow_d = String::new(); // inner line only (shadowed)
         for (shape, run) in &map.dungeon_walls {
-            let inner = shape.shrink(w / 2.0);
+            let inner = shape.shrink(w);
             let closed = run.len() > 2 && run.first() == run.last();
             let pts = if closed { &run[..run.len() - 1] } else { &run[..] };
-            for (i, &p) in pts.iter().enumerate() {
-                let (x, y) = inner.project(p);
+            if pts.is_empty() {
+                continue;
+            }
+            let inner_pts: Vec<Point> = pts.iter().map(|&p| inner.project(p)).collect();
+            // Shadow follows the inner line only.
+            for (i, &(x, y)) in inner_pts.iter().enumerate() {
                 let cmd = if i == 0 { "M" } else { "L" };
-                let _ = write!(d, "{cmd}{} {}", D1(x), D1(y));
+                let _ = write!(shadow_d, "{cmd}{} {}", D1(x), D1(y));
             }
             if closed {
-                d.push('Z');
+                shadow_d.push('Z');
+                // A room with no gaps: outer is the border, so stroke only the
+                // inner ring.
+                for (i, &(x, y)) in inner_pts.iter().enumerate() {
+                    let cmd = if i == 0 { "M" } else { "L" };
+                    let _ = write!(wall_d, "{cmd}{} {}", D1(x), D1(y));
+                }
+                wall_d.push('Z');
+            } else {
+                // A run bounded by door/exit gaps: trace it as a closed
+                // capsule — outer boundary forward, then the inner line back —
+                // so the two jamb faces closing the gaps are mitred corners of
+                // the outline, not centre-line stubs. This accounts for the
+                // stroke thickness (no half-width poke into the opening) and
+                // keeps the faces flush with the wall-line ends.
+                for (i, &(x, y)) in pts.iter().enumerate() {
+                    let cmd = if i == 0 { "M" } else { "L" };
+                    let _ = write!(wall_d, "{cmd}{} {}", D1(x), D1(y));
+                }
+                for &(x, y) in inner_pts.iter().rev() {
+                    let _ = write!(wall_d, "L{} {}", D1(x), D1(y));
+                }
+                wall_d.push('Z');
             }
         }
-        // Drop shadow first: the thick inward band would otherwise cover the
-        // floor-path shadow of the room wall, flattening the room. Offset the
-        // band down-right, clipped to the floor, so the shade falls inside the
-        // room just past the band's inner edge — matching the border shadow.
+        // Drop shadow of the inner lines only, offset into the room and
+        // clipped to the floor, matching the border's own shadow depth.
         let _ = write!(
             s,
-            r##"<g clip-path="url(#floor)"><path d="{d}" transform="translate(1.5 2)" fill="none" stroke="{}" stroke-width="{}" stroke-linejoin="miter" stroke-opacity="0.7"/></g>"##,
-            style.shadow,
-            D1(w)
+            r##"<g clip-path="url(#floor)"><path d="{shadow_d}" transform="translate(1.5 2)" fill="none" stroke="{}" stroke-width="4.5" stroke-linejoin="round" stroke-opacity="0.7"/></g>"##,
+            style.shadow
         );
         let _ = write!(
             s,
-            r##"<path d="{d}" fill="none" stroke="{}" stroke-width="{}" stroke-linejoin="miter"/>"##,
-            style.line,
-            D1(w)
+            r##"<path d="{wall_d}" fill="none" stroke="{}" stroke-width="2.4" stroke-linejoin="round"/>"##,
+            style.line
         );
     }
 

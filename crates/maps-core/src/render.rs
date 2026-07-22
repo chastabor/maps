@@ -437,6 +437,50 @@ pub fn svg(map: &CaveMap) -> String {
         s.push_str("</g>");
     }
 
+    // Dungeon wall band: the spliced wall runs stroked as thick as a door,
+    // so a flush door bar reads as a segment of the wall itself (no interior
+    // recess) and the band swallows the seam where an organic corridor meets
+    // the gap cut into the exact wall. The thickness grows INWARD only: each
+    // run is offset half the band into its room, so the band's outer face
+    // stays on the traced boundary and external passages connect at the
+    // door's outer face. Exactly the runs the outline traced — never a full
+    // shape perimeter, which would stroke across the floor of an overlapping
+    // neighbour shape. Gaps between runs (the doorway and exit openings)
+    // stay unstroked.
+    if !map.dungeon_walls.is_empty() {
+        let w = DUNGEON_WALL_W * HEX_SIZE;
+        let mut d = String::new();
+        for (shape, run) in &map.dungeon_walls {
+            let inner = shape.shrink(w / 2.0);
+            let closed = run.len() > 2 && run.first() == run.last();
+            let pts = if closed { &run[..run.len() - 1] } else { &run[..] };
+            for (i, &p) in pts.iter().enumerate() {
+                let (x, y) = inner.project(p);
+                let cmd = if i == 0 { "M" } else { "L" };
+                let _ = write!(d, "{cmd}{} {}", D1(x), D1(y));
+            }
+            if closed {
+                d.push('Z');
+            }
+        }
+        // Drop shadow first: the thick inward band would otherwise cover the
+        // floor-path shadow of the room wall, flattening the room. Offset the
+        // band down-right, clipped to the floor, so the shade falls inside the
+        // room just past the band's inner edge — matching the border shadow.
+        let _ = write!(
+            s,
+            r##"<g clip-path="url(#floor)"><path d="{d}" transform="translate(1.5 2)" fill="none" stroke="{}" stroke-width="{}" stroke-linejoin="miter" stroke-opacity="0.7"/></g>"##,
+            style.shadow,
+            D1(w)
+        );
+        let _ = write!(
+            s,
+            r##"<path d="{d}" fill="none" stroke="{}" stroke-width="{}" stroke-linejoin="miter"/>"##,
+            style.line,
+            D1(w)
+        );
+    }
+
     // Dungeon doors, drawn UNDER the wall border so the jamb caps merge into
     // the wall line: a hex-aligned bar across the doorway with a dark cap at
     // each end. Wood / metal (banded) / portcullis (barred).
@@ -470,18 +514,20 @@ const DOOR_LEAF_HALF: f64 = 0.26;
 const DOOR_CAP_R: f64 = 0.30;
 /// Radius of one portcullis bar (drawn as a ring).
 const DOOR_BAR_R: f64 = 0.14;
-/// How far outside the room wall a wall-anchored door bar sits, in hex-size
-/// units — inside the doorway lip, so the glyph reads as set into the frame.
-const DOOR_BAR_OFF: f64 = 0.25;
+/// Thickness of the dungeon wall band, in hex-size units — a shade wider
+/// than a door leaf (2·[`DOOR_LEAF_HALF`] plus its stroke), so a flush bar
+/// sits fully within the wall's thickness.
+const DUNGEON_WALL_W: f64 = 0.6;
 
 /// The doors layer: for every mouth onto a dungeon room (see
-/// [`crate::doorway`]) a bar spanning the doorway with a dark jamb cap at
-/// each end, drawn inside the mouth's lip: just outside the pierced wall, or
-/// midway between the two walls of a two-room door. A multi-door mouth gets
-/// one **double door** spanning the whole opening: a longer bar with a seam
-/// per leaf (or a longer portcullis). Drawn as one group so the caller can
-/// slip it *under* the wall border, where the caps merge into the wall line.
-/// Returns `""` when the map has no dungeon doors.
+/// [`crate::doorway`]) a bar spanning the opening with a dark jamb cap at
+/// each end, drawn **flush on the wall line** — the bar sits within the
+/// thick dungeon wall band, so the door has no visible depth on either
+/// side. A multi-door mouth gets one **double door** spanning the whole
+/// opening: a longer bar with a seam per leaf (or a longer portcullis).
+/// Drawn as one group so the caller can slip it *under* the wall border,
+/// where the caps merge into the wall line. Returns `""` when the map has
+/// no dungeon doors.
 fn door_layer(map: &CaveMap, style: &Style) -> String {
     let ap = HEX_SIZE * HEX_APOTHEM; // half a single doorway's span
     let lw = DOOR_LEAF_HALF * HEX_SIZE;
@@ -494,18 +540,37 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
 
     let doors = &map.topology.doors;
     for m in &map.mouths {
-        let off = match m.anchor {
-            crate::doorway::Anchor::Wall => DOOR_BAR_OFF * HEX_SIZE,
+        // Wall-anchored bars sit half the wall band INSIDE the room, so the
+        // leaf spans the inward-thick wall: its outer face flush with the
+        // traced boundary, no visible depth on the inside.
+        let inward = match m.anchor {
+            crate::doorway::Anchor::Wall => 0.5 * DUNGEON_WALL_W * HEX_SIZE,
             crate::doorway::Anchor::Midgap | crate::doorway::Anchor::Free => 0.0,
         };
-        let c0 = (m.wall.0 + m.out.0 * off, m.wall.1 + m.out.1 * off);
-        let axis = m.axis;
-        let perp = (-axis.1, axis.0);
-        // The bar spans the mouth's controlled opening — the same width the
-        // outline cuts into the wall — centred on the member cells.
-        let t_c = crate::doorway::opening_mid(m);
-        let (t0, t1) = (t_c - m.opening / 2.0, t_c + m.opening / 2.0);
-        let at = |t: f64| (c0.0 + axis.0 * t, c0.1 + axis.1 * t);
+        let (t0, t1) = (-m.opening / 2.0, m.opening / 2.0);
+        // The opening's two endpoints, pulled `inward` into the room. On a
+        // round room these sit on the ring at the ±half-opening arc, so the
+        // straight bar drawn between them is a chord — a touch narrower than
+        // the arc, and wholly inside the ring (never poking out as a wide
+        // tangent bar would).
+        let endpoint = |t: f64| -> Point {
+            if let Some(sh @ crate::ruins::RuinShape::Circle { cx, cy, .. }) = m.shape {
+                let wp = sh.wall_point(sh.wall_param(m.center) + t);
+                let (nx, ny) = (cx - wp.0, cy - wp.1);
+                let d = nx.hypot(ny).max(1e-9);
+                (wp.0 + nx / d * inward, wp.1 + ny / d * inward)
+            } else {
+                (m.center.0 + m.axis.0 * t - m.out.0 * inward,
+                 m.center.1 + m.axis.1 * t - m.out.1 * inward)
+            }
+        };
+        let (e1, e2) = (endpoint(t0), endpoint(t1));
+        // The bar itself stays perfectly straight: interpolate along the
+        // chord between the two endpoints.
+        let at = |t: f64| -> Point {
+            let f = (t - t0) / (t1 - t0);
+            (e1.0 + (e2.0 - e1.0) * f, e1.1 + (e2.1 - e1.1) * f)
+        };
         // One glyph for the whole mouth; a double door takes the "strongest"
         // member style, so a portcullis half never downgrades to plain wood
         // and a doored half never loses its leaf to an `Open` sibling.
@@ -527,12 +592,17 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
             // caps.
             continue;
         }
-        let (e1, e2) = (at(t0), at(t1));
         let _ = write!(
             caps,
             r##"<circle cx="{}" cy="{}" r="{cr}"/><circle cx="{}" cy="{}" r="{cr}"/>"##,
             D1(e1.0), D1(e1.1), D1(e2.0), D1(e2.1), cr = D1(cr),
         );
+        // Leaf normal from the chord between the ends (the leaf plank spans
+        // the opening; on a circle its ends sit on the ring, its centre a
+        // touch inside — reads as recessed, never protruding).
+        let (dx, dy) = (e2.0 - e1.0, e2.1 - e1.1);
+        let dl = dx.hypot(dy).max(1e-9);
+        let perp = (-dy / dl, dx / dl);
         // One leaf per hex of opening (a double/triple door for wide mouths).
         let leaves_n = (m.opening / (2.0 * ap)).round().max(1.0) as usize;
         match kind {
@@ -549,7 +619,8 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
             kind => {
                 // A leaf rectangle spanning the mouth.
                 let corner = |t: f64, sp: f64| {
-                    (c0.0 + axis.0 * t + perp.0 * lw * sp, c0.1 + axis.1 * t + perp.1 * lw * sp)
+                    let p = at(t);
+                    (p.0 + perp.0 * lw * sp, p.1 + perp.1 * lw * sp)
                 };
                 let (p1, p2, p3, p4) =
                     (corner(t1, 1.0), corner(t0, 1.0), corner(t0, -1.0), corner(t1, -1.0));
@@ -576,8 +647,10 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
         return String::new();
     }
     // Caps under the leaves so only their rounded ends show beyond the bar.
+    // No floor clip: a flush bar straddles the wall line, half of it over
+    // the rock-side half of the wall band.
     let mut out = String::new();
-    let _ = write!(out, r##"<g clip-path="url(#floor)"><g fill="{}">{caps}</g>"##, style.line);
+    let _ = write!(out, r##"<g><g fill="{}">{caps}</g>"##, style.line);
     if !leaves.is_empty() {
         let _ = write!(
             out,

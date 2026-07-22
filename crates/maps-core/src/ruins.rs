@@ -96,6 +96,23 @@ impl RuinShape {
         }
     }
 
+    /// The room shape offset inward by `d`: the locus of points `d` inside
+    /// the wall. Strokes of width `2d` centred on it span exactly from the
+    /// wall to `2d` inside — the inward-thick dungeon wall band, whose outer
+    /// face stays on the traced outline. Halls pass through unchanged.
+    pub fn shrink(&self, d: f64) -> RuinShape {
+        match *self {
+            RuinShape::Rect { cx, cy, hw, hh } => RuinShape::Rect {
+                cx,
+                cy,
+                hw: (hw - d).max(0.1),
+                hh: (hh - d).max(0.1),
+            },
+            RuinShape::Circle { cx, cy, r } => RuinShape::Circle { cx, cy, r: (r - d).max(0.1) },
+            other => other,
+        }
+    }
+
     /// Wall length of a **room** shape (rect perimeter / circle circumference);
     /// `None` for halls, which have no closed room wall. The room shapes are
     /// exactly those whose walls the outline splices onto exact geometry, so
@@ -172,6 +189,20 @@ impl RuinShape {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Arc-length distance from a perimeter point to the nearest corner
+    /// (`INFINITY` for a shape with no corners, e.g. a circle).
+    pub fn corner_dist(&self, p: Point) -> f64 {
+        let Some(per) = self.perimeter() else { return f64::INFINITY };
+        let t = self.wall_param(p);
+        self.wall_corners()
+            .into_iter()
+            .map(|c| {
+                let d = (t - c).rem_euclid(per);
+                d.min(per - d)
+            })
+            .fold(f64::INFINITY, f64::min)
     }
 
     /// Whether a pixel point is covered by the shape for rasterization,

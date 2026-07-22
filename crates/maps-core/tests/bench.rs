@@ -40,7 +40,7 @@ fn stages() {
 
         let t = Instant::now();
         let ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
-        let outline =
+        let (outline, _walls) =
             build_outline(&areas, &topo, &ruin_map, &std::collections::HashMap::new(), &[], &oparams, &mut rng);
         acc[3] += t.elapsed().as_secs_f64();
 

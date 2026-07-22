@@ -103,6 +103,12 @@ pub struct CaveMap {
     pub topology: Topology,
     /// Smoothed floor boundary loops (outer walls and interior pillars).
     pub outline: Vec<Vec<Point>>,
+    /// The spliced dungeon wall runs as `(room shape, polyline)`, one per
+    /// run (a closed run repeats its first point). At render time each run
+    /// is offset inward on its shape and stroked thick — the dungeon wall
+    /// band, exactly the wall the outline traced, its outer face on the
+    /// traced boundary, with gaps at every doorway and exit opening.
+    pub dungeon_walls: Vec<(ruins::RuinShape, Vec<Point>)>,
     /// Smoothed water pool loops at the waterline.
     pub water: Vec<Vec<Point>>,
     /// Deep-water band inside the pools (terrain well below the level).
@@ -291,15 +297,14 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     ruins::build(&mut areas, &topology, &grid, oparams.hex_size, &mut rng);
     let mut ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
 
-    // Doorway mouths onto dungeon rooms. Each mouth's door cells (and each
-    // dungeon exit's stub cells) project onto a straight throat through the
-    // wall — the crisp doorway lip — instead of the old whole-cell raw-hex
-    // lock, which bulged a full hexagon at every opening. `clean_shapes` is
-    // the wall geometry (rooms, plugs, exit lips) whose decor stays a clean
+    // Doorway mouths onto dungeon rooms: flush openings cut into the exact
+    // wall, nothing built outside it. Only each dungeon exit's stub cells
+    // still project onto a straight throat through the wall. `clean_shapes`
+    // is the wall geometry (rooms, exit lips) whose decor stays a clean
     // line.
     let mouths = doorway::mouths(&topology, &areas, oparams.hex_size);
     let (plug_cells, clean_shapes) =
-        doorway::apply_plugs(&mut ruin_map, &mouths, &topology, &areas, oparams.hex_size);
+        doorway::apply_plugs(&mut ruin_map, &topology, &areas, oparams.hex_size);
 
     // Style each door that opens onto a dungeon room; other doors keep a
     // default entry and draw nothing. A door directly between two dungeon
@@ -345,7 +350,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // Jamb anchors: the outline snaps each wall gap to its mouth's opening
     // width, so wall, throat and door bar always agree.
     let jambs = doorway::jambs(&mouths, &topology, &areas, oparams.hex_size);
-    let outline =
+    let (outline, dungeon_walls) =
         build_outline(&areas, &topology, &ruin_map, &dungeon_cells, &jambs, oparams, &mut rng);
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
     let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
@@ -421,6 +426,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         areas,
         topology,
         outline,
+        dungeon_walls,
         water: w.pools,
         deep_water: w.deep,
         mud: w.mud,

@@ -111,6 +111,12 @@ pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology) -> (HashSet<H
 /// `ruins::ruin_cell_map`). `dungeon_cells` maps every dungeon room cell to
 /// its room's shape: those boundary runs are **spliced** onto the exact
 /// geometry (shape-tile tracing) and locked against every pass.
+/// Returns `(loops, dungeon_walls)`: the smoothed floor loops, plus each
+/// spliced dungeon wall run as `(room shape, polyline)` (a closed run
+/// repeats its first point) — the renderer offsets each run inward on its
+/// shape and strokes it thick, so the wall band covers precisely the wall
+/// that was traced and never a stretch of perimeter that another shape's
+/// floor swallowed.
 pub fn build_outline<R: Rng>(
     areas: &Areas,
     topology: &Topology,
@@ -119,7 +125,7 @@ pub fn build_outline<R: Rng>(
     jambs: &[Jamb],
     params: &OutlineParams,
     rng: &mut R,
-) -> Vec<Vec<Point>> {
+) -> (Vec<Vec<Point>>, Vec<(RuinShape, Vec<Point>)>) {
     let (floor, narrow) = floor_and_narrow(areas, topology);
     smooth_loops(trace_loops(&floor), &narrow, ruin_cells, dungeon_cells, jambs, params, rng)
 }
@@ -137,9 +143,10 @@ pub(crate) fn smooth_loops<R: Rng>(
     jambs: &[Jamb],
     params: &OutlineParams,
     rng: &mut R,
-) -> Vec<Vec<Point>> {
+) -> (Vec<Vec<Point>>, Vec<(RuinShape, Vec<Point>)>) {
     let size = params.hex_size;
-    loops
+    let mut walls: Vec<(RuinShape, Vec<Point>)> = Vec::new();
+    let out = loops
         .into_iter()
         .map(|lp| {
             // Tagged points: position, the owning cell's centre if that cell
@@ -159,7 +166,7 @@ pub(crate) fn smooth_loops<R: Rng>(
 
             // Shape-tile tracing: swap each dungeon run's raster vertices for
             // the exact wall before any smoothing or random pass sees them.
-            splice_dungeon_runs(&mut pts, jambs, size);
+            splice_dungeon_runs(&mut pts, jambs, size, &mut walls);
 
             pts = subdivide_tagged(&pts);
             for _ in 0..params.smooth_passes {
@@ -263,7 +270,8 @@ pub(crate) fn smooth_loops<R: Rng>(
             }
             lp
         })
-        .collect()
+        .collect();
+    (out, walls)
 }
 
 /// Enforce simple loops: wherever the boundary crosses itself (a "bowtie" —
@@ -431,7 +439,18 @@ type TaggedPoint = (Point, Option<Point>, Option<RuinShape>, bool);
 /// out straight and corners exact by construction. Spliced vertices keep the
 /// dungeon flag and shape tag, so every later pass holds them locked and the
 /// hard projection is an identity.
-fn splice_dungeon_runs(pts: &mut Vec<TaggedPoint>, jambs: &[Jamb], s: f64) {
+///
+/// Each emitted run is also pushed onto `walls` (quantized like the final
+/// outline; a closed run repeats its first point) for the renderer's thick
+/// dungeon-wall band. The locked run survives the rest of the pipeline
+/// verbatim up to `decimate`/`quantize`, so the captured polyline coincides
+/// with the rendered outline to well under a pixel.
+fn splice_dungeon_runs(
+    pts: &mut Vec<TaggedPoint>,
+    jambs: &[Jamb],
+    s: f64,
+    walls: &mut Vec<(RuinShape, Vec<Point>)>,
+) {
     // A vertex is splicable when it belongs to a dungeon room *and* carries a
     // room shape (one with a perimeter — rooms, not halls); `perimeter()` is
     // the single source of truth for that.
@@ -443,8 +462,14 @@ fn splice_dungeon_runs(pts: &mut Vec<TaggedPoint>, jambs: &[Jamb], s: f64) {
     // snap it to the mouth's jamb (opening centre ± half-opening along the
     // wall) so the gap cut into the wall is exactly the doorway the bar
     // spans — closing gaps that sprawl wider and relieving pinches narrower.
+    // `side` picks WHICH jamb edge (+1 → `tw + half`, -1 → `tw - half`): an
+    // endpoint must snap to the edge that OPENS its gap — the run's end to
+    // the edge where the gap begins in walk direction, the run's start to
+    // the edge where it ends. Snapping to the nearest of both edges could
+    // pull both endpoints onto the SAME edge (e.g. an opening clamped
+    // against a corner), sealing the doorway shut.
     let snap_range = 2.2 * crate::grid::SQRT3 / 2.0 * s;
-    let snap = |shape: &RuinShape, t: f64| -> f64 {
+    let snap = |shape: &RuinShape, t: f64, side: f64| -> f64 {
         let per = shape.perimeter().unwrap_or(0.0);
         let cyc = |a: f64, b: f64| {
             let d = (a - b).rem_euclid(per);
@@ -453,11 +478,10 @@ fn splice_dungeon_runs(pts: &mut Vec<TaggedPoint>, jambs: &[Jamb], s: f64) {
         let mut best = (snap_range, t);
         for jamb in jambs.iter().filter(|j| &j.shape == shape) {
             let tw = shape.wall_param(jamb.center);
-            for j in [(tw - jamb.half).rem_euclid(per), (tw + jamb.half).rem_euclid(per)] {
-                let d = cyc(t, j);
-                if d < best.0 {
-                    best = (d, j);
-                }
+            let j = (tw + side * jamb.half).rem_euclid(per);
+            let d = cyc(t, j);
+            if d < best.0 {
+                best = (d, j);
             }
         }
         best.1
@@ -470,10 +494,15 @@ fn splice_dungeon_runs(pts: &mut Vec<TaggedPoint>, jambs: &[Jamb], s: f64) {
         None => {
             let shape = pts[0].2.unwrap();
             let t0 = shape.wall_param(shape.project(pts[0].0));
-            *pts = wall_walk(&shape, t0, 1.0, shape.perimeter().unwrap_or(0.0), s, true)
-                .into_iter()
-                .map(|p| (p, None, Some(shape), true))
-                .collect();
+            let walk = wall_walk(&shape, t0, 1.0, shape.perimeter().unwrap_or(0.0), s, true);
+            let mut run: Vec<Point> = walk.iter().map(|&p| quantize_pt(p)).collect();
+            if let Some(&first) = run.first() {
+                run.push(first);
+            }
+            if run.len() > 2 {
+                walls.push((shape, run));
+            }
+            *pts = walk.into_iter().map(|p| (p, None, Some(shape), true)).collect();
             return;
         }
     }
@@ -508,18 +537,24 @@ fn splice_dungeon_runs(pts: &mut Vec<TaggedPoint>, jambs: &[Jamb], s: f64) {
             (tm - raw_a).rem_euclid(per) <= fwd_raw + 1e-9
         };
         // A snap that folds the run to nothing (both ends grabbed by one
-        // jamb) falls back to the raw endpoints.
+        // jamb) falls back to the raw endpoints. The run's start follows a
+        // gap and its end precedes one, so with walk direction `d` the start
+        // snaps to a jamb's `tw + d·half` edge and the end to `tw - d·half`.
+        let d_sign = if forward { 1.0 } else { -1.0 };
         let len_of = |a: f64, b: f64| {
             if forward { (b - a).rem_euclid(per) } else { (a - b).rem_euclid(per) }
         };
-        let mut ta = snap(&shape, raw_a);
-        let mut len = len_of(ta, snap(&shape, raw_b));
+        let mut ta = snap(&shape, raw_a, d_sign);
+        let mut len = len_of(ta, snap(&shape, raw_b, -d_sign));
         if len < 1e-6 && fwd_raw > 1e-6 {
             ta = raw_a;
             len = len_of(raw_a, raw_b);
         }
-        let dir = if forward { 1.0 } else { -1.0 };
-        for p in wall_walk(&shape, ta, dir, len, s, false) {
+        let walk = wall_walk(&shape, ta, d_sign, len, s, false);
+        if walk.len() > 1 {
+            walls.push((shape, walk.iter().map(|&p| quantize_pt(p)).collect()));
+        }
+        for p in walk {
             if out.last().map(|&(q, _, _, _)| q) != Some(p) {
                 out.push((p, None, Some(shape), true));
             }

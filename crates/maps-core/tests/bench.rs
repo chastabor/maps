@@ -35,7 +35,7 @@ fn stages() {
         acc[1] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();
-        ruins::build(&mut areas, &topo, &grid, oparams.hex_size, &mut rng);
+        ruins::build(&mut areas, &topo, oparams.hex_size, &mut rng);
         acc[2] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();

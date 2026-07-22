@@ -294,7 +294,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // layers (outline, water, stones, decor) see the real footprint and
     // touching shapes union at the cell level. Ruins that can't reshape are
     // demoted back to organic inside; dungeon rooms grew as their geometry.
-    ruins::build(&mut areas, &topology, &grid, oparams.hex_size, &mut rng);
+    ruins::build(&mut areas, &topology, oparams.hex_size, &mut rng);
     let mut ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
 
     // Doorway mouths onto dungeon rooms: flush openings cut into the exact

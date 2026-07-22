@@ -23,7 +23,7 @@ const SQRT3: f64 = crate::grid::SQRT3;
 /// is the true geometry cutting through the boundary hexes.
 const ROOM_WALL_PAD: f64 = 0.4;
 /// Areas smaller than this are discarded as failed growths.
-const MIN_AREA: usize = 4;
+pub(crate) const MIN_AREA: usize = 4;
 /// Organic areas add up to this many cells per round.
 const ORGANIC_STEP: usize = 2;
 // Dungeon rects are stamped down at a minimum 7-hex flower footprint up front
@@ -603,17 +603,17 @@ fn seed_single<R: Rng>(
     rng: &mut R,
 ) {
     let idx = builds.len() as u32;
-    // A dungeon room is stamped down at its minimum flower footprint so it is
-    // born valid — never grown into shape and found too thin (a single-row
-    // rect leaves no interior and pinches its own neck). Retry a few seed
-    // spots; if none fit the footprint, the area is skipped. Organics seed at
-    // a point as before.
-    if kind == AreaKind::Dungeon {
+    // Dungeon AND ruin rooms are stamped down at their minimum flower footprint
+    // so they are born valid — never grown into shape and found too thin (a
+    // single-row rect leaves no interior and pinches its own neck) — and grow
+    // as their exact geometry, hex-aligned to the lattice. Retry a few seed
+    // spots. Organics seed at a point as before.
+    if matches!(kind, AreaKind::Dungeon | AreaKind::Ruin) {
         let is_rect = rng.random_bool(0.5);
         let mut order = [0, 1, 2, 3];
         order.shuffle(rng);
         for _ in 0..8 {
-            let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else { return };
+            let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else { break };
             if let Some(cells) = flower_footprint(grid, owner, idx, seed) {
                 for &c in &cells {
                     owner.insert(c, idx);
@@ -623,10 +623,17 @@ fn seed_single<R: Rng>(
                 return;
             }
         }
-        return;
+        // No clean flower spot. A dungeon is skipped (it needs its clean shape);
+        // a ruin falls back to an organic blob, demoted to Organic — a ruin with
+        // no room for a footprint just weathers like the cave around it.
+        if kind == AreaKind::Dungeon {
+            return;
+        }
     }
     let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else { return };
     owner.insert(seed, idx);
+    // A ruin reaching here couldn't take a shaped footprint: seed it organic.
+    let kind = if kind == AreaKind::Ruin { AreaKind::Organic } else { kind };
     builds.push(Build {
         cells: vec![seed],
         kind,
@@ -959,7 +966,12 @@ fn finalize(grid: &HexGrid, builds: Vec<Build>, hex_size: f64) -> Areas {
         for &c in &b.cells {
             owner.insert(c, idx);
         }
-        let shape = (b.kind == AreaKind::Dungeon).then(|| derive_shape(&b.cells, b.is_rect, hex_size));
+        // Dungeon and ruin rooms both grew from a flower into their exact
+        // geometry, so both derive a hex-aligned wall shape the same way. (A
+        // ruin that fell back to organic growth has is_rect=false but is kind
+        // Organic, so it takes no shape here.)
+        let shape = matches!(b.kind, AreaKind::Dungeon | AreaKind::Ruin)
+            .then(|| derive_shape(&b.cells, b.is_rect, hex_size));
         cells.push(b.cells);
         kinds.push(b.kind);
         shapes.push(shape);

@@ -267,8 +267,10 @@ pub fn apply_plugs(
         .filter_map(|i| areas.shapes()[i])
         .collect();
     for e in &topology.exits {
-        if let Some((full, lip)) = exit_plug(e, areas, s) {
-            for &c in &e.stub {
+        if let Some((full, lip, projected)) = exit_plug(e, areas, s) {
+            // Only the straight run projects onto the hall; a bent tail stays
+            // organic (floor+narrow), so it renders as a wandering passage.
+            for &c in &projected {
                 ruin_map.insert(c, full);
                 plug_cells.insert(c);
             }
@@ -336,49 +338,71 @@ pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Ve
     out
 }
 
-/// The straight throat for a dungeon room's exit passage: like [`plug`], but
-/// through the room wall along the stub, so the exit mouth gets the same
-/// crisp lip instead of bulging as raw locked hex cells. Returns the full
-/// hall (projection: the whole stub straightens, fading organic with
-/// distance) and the short **lip hall** at the mouth (clean decor: only the
-/// doorframe skips hatching, not the whole passage).
-fn exit_plug(e: &Exit, areas: &Areas, s: f64) -> Option<(RuinShape, RuinShape)> {
+/// The straight throat for a dungeon room's exit passage: through the room wall
+/// along the stub's **initial heading**, so the exit mouth gets a crisp lip
+/// instead of bulging as raw locked hex cells. Only the contiguous run of stub
+/// cells that stays within the straight hall band is projected; once the stub
+/// bends away, the rest of it stays organic — a bent stub forced onto one
+/// angled hall folds the passage shut into a pinched bulb. Returns the full
+/// hall (projection over the straight run), the short **lip hall** at the mouth
+/// (clean decor at the doorframe), and the stub cells to project.
+fn exit_plug(e: &Exit, areas: &Areas, s: f64) -> Option<(RuinShape, RuinShape, Vec<Hex>)> {
     if areas.kind(e.area) != AreaKind::Dungeon || e.stub.is_empty() {
         return None;
     }
     let sh = areas.shapes()[e.area]?;
     let first = e.stub[0].center(s);
-    let last = e.stub[e.stub.len() - 1].center(s);
     let wall = sh.project(first);
-    let u = (last.0 - wall.0, last.1 - wall.1);
-    let len = u.0.hypot(u.1);
+    // Heading: the direction the stub leaves the wall (not wall→last, which a
+    // bend would tilt off the straight run).
+    let dir = (first.0 - wall.0, first.1 - wall.1);
+    let len = dir.0.hypot(dir.1);
     let u = if len > 1e-6 {
-        (u.0 / len, u.1 / len)
+        (dir.0 / len, dir.1 / len)
     } else {
-        let v = (first.0 - wall.0, first.1 - wall.1);
-        let len = v.0.hypot(v.1);
-        if len < 1e-6 {
+        let last = e.stub[e.stub.len() - 1].center(s);
+        let v = (last.0 - wall.0, last.1 - wall.1);
+        let l = v.0.hypot(v.1);
+        if l < 1e-6 {
             return None;
         }
-        (v.0 / len, v.1 / len)
+        (v.0 / l, v.1 / l)
     };
     let hw = HEX_APOTHEM * s;
+    // Project the contiguous run of stub cells within half a cell of the
+    // straight ray; stop at the first cell that bends out of the band.
+    let band = hw + 0.5 * s;
+    let mut projected: Vec<Hex> = Vec::new();
+    let mut max_t = 0.0_f64;
+    for &c in &e.stub {
+        let p = c.center(s);
+        let (dx, dy) = (p.0 - wall.0, p.1 - wall.1);
+        let t = dx * u.0 + dy * u.1;
+        let d = (dx - t * u.0).hypot(dy - t * u.1);
+        if t >= -0.6 * s && d <= band {
+            projected.push(c);
+            max_t = max_t.max(t);
+        } else {
+            break;
+        }
+    }
+    projected.first()?;
     let (ax, ay) = (wall.0 - u.0 * 0.3 * s, wall.1 - u.1 * 0.3 * s);
     let full = RuinShape::StraightHall {
         ax,
         ay,
-        bx: last.0 + u.0 * 1.0 * s,
-        by: last.1 + u.1 * 1.0 * s,
+        bx: wall.0 + u.0 * (max_t + s),
+        by: wall.1 + u.1 * (max_t + s),
         hw,
     };
     let lip = RuinShape::StraightHall {
         ax,
         ay,
-        bx: wall.0 + u.0 * 1.0 * s,
-        by: wall.1 + u.1 * 1.0 * s,
+        bx: wall.0 + u.0 * s,
+        by: wall.1 + u.1 * s,
         hw,
     };
-    Some((full, lip))
+    Some((full, lip, projected))
 }
 
 /// Anchor a mouth at `p` on the wall of `shape` it pierces: `(wall point,

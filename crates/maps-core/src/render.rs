@@ -538,12 +538,13 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
     s
 }
 
-/// Overlay a label at every area's centroid: its index (matching
-/// `areas.cells`), a short kind letter (O/R/D), and a stable 4-char content
-/// hash. The hash is derived from the area's cell set alone, so the same
-/// physical room prints the same code regardless of how the areas happened to
-/// be ordered/indexed in a given build — letting two renders (e.g. a CLI dump
-/// and the web demo) be cross-referenced even if their indices diverge.
+/// Overlay a label at every area's centroid and at each exit's outer end: a
+/// **1-based** number for human readability, a kind letter (O/R/D for areas, E
+/// for exits), and a stable 4-char content hash. The hash is derived from the
+/// cell set alone, so the same physical feature prints the same code regardless
+/// of how areas/exits happened to be ordered in a given build — letting two
+/// renders (e.g. a CLI dump and the web demo) be cross-referenced even if their
+/// indices diverge.
 fn area_label_layer(map: &CaveMap) -> String {
     let mut s = String::new();
     // Drawn on top of the finished map, so a soft parchment halo keeps the
@@ -553,6 +554,20 @@ fn area_label_layer(map: &CaveMap) -> String {
         r##"<g font-family="Menlo, Consolas, monospace" text-anchor="middle" paint-order="stroke" stroke="{}" stroke-width="3.5" stroke-linejoin="round">"##,
         CAVE_STYLE.floor
     );
+    let label = |cx: f64, cy: f64, tag: &str, hash: &str, sc: &mut String| {
+        let _ = write!(
+            sc,
+            r##"<text x="{}" y="{}" font-size="15" font-weight="bold" fill="#b4231f">{tag}</text>"##,
+            D1(cx),
+            D1(cy - 1.0),
+        );
+        let _ = write!(
+            sc,
+            r##"<text x="{}" y="{}" font-size="9" fill="#3a3226">{hash}</text>"##,
+            D1(cx),
+            D1(cy + 11.0),
+        );
+    };
     for i in 0..map.areas.count() {
         let cells = &map.areas.cells[i];
         if cells.is_empty() {
@@ -565,25 +580,20 @@ fn area_label_layer(map: &CaveMap) -> String {
             cy += y;
         }
         let n = cells.len() as f64;
-        let (cx, cy) = (cx / n, cy / n);
         let kind = match map.areas.kind(i) {
             AreaKind::Organic => 'O',
             AreaKind::Ruin => 'R',
             AreaKind::Dungeon => 'D',
         };
-        let hash = area_hash(cells);
-        let _ = write!(
-            s,
-            r##"<text x="{}" y="{}" font-size="15" font-weight="bold" fill="#b4231f">{i}{kind}</text>"##,
-            D1(cx),
-            D1(cy - 1.0),
-        );
-        let _ = write!(
-            s,
-            r##"<text x="{}" y="{}" font-size="9" fill="#3a3226">{hash}</text>"##,
-            D1(cx),
-            D1(cy + 11.0),
-        );
+        label(cx / n, cy / n, &format!("{}{kind}", i + 1), &area_hash(&map.areas.cells[i]), &mut s);
+    }
+    // Exits: label the outer end (last stub cell) so exit passages can be named
+    // like rooms (1E, 2E, ...).
+    for (k, e) in map.topology.exits.iter().enumerate() {
+        if let Some(&last) = e.stub.last() {
+            let (cx, cy) = last.center(HEX_SIZE);
+            label(cx, cy, &format!("{}E", k + 1), &area_hash(&[last]), &mut s);
+        }
     }
     s.push_str("</g>");
     s

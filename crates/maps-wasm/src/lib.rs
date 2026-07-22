@@ -29,6 +29,8 @@ pub struct Options {
     dungeon_level: Option<f64>,
     /// Use this exact map title instead of generating one.
     title: Option<String>,
+    /// Overlay each area's index + content hash at its centroid (diagnostic).
+    labels: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -99,7 +101,7 @@ pub fn generate(opts: JsValue) -> Result<JsValue, JsValue> {
     );
 
     let out = Output {
-        svg: render::svg(&map),
+        svg: render::svg_opts(&map, o.labels.unwrap_or(false)),
         title: map.title.clone(),
         tags: map.tags.to_string(),
         seed: seed.to_string(),

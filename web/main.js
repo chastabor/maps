@@ -120,6 +120,7 @@ function collectOptions(defaults) {
     o.ruinsLevel = $("ruins").value / 100;
   const name = $("map-name").value.trim();
   if (name) o.title = name;
+  if ($("labels").checked) o.labels = true;
   return o;
 }
 
@@ -163,6 +164,7 @@ function updateHash(out) {
   if (!$("ruins-auto").checked) p.set("ruins", $("ruins").value / 100);
   const name = $("map-name").value.trim();
   if (name) p.set("title", name);
+  if ($("labels").checked) p.set("labels", "1");
   history.replaceState(null, "", "#" + p.toString());
 }
 
@@ -184,6 +186,7 @@ function loadHash() {
   if (p.get("mode")) setRadio("mode", p.get("mode"));
   if (p.get("grid")) setRadio("grid", p.get("grid"));
   if (p.get("title")) $("map-name").value = p.get("title");
+  if (p.get("labels")) $("labels").checked = true;
   for (const [key, auto, slider, label] of [
     ["water", "water-auto", "water", "water-val"],
     ["ruins", "ruins-auto", "ruins", "ruins-val"],
@@ -225,6 +228,7 @@ document
   .querySelectorAll("#tag-groups input, #mode-row input, #grid-row input")
   .forEach((el) => (el.onchange = render));
 $("map-name").onchange = render;
+$("labels").onchange = render;
 for (const [auto, slider, label] of [
   ["water-auto", "water", "water-val"],
   ["ruins-auto", "ruins", "ruins-val"],

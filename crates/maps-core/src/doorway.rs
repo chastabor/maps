@@ -294,14 +294,31 @@ pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Ve
             .collect();
         rooms.sort_unstable();
         rooms.dedup();
+        // The door cells' centroid: the opening's true location, on whichever
+        // wall each room presents to it.
+        let dc = {
+            let ps = m.members.iter().map(|&i| topology.doors[i].cell.center(s));
+            let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
+            for p in ps {
+                sx += p.0;
+                sy += p.1;
+                n += 1.0;
+            }
+            (sx / n, sy / n)
+        };
         for r in rooms {
             if let Some(sh) = areas.shapes()[r] {
                 let half = m.opening / 2.0;
-                // Each room's own wall normal at the mouth centre selects its
-                // edge (position-based; the anchor room agrees with the mouth
-                // since `m.center` already sits on its wall).
-                let out_r = wall_anchor(sh, m.center, None).map_or(m.out, |(_, o, _)| o);
-                out.push(Jamb { shape: sh, center: clamp_opening(sh, m.center, half, out_r), half });
+                // The anchor room keeps the mouth's own centre so its wall gap
+                // and the door bar stay in lockstep. Every *other* room picks
+                // its pierced edge from the door cells' true location on its
+                // own wall: `m.center` sits on the ANCHOR room's wall (often
+                // laterally offset), so using it selects the wrong edge of a
+                // corner-adjacent room and seals the passage behind a wall.
+                let anchored_here = m.shape.is_none() || m.shape == Some(sh);
+                let p = if anchored_here { m.center } else { dc };
+                let out_r = wall_anchor(sh, p, None).map_or(m.out, |(_, o, _)| o);
+                out.push(Jamb { shape: sh, center: clamp_opening(sh, p, half, out_r), half });
             }
         }
     }
@@ -373,9 +390,21 @@ fn wall_anchor(shape: RuinShape, p: Point, travel: Option<Point>) -> Option<(Poi
     match shape {
         RuinShape::Rect { cx, cy, hw, hh } => {
             let (dx, dy) = (p.0 - cx, p.1 - cy);
-            let through_flat = match travel {
-                Some(u) => u.1.abs() >= u.0.abs(),
-                None => dy.abs() / hh >= dx.abs() / hw,
+            // The pierced wall is the one `p` lies *outside* of. When `p` is
+            // beyond exactly one edge, that edge is unambiguous — decisive on
+            // position alone. Only a corner-adjacent point (outside both, or
+            // inside both — e.g. a point already on a wall) needs the passage
+            // direction / proportional ratio to disambiguate. Trusting travel
+            // or the ratio outright misclassifies a door that sits squarely
+            // off one wall but slightly past the far corner line.
+            let (out_x, out_y) = (dx.abs() > hw, dy.abs() > hh);
+            let through_flat = match (out_x, out_y) {
+                (true, false) => false, // only past a side wall → left/right
+                (false, true) => true,  // only past top/bottom → flat
+                _ => match travel {
+                    Some(u) => u.1.abs() >= u.0.abs(),
+                    None => dy.abs() / hh >= dx.abs() / hw,
+                },
             };
             Some(if through_flat {
                 // Through the top/bottom wall.

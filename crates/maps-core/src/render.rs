@@ -124,6 +124,13 @@ const PALETTE: [&str; 12] = [
 /// dark wall outline (interior pillars via evenodd), hex grid clipped to the
 /// floor.
 pub fn svg(map: &CaveMap) -> String {
+    svg_opts(map, false)
+}
+
+/// Like [`svg`], but with `labels` overlaying each area's index and a stable
+/// content hash at its centroid — a diagnostic aid for pinpointing a specific
+/// room across renders (see [`area_label_layer`]).
+pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for lp in &map.outline {
         for &(x, y) in lp {
@@ -524,8 +531,83 @@ pub fn svg(map: &CaveMap) -> String {
         style.title,
         map.title,
     );
+    if labels {
+        s.push_str(&area_label_layer(map));
+    }
     s.push_str("</svg>");
     s
+}
+
+/// Overlay a label at every area's centroid: its index (matching
+/// `areas.cells`), a short kind letter (O/R/D), and a stable 4-char content
+/// hash. The hash is derived from the area's cell set alone, so the same
+/// physical room prints the same code regardless of how the areas happened to
+/// be ordered/indexed in a given build — letting two renders (e.g. a CLI dump
+/// and the web demo) be cross-referenced even if their indices diverge.
+fn area_label_layer(map: &CaveMap) -> String {
+    let mut s = String::new();
+    // Drawn on top of the finished map, so a soft parchment halo keeps the
+    // text legible over floor, water and hatching alike.
+    let _ = write!(
+        s,
+        r##"<g font-family="Menlo, Consolas, monospace" text-anchor="middle" paint-order="stroke" stroke="{}" stroke-width="3.5" stroke-linejoin="round">"##,
+        CAVE_STYLE.floor
+    );
+    for i in 0..map.areas.count() {
+        let cells = &map.areas.cells[i];
+        if cells.is_empty() {
+            continue;
+        }
+        let (mut cx, mut cy) = (0.0, 0.0);
+        for &c in cells {
+            let (x, y) = c.center(HEX_SIZE);
+            cx += x;
+            cy += y;
+        }
+        let n = cells.len() as f64;
+        let (cx, cy) = (cx / n, cy / n);
+        let kind = match map.areas.kind(i) {
+            AreaKind::Organic => 'O',
+            AreaKind::Ruin => 'R',
+            AreaKind::Dungeon => 'D',
+        };
+        let hash = area_hash(cells);
+        let _ = write!(
+            s,
+            r##"<text x="{}" y="{}" font-size="15" font-weight="bold" fill="#b4231f">{i}{kind}</text>"##,
+            D1(cx),
+            D1(cy - 1.0),
+        );
+        let _ = write!(
+            s,
+            r##"<text x="{}" y="{}" font-size="9" fill="#3a3226">{hash}</text>"##,
+            D1(cx),
+            D1(cy + 11.0),
+        );
+    }
+    s.push_str("</g>");
+    s
+}
+
+/// A stable 4-char base-36 code for an area, hashed (FNV-1a) from its sorted
+/// cell coordinates. Depends only on the cells, never on the area's index.
+fn area_hash(cells: &[Hex]) -> String {
+    let mut v: Vec<(i32, i32)> = cells.iter().map(|c| (c.q, c.r)).collect();
+    v.sort_unstable();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for (q, r) in v {
+        for b in q.to_le_bytes().iter().chain(r.to_le_bytes().iter()) {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = [0u8; 4];
+    for slot in out.iter_mut().rev() {
+        *slot = ALPHABET[(h % 36) as usize];
+        h /= 36;
+    }
+    String::from_utf8(out.to_vec()).unwrap()
 }
 
 /// √3/2 — the apothem of a unit-side hex (centre to edge midpoint).

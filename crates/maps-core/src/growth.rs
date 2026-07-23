@@ -18,9 +18,9 @@ use rand::seq::SliceRandom;
 use std::collections::BTreeSet;
 
 const SQRT3: f64 = crate::grid::SQRT3;
-/// How far a dungeon room's drawn wall sits outside its outermost cell
-/// centres, in hex-size units — the cells are the ownership raster, the wall
-/// is the true geometry cutting through the boundary hexes.
+/// How far a **circular** dungeon room's drawn wall sits outside its outermost
+/// cell centres, in hex-size units. (Rectangles align their walls to the hex
+/// lattice instead — see `derive_shape`.)
 const ROOM_WALL_PAD: f64 = 0.4;
 /// Areas smaller than this are discarded as failed growths.
 pub(crate) const MIN_AREA: usize = 4;
@@ -109,15 +109,28 @@ fn claim_batch(
 enum Shape {
     /// Circle expanding by concentric rings; `r` is the current radius.
     Disk { c: (f64, f64), r: f64 },
-    /// Rectangle expanding one side-strip at a time; extents are cell-centre
-    /// bounds. `order` is the side try-order (reshuffled each round).
-    Rect { c: (f64, f64), x0: f64, x1: f64, y0: f64, y1: f64, order: [usize; 4] },
+    /// Rectangle expanding two rows / two columns at a time; extents are
+    /// cell-centre bounds.
+    Rect { c: (f64, f64), x0: f64, x1: f64, y0: f64, y1: f64 },
 }
 
 impl Shape {
-    /// The candidate next-increments (geometric cells + the resulting state):
-    /// one ring for a disk, one per untried side for a rect (in `order`).
-    fn candidates(&self, grid: &HexGrid, s: f64) -> Vec<(Vec<Hex>, Shape)> {
+    /// The candidate next-increments (geometric cells + the resulting state),
+    /// each tagged `is_horizontal` for axis-first selection by the caller:
+    /// one ring for a disk; for a rect, five moves that each add **two** rows
+    /// or **two** columns.
+    ///
+    /// Every move keeps the rect an ODD number of rows/columns off its 3-row
+    /// flower start, the parity that lets the wall corners land on hex vertices
+    /// (see `derive_shape`). Vertical moves grow **two rows to one side** (up
+    /// or down): splitting one row each side would push the outermost rows onto
+    /// the *wide* stagger parity, and their vertices would no longer reach the
+    /// corner x — the rect would stop lining up. Horizontal is parity-insensitive
+    /// (every row shifts together), so besides two-left / two-right it may also
+    /// grow one column on each side. The caller picks an axis 50/50 then a
+    /// placement uniformly within it (¼ up, ¼ down, ⅙ each of left/right/split),
+    /// so width and height grow in equal increments and a room stays square.
+    fn candidates(&self, grid: &HexGrid, s: f64) -> Vec<(bool, Vec<Hex>, Shape)> {
         let col = SQRT3 * s;
         let row = 1.5 * s;
         let eps = 0.01 * s;
@@ -134,31 +147,100 @@ impl Shape {
                         d > r + eps && d <= r2 + eps
                     })
                     .collect();
-                vec![(ring, Shape::Disk { c, r: r2 })]
+                vec![(false, ring, Shape::Disk { c, r: r2 })]
             }
-            Shape::Rect { c, x0, x1, y0, y1, order } => order
-                .iter()
-                .map(|&side| {
-                    let band = |p: (f64, f64)| match side {
-                        0 => p.0 > x1 + eps && p.0 <= x1 + col + eps && p.1 >= y0 - eps && p.1 <= y1 + eps,
-                        1 => p.0 < x0 - eps && p.0 >= x0 - col - eps && p.1 >= y0 - eps && p.1 <= y1 + eps,
-                        2 => p.1 > y1 + eps && p.1 <= y1 + row + eps && p.0 >= x0 - eps && p.0 <= x1 + eps,
-                        _ => p.1 < y0 - eps && p.1 >= y0 - row - eps && p.0 >= x0 - eps && p.0 <= x1 + eps,
-                    };
-                    let strip: Vec<Hex> = grid.cells().iter().copied().filter(|&h| band(h.center(s))).collect();
-                    let mut next = Shape::Rect { c, x0, x1, y0, y1, order };
-                    if let Shape::Rect { x0, x1, y0, y1, .. } = &mut next {
-                        match side {
-                            0 => *x1 += col,
-                            1 => *x0 -= col,
-                            2 => *y1 += row,
-                            _ => *y0 -= row,
+            Shape::Rect { c, x0, x1, y0, y1 } => {
+                // A move's cells are the grid cells whose centre falls in the
+                // strip's world-rect. But a strip must be **complete** — fill
+                // every lattice site the rectangle covers. Near the curved map
+                // edge some sites lie off-grid; claiming just the in-grid ones
+                // would leave a ragged room under a full bounding-box wall (a
+                // triangular void). So we compare against the ideal lattice
+                // count over the same world-rect and drop the move (empty
+                // cells) unless it fills completely; the room then grows away
+                // from the boundary and stays a filled rectangle.
+                let mk = |is_h: bool,
+                          pred: &dyn Fn((f64, f64)) -> bool,
+                          bx0: f64, bx1: f64, by0: f64, by1: f64,
+                          next: Shape|
+                 -> (bool, Vec<Hex>, Shape) {
+                    let strip: Vec<Hex> =
+                        grid.cells().iter().copied().filter(|&h| pred(h.center(s))).collect();
+                    let (r_lo, r_hi) =
+                        ((by0 / row).floor() as i32 - 1, (by1 / row).ceil() as i32 + 1);
+                    let mut ideal = 0usize;
+                    for r in r_lo..=r_hi {
+                        let q_lo = (bx0 / col - r as f64 / 2.0).floor() as i32 - 1;
+                        let q_hi = (bx1 / col - r as f64 / 2.0).ceil() as i32 + 1;
+                        for q in q_lo..=q_hi {
+                            if pred(Hex { q, r }.center(s)) {
+                                ideal += 1;
+                            }
                         }
                     }
-                    (strip, next)
-                })
-                .collect(),
+                    let cells = if strip.len() == ideal { strip } else { Vec::new() };
+                    (is_h, cells, next)
+                };
+                let in_y = |y: f64| y >= y0 - eps && y <= y1 + eps;
+                let in_x = |x: f64| x >= x0 - eps && x <= x1 + eps;
+                let (h2, v2) = (2.0 * col, 2.0 * row);
+                vec![
+                    // Horizontal: two columns right / left / one on each side.
+                    mk(
+                        true,
+                        &|p| p.0 > x1 + eps && p.0 <= x1 + h2 + eps && in_y(p.1),
+                        x1, x1 + h2, y0, y1,
+                        Shape::Rect { c, x0, x1: x1 + h2, y0, y1 },
+                    ),
+                    mk(
+                        true,
+                        &|p| p.0 < x0 - eps && p.0 >= x0 - h2 - eps && in_y(p.1),
+                        x0 - h2, x0, y0, y1,
+                        Shape::Rect { c, x0: x0 - h2, x1, y0, y1 },
+                    ),
+                    mk(
+                        true,
+                        &|p| {
+                            in_y(p.1)
+                                && ((p.0 > x1 + eps && p.0 <= x1 + col + eps)
+                                    || (p.0 < x0 - eps && p.0 >= x0 - col - eps))
+                        },
+                        x0 - col, x1 + col, y0, y1,
+                        Shape::Rect { c, x0: x0 - col, x1: x1 + col, y0, y1 },
+                    ),
+                    // Vertical: two rows up / down (never split — see above).
+                    mk(
+                        false,
+                        &|p| p.1 > y1 + eps && p.1 <= y1 + v2 + eps && in_x(p.0),
+                        x0, x1, y1, y1 + v2,
+                        Shape::Rect { c, x0, x1, y0, y1: y1 + v2 },
+                    ),
+                    mk(
+                        false,
+                        &|p| p.1 < y0 - eps && p.1 >= y0 - v2 - eps && in_x(p.0),
+                        x0, x1, y0 - v2, y0,
+                        Shape::Rect { c, x0, x1, y0: y0 - v2, y1 },
+                    ),
+                ]
+            }
         }
+    }
+
+    /// Order this shape's candidate moves for a growth attempt: pick an axis
+    /// 50/50, then its placements uniformly, then the other axis as fallback
+    /// (a disk's single ring is unaffected). The caller takes the first move
+    /// whose cells it can actually claim.
+    fn ordered_moves(
+        &self,
+        grid: &HexGrid,
+        s: f64,
+        rng: &mut impl Rng,
+    ) -> Vec<(Vec<Hex>, Shape)> {
+        let mut cands = self.candidates(grid, s);
+        cands.shuffle(rng); // uniform placement within each axis
+        let horiz_first = rng.random_bool(0.5);
+        cands.sort_by_key(|&(is_h, ..)| is_h != horiz_first); // stable: chosen axis first
+        cands.into_iter().map(|(_, cells, next)| (cells, next)).collect()
     }
 }
 
@@ -177,7 +259,21 @@ fn derive_shape(cells: &[Hex], is_rect: bool, s: f64) -> RuinShape {
             y0 = y0.min(p.1);
             y1 = y1.max(p.1);
         }
-        RuinShape::Rect { cx: (x0 + x1) / 2.0, cy: (y0 + y1) / 2.0, hw: (x1 - x0) / 2.0 + pad, hh: (y1 - y0) / 2.0 + pad }
+        // The wall rectangle is aligned to the hex lattice so its corners land
+        // exactly on hex vertices and never overhang them. For pointy-top hexes
+        // (vertices at 60k−30°): the left/right walls sit on the extreme cell
+        // centres (no horizontal pad) — the corner then coincides with the
+        // corner cell's 30°/150° vertex — and the top/bottom walls sit half a
+        // hex above/below the extreme row centres (`s/2`, the side-vertex
+        // offset), leaving the row peaks (at `s`) outside. The middle-row
+        // extreme cell is bisected by the side wall; its overhang is clamped
+        // back onto this rect by the outline splice (floor = the rect interior).
+        RuinShape::Rect {
+            cx: (x0 + x1) / 2.0,
+            cy: (y0 + y1) / 2.0,
+            hw: (x1 - x0) / 2.0,
+            hh: (y1 - y0) / 2.0 + 0.5 * s,
+        }
     } else {
         let (mut sx, mut sy) = (0.0, 0.0);
         for h in cells {
@@ -215,12 +311,12 @@ fn flower_cells(seed: Hex) -> Vec<Hex> {
 /// The growth [`Shape`] a flower footprint starts from: a rect fitted to the
 /// flower's bounding box, or a disk of one-ring radius. Both cover the same
 /// seven cells; only the wall (and how it grows) differs.
-fn footprint_shape(seed: Hex, s: f64, is_rect: bool, order: [usize; 4]) -> Shape {
+fn footprint_shape(seed: Hex, s: f64, is_rect: bool) -> Shape {
     let c = seed.center(s);
     if is_rect {
         let hw = SQRT3 * s; // W..E span of the flower centres
         let hh = 1.5 * s; // N..S span
-        Shape::Rect { c, x0: c.0 - hw, x1: c.0 + hw, y0: c.1 - hh, y1: c.1 + hh, order }
+        Shape::Rect { c, x0: c.0 - hw, x1: c.0 + hw, y0: c.1 - hh, y1: c.1 + hh }
     } else {
         Shape::Disk { c, r: SQRT3 * s }
     }
@@ -683,15 +779,13 @@ fn seed_single<R: Rng>(
     // spots. Organics seed at a point as before.
     if matches!(kind, AreaKind::Dungeon | AreaKind::Ruin) {
         let is_rect = rng.random_bool(0.5);
-        let mut order = [0, 1, 2, 3];
-        order.shuffle(rng);
         for _ in 0..8 {
             let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else { break };
             if let Some(cells) = flower_footprint(grid, owner, idx, seed) {
                 for &c in &cells {
                     owner.insert(c, idx);
                 }
-                let shape = footprint_shape(seed, hex_size, is_rect, order);
+                let shape = footprint_shape(seed, hex_size, is_rect);
                 builds.push(Build { cells, kind, target, active: true, grow: Grow::Shaped(shape), is_rect, fusible });
                 return;
             }
@@ -838,11 +932,7 @@ fn advance_single<R: Rng>(
             }
         }
         Grow::Shaped(shape) => {
-            // Rects reshuffle their side order each round for balanced growth.
-            if let Shape::Rect { order, .. } = shape {
-                order.shuffle(rng);
-            }
-            let cands = shape.candidates(grid, hex_size);
+            let cands = shape.ordered_moves(grid, hex_size, rng);
             let mut grew = false;
             for (cells, next) in cands {
                 if cells.is_empty() {
@@ -886,10 +976,7 @@ fn advance_orbit<R: Rng>(
         orbits[o].active = false;
         return;
     }
-    if let Shape::Rect { order, .. } = &mut orbits[o].shape {
-        order.shuffle(rng);
-    }
-    let cands = orbits[o].shape.candidates(grid, hex_size);
+    let cands = orbits[o].shape.ordered_moves(grid, hex_size, rng);
     for (gen_cells, next) in cands {
         if gen_cells.is_empty() {
             continue;
@@ -1024,9 +1111,7 @@ fn seed_orbit<R: Rng>(
         }
         // Commit: generator (member 0) first, then siblings, all as flowers.
         let is_rect = allow_rect && rng.random_bool(0.5);
-        let mut order = [0, 1, 2, 3];
-        order.shuffle(rng);
-        let shape = footprint_shape(gen_seed, hex_size, is_rect, order);
+        let shape = footprint_shape(gen_seed, hex_size, is_rect);
         let mut members = Vec::new();
         for (k, cells) in per_member.into_iter().enumerate() {
             let idx = builds.len();

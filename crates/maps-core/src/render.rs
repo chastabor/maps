@@ -474,14 +474,16 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
                 let _ = write!(d, "{cmd}{} {}", D1(x), D1(y));
             }
         };
-        for (shape, run) in &map.dungeon_walls {
-            let inner = shape.shrink(w);
-            let closed = run.len() > 2 && run.first() == run.last();
-            let pts = if closed { &run[..run.len() - 1] } else { &run[..] };
-            if pts.is_empty() {
+        for run in &map.dungeon_walls {
+            let closed =
+                run.len() > 2 && run.first().map(|v| v.0) == run.last().map(|v| v.0);
+            let verts = if closed { &run[..run.len() - 1] } else { &run[..] };
+            if verts.is_empty() {
                 continue;
             }
-            let inner_pts: Vec<Point> = pts.iter().map(|&p| inner.project(p)).collect();
+            // Each vertex offsets inward on its OWN room's shrunk shape, so a
+            // run spanning a fused seam stays flush with both rooms' walls.
+            let inner_pts: Vec<Point> = verts.iter().map(|&(p, sh)| sh.shrink(w).project(p)).collect();
             // Shadow follows the inner line only (closed only when the run is a
             // full ring; an open run's shadow stays an open polyline).
             emit(&mut shadow_d, &inner_pts, false);
@@ -497,7 +499,8 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
                 // the outline, not centre-line stubs. This accounts for the
                 // stroke thickness (no half-width poke into the opening) and
                 // keeps the faces flush with the wall-line ends.
-                emit(&mut wall_d, pts, false);
+                let pts: Vec<Point> = verts.iter().map(|&(p, _)| p).collect();
+                emit(&mut wall_d, &pts, false);
                 let rev: Vec<Point> = inner_pts.iter().rev().copied().collect();
                 emit(&mut wall_d, &rev, true);
             }

@@ -81,7 +81,7 @@ impl Default for OutlineParams {
 
 /// The cave floor cell set and its "narrow" subset (corridors, doors, exit
 /// passages — cells whose boundary vertices get pulled inward).
-pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology, s: f64) -> (HashSet<Hex>, HashSet<Hex>) {
+pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology) -> (HashSet<Hex>, HashSet<Hex>) {
     let mut floor: HashSet<Hex> = HashSet::new();
     let mut narrow: HashSet<Hex> = HashSet::new();
     for (i, area) in areas.cells.iter().enumerate() {
@@ -99,7 +99,7 @@ pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology, s: f64) -> (H
     // Fill the lone pillar between two merged distance-2 doors, so their one
     // wide opening is backed by continuous floor instead of a floating rock nub
     // (which the outline would weave around, crossing the two passages).
-    for (_, _, pillar) in crate::doorway::merged_pillar_pairs(areas, &topology.doors, s) {
+    for &(_, _, pillar) in &topology.merged_doors {
         floor.insert(pillar);
         narrow.insert(pillar);
     }
@@ -132,8 +132,8 @@ pub fn build_outline<R: Rng>(
     jambs: &[Jamb],
     params: &OutlineParams,
     rng: &mut R,
-) -> (Vec<Vec<Point>>, Vec<(RuinShape, Vec<Point>)>) {
-    let (floor, narrow) = floor_and_narrow(areas, topology, params.hex_size);
+) -> (Vec<Vec<Point>>, Vec<Vec<(Point, RuinShape)>>) {
+    let (floor, narrow) = floor_and_narrow(areas, topology);
     smooth_loops(trace_loops(&floor), &narrow, ruin_cells, dungeon_cells, jambs, params, rng)
 }
 
@@ -150,9 +150,9 @@ pub(crate) fn smooth_loops<R: Rng>(
     jambs: &[Jamb],
     params: &OutlineParams,
     rng: &mut R,
-) -> (Vec<Vec<Point>>, Vec<(RuinShape, Vec<Point>)>) {
+) -> (Vec<Vec<Point>>, Vec<Vec<(Point, RuinShape)>>) {
     let size = params.hex_size;
-    let mut walls: Vec<(RuinShape, Vec<Point>)> = Vec::new();
+    let mut walls: Vec<Vec<(Point, RuinShape)>> = Vec::new();
     let out = loops
         .into_iter()
         .map(|lp| {
@@ -494,7 +494,7 @@ fn splice_dungeon_runs(
     pts: &mut Vec<TaggedPoint>,
     jambs: &[Jamb],
     s: f64,
-    walls: &mut Vec<(RuinShape, Vec<Point>)>,
+    walls: &mut Vec<Vec<(Point, RuinShape)>>,
 ) {
     // A vertex is splicable when it belongs to a dungeon room *and* carries a
     // room shape (one with a perimeter — rooms, not halls); `perimeter()` is
@@ -544,12 +544,13 @@ fn splice_dungeon_runs(
             let shape = pts[0].2.unwrap();
             let t0 = shape.wall_param(shape.project(pts[0].0));
             let walk = wall_walk(&shape, t0, 1.0, shape.perimeter().unwrap_or(0.0), s, true);
-            let mut run: Vec<Point> = walk.iter().map(|&p| quantize_pt(p)).collect();
+            let mut run: Vec<(Point, RuinShape)> =
+                walk.iter().map(|&p| (quantize_pt(p), shape)).collect();
             if let Some(&first) = run.first() {
                 run.push(first);
             }
             if run.len() > 2 {
-                walls.push((shape, run));
+                walls.push(run);
             }
             *pts = walk.into_iter().map(|p| (p, None, Some(shape), true)).collect();
             return;
@@ -557,9 +558,24 @@ fn splice_dungeon_runs(
     }
     let n = pts.len();
     let mut out: Vec<TaggedPoint> = Vec::with_capacity(n + 16);
+    // Seam-adjacent runs (consecutive splicable runs of different shapes with
+    // no gap between — where two fused rooms' walls meet) accumulate into one
+    // band, flushed only at a real gap (a non-splicable vertex) or the loop's
+    // end. A fused compound then renders as one continuous wall, not two
+    // capsules notched at the seam. Non-fused rooms keep a rock gap, so every
+    // run is gap-bounded and flushes alone — output unchanged.
+    let mut current: Vec<(Point, RuinShape)> = Vec::new();
+    // Emit the accumulated band (a polyline needs ≥2 points) and reset.
+    let mut flush = |current: &mut Vec<(Point, RuinShape)>| {
+        let band = std::mem::take(current);
+        if band.len() > 1 {
+            walls.push(band);
+        }
+    };
     let mut i = 0;
     while i < n {
         if !splicable(&pts[i]) {
+            flush(&mut current);
             out.push(pts[i]);
             i += 1;
             continue;
@@ -600,9 +616,10 @@ fn splice_dungeon_runs(
             len = len_of(raw_a, raw_b);
         }
         let walk = wall_walk(&shape, ta, d_sign, len, s, false);
-        if walk.len() > 1 {
-            walls.push((shape, walk.iter().map(|&p| quantize_pt(p)).collect()));
-        }
+        // Append this run's wall to the accumulating band, tagging each vertex
+        // with the shape it projects onto (so the renderer offsets correctly
+        // across a seam). The outline `out` keeps the raw dedup'd points.
+        current.extend(walk.iter().map(|&p| (quantize_pt(p), shape)));
         for p in walk {
             if out.last().map(|&(q, _, _, _)| q) != Some(p) {
                 out.push((p, None, Some(shape), true));
@@ -610,6 +627,7 @@ fn splice_dungeon_runs(
         }
         i = j + 1;
     }
+    flush(&mut current);
     *pts = out;
 }
 

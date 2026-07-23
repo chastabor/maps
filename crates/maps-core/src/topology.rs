@@ -3,7 +3,8 @@
 
 use crate::AreaKind;
 use crate::grid::{Hex, HexGrid};
-use crate::growth::{Areas, weighted_index};
+use crate::growth::{Areas, find, weighted_index};
+use crate::ruins::RuinShape;
 use crate::tags::{ConnectTag, ExitTag, LayoutTag, Tags};
 use rand::Rng;
 use rand::seq::SliceRandom;
@@ -31,9 +32,15 @@ pub struct Topology {
     pub exits: Vec<Exit>,
     /// Per-area flag: true if the area was shrunk into a corridor.
     pub is_corridor: Vec<bool>,
+    /// Door pairs merged into one wide opening on a short rect wall, as
+    /// `(door_i, door_j, pillar_cell)` — see [`merged_pillar_pairs`]. Computed
+    /// once here; `doorway::mouths` unions each pair into one mouth and
+    /// `outline::floor_and_narrow` fills the pillar cell so the wide opening is
+    /// backed by continuous floor.
+    pub merged_doors: Vec<(usize, usize, Hex)>,
 }
 
-pub fn build<R: Rng>(grid: &HexGrid, areas: &mut Areas, tags: &Tags, rng: &mut R) -> Topology {
+pub fn build<R: Rng>(grid: &HexGrid, areas: &mut Areas, tags: &Tags, s: f64, rng: &mut R) -> Topology {
     // Fused rooms sharing an edge are one compound; door topology treats each
     // compound as a single node so it gets one door per external neighbour (not
     // one per member), and the seam between members gets none.
@@ -51,19 +58,21 @@ pub fn build<R: Rng>(grid: &HexGrid, areas: &mut Areas, tags: &Tags, rng: &mut R
 
     let exits = place_exits(grid, areas, tags, rng);
     let is_corridor = shrink_corridors(areas, &doors, &exits, tags, rng);
+    let merged_doors = merged_pillar_pairs(areas, &doors, s);
 
     Topology {
         doors,
         exits,
         is_corridor,
+        merged_doors,
     }
 }
 
-fn uf_find(parent: &mut [usize], x: usize) -> usize {
-    if parent[x] != x {
-        parent[x] = uf_find(parent, parent[x]);
-    }
-    parent[x]
+/// The dungeon room both doors pierce, if any (the wall a merged opening cuts).
+pub(crate) fn shared_dungeon_room(areas: &Areas, a: &Door, b: &Door) -> Option<usize> {
+    [a.a, a.b]
+        .into_iter()
+        .find(|&r| areas.kind(r) == AreaKind::Dungeon && (r == b.a || r == b.b))
 }
 
 /// Union areas that share a cell edge — only fused areas touch (everyone else
@@ -76,7 +85,7 @@ fn fuse_groups(areas: &Areas) -> Vec<usize> {
         for c in cells {
             for nb in c.neighbors() {
                 if let Some(o) = areas.owner_of(nb).filter(|&o| o != i) {
-                    let (ri, ro) = (uf_find(&mut parent, i), uf_find(&mut parent, o));
+                    let (ri, ro) = (find(&mut parent, i), find(&mut parent, o));
                     if ri != ro {
                         parent[ri] = ro;
                     }
@@ -84,7 +93,59 @@ fn fuse_groups(areas: &Areas) -> Vec<usize> {
             }
         }
     }
-    (0..n).map(|i| uf_find(&mut parent, i)).collect()
+    (0..n).map(|i| find(&mut parent, i)).collect()
+}
+
+/// Distance-2 door pairs that share a dungeon room, both on the **same** rect
+/// wall, separated by a single unowned rock cell — a lone pillar wedged between
+/// the two openings on a short wall. Returned as `(door_i, door_j, pillar)`.
+///
+/// Merging such a pair into one wide opening (in `doorway::mouths`) needs the
+/// pillar cell added to the floor (in `outline::floor_and_narrow`), else it
+/// stays a rock nub floating in the opening and the floor outline weaves around
+/// it — the two passages cross. Same-edge only: a pair straddling a corner (one
+/// on the north wall, one on the east) is not a pinched double door, and carving
+/// one opening across the corner folds the outline. A straight distance-2 pair
+/// shares exactly one neighbour; a bent one shares two and must stay separate.
+pub(crate) fn merged_pillar_pairs(areas: &Areas, doors: &[Door], s: f64) -> Vec<(usize, usize, Hex)> {
+    // Which of a rect's four edges a point sits outside (equality is all we
+    // compare, so the discriminant value is arbitrary).
+    let rect_wall = |cx: f64, cy: f64, hw: f64, hh: f64, p: (f64, f64)| -> u8 {
+        let (dx, dy) = ((p.0 - cx) / hw, (p.1 - cy) / hh);
+        match (dx.abs() >= dy.abs(), dx >= 0.0, dy >= 0.0) {
+            (true, true, _) => 0,
+            (true, false, _) => 1,
+            (false, _, true) => 2,
+            (false, _, false) => 3,
+        }
+    };
+    let mut out = Vec::new();
+    for i in 0..doors.len() {
+        for j in i + 1..doors.len() {
+            if doors[i].cell.distance(doors[j].cell) != 2 {
+                continue;
+            }
+            let Some(room) = shared_dungeon_room(areas, &doors[i], &doors[j]) else { continue };
+            let Some(RuinShape::Rect { cx, cy, hw, hh }) = areas.shape(room) else { continue };
+            if rect_wall(cx, cy, hw, hh, doors[i].cell.center(s))
+                != rect_wall(cx, cy, hw, hh, doors[j].cell.center(s))
+            {
+                continue;
+            }
+            // Exactly one shared neighbour (the pillar), and it must be rock.
+            let mut shared = doors[i]
+                .cell
+                .neighbors()
+                .into_iter()
+                .filter(|n| doors[j].cell.neighbors().contains(n));
+            if let (Some(p), None) = (shared.next(), shared.next()) {
+                if areas.owner_of(p).is_none() {
+                    out.push((i, j, p));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Free cells adjacent to two or more areas, grouped by the unordered pair of

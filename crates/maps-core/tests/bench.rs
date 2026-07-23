@@ -32,7 +32,7 @@ fn stages() {
         acc[0] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();
-        let topo = topology::build(&grid, &mut areas, &tags, &mut rng);
+        let topo = topology::build(&grid, &mut areas, &tags, oparams.hex_size, &mut rng);
         acc[1] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();

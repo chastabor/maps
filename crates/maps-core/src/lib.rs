@@ -105,12 +105,15 @@ pub struct CaveMap {
     pub topology: Topology,
     /// Smoothed floor boundary loops (outer walls and interior pillars).
     pub outline: Vec<Vec<Point>>,
-    /// The spliced dungeon wall runs as `(room shape, polyline)`, one per
-    /// run (a closed run repeats its first point). At render time each run
-    /// is offset inward on its shape and stroked thick — the dungeon wall
-    /// band, exactly the wall the outline traced, its outer face on the
-    /// traced boundary, with gaps at every doorway and exit opening.
-    pub dungeon_walls: Vec<(ruins::RuinShape, Vec<Point>)>,
+    /// The spliced dungeon wall runs as polylines of `(point, owning shape)`,
+    /// one run per gap-bounded stretch of wall (a closed run repeats its first
+    /// point). Each vertex carries the room shape it projects onto, so a run
+    /// can cross the seam between two fused rooms and still offset correctly —
+    /// a fused compound is one continuous band, not two capsules that notch at
+    /// the seam. At render time each run is offset inward per-vertex on its
+    /// shape and stroked thick — the wall the outline traced, its outer face on
+    /// the traced boundary, with gaps only at doorway and exit openings.
+    pub dungeon_walls: Vec<Vec<(Point, ruins::RuinShape)>>,
     /// Smoothed water pool loops at the waterline.
     pub water: Vec<Vec<Point>>,
     /// Deep-water band inside the pools (terrain well below the level).
@@ -327,7 +330,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // inside, from the shape stream).
     let mut areas =
         grow_areas(&grid, &mut rng, &params, &slot_kinds, &slot_fusible, oparams.hex_size);
-    let topology = topology::build(&grid, &mut areas, &tags, &mut rng);
+    let topology = topology::build(&grid, &mut areas, &tags, oparams.hex_size, &mut rng);
     // Reshape the ruin areas to their rasterized geometry, so all downstream
     // layers (outline, water, stones, decor) see the real footprint and
     // touching shapes union at the cell level. Ruins that can't reshape are
@@ -391,7 +394,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     let (outline, dungeon_walls) =
         build_outline(&areas, &topology, &ruin_map, &dungeon_cells, &jambs, oparams, &mut rng);
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
-    let (floor, narrow) = outline::floor_and_narrow(&areas, &topology, oparams.hex_size);
+    let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
     let stones = decor::stones(&floor, &narrow, &w.cells, oparams.hex_size, &mut rng);
 
     // Only weathered (ruin) walls get stipple/masonry; dungeon and doorway

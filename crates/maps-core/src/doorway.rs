@@ -72,64 +72,6 @@ pub struct Mouth {
 
 /// Cluster the map's doors into mouths. Only clusters that touch a dungeon
 /// room produce one — other doors carve plain organic gaps and draw nothing.
-/// Distance-2 door pairs that share a dungeon room and are separated by a
-/// single unowned rock cell — a lone pillar wedged between the two openings on
-/// a short wall. Returned as `(door_i, door_j, pillar_cell)`.
-///
-/// Two consumers keep in lock-step: the mouth clustering merges each pair into
-/// one wide opening (no pinched double door), and the floor adds the pillar
-/// cell so that wide opening is backed by continuous floor. Without the fill
-/// the pillar stays a rock nub floating in the middle of the opening, and the
-/// floor outline weaves around it — the two passages cross. A straight
-/// distance-2 pair shares exactly one neighbour; a bent one shares two and must
-/// stay two separate openings.
-pub(crate) fn merged_pillar_pairs(areas: &Areas, doors: &[Door], s: f64) -> Vec<(usize, usize, Hex)> {
-    let dungeon = |i: usize| areas.kind(i) == AreaKind::Dungeon;
-    // The dungeon room both doors pierce (the wall the merged opening cuts).
-    let common_room = |a: &Door, b: &Door| {
-        [a.a, a.b].into_iter().find(|&r| dungeon(r) && (r == b.a || r == b.b))
-    };
-    // Which of a rect's four edges a point sits outside (0=E,1=W,2=S,3=N). Two
-    // doors only merge if they hit the SAME edge — a pair straddling a corner
-    // (one on the north wall, one on the east) is not a pinched double door,
-    // and carving one opening across the corner folds the outline.
-    let rect_wall = |cx: f64, cy: f64, hw: f64, hh: f64, p: Point| -> u8 {
-        let (dx, dy) = ((p.0 - cx) / hw, (p.1 - cy) / hh);
-        if dx.abs() >= dy.abs() {
-            if dx >= 0.0 { 0 } else { 1 }
-        } else if dy >= 0.0 {
-            2
-        } else {
-            3
-        }
-    };
-    let mut out = Vec::new();
-    for i in 0..doors.len() {
-        for j in i + 1..doors.len() {
-            if doors[i].cell.distance(doors[j].cell) != 2 {
-                continue;
-            }
-            let Some(room) = common_room(&doors[i], &doors[j]) else { continue };
-            let Some(RuinShape::Rect { cx, cy, hw, hh }) = areas.shape(room) else { continue };
-            if rect_wall(cx, cy, hw, hh, doors[i].cell.center(s))
-                != rect_wall(cx, cy, hw, hh, doors[j].cell.center(s))
-            {
-                continue;
-            }
-            let common: Vec<Hex> = doors[i]
-                .cell
-                .neighbors()
-                .into_iter()
-                .filter(|n| doors[j].cell.neighbors().contains(n))
-                .collect();
-            if common.len() == 1 && areas.owner_of(common[0]).is_none() {
-                out.push((i, j, common[0]));
-            }
-        }
-    }
-    out
-}
-
 pub fn mouths(topology: &Topology, areas: &Areas, s: f64) -> Vec<Mouth> {
     let find = crate::growth::find;
     let doors = &topology.doors;
@@ -139,22 +81,19 @@ pub fn mouths(topology: &Topology, areas: &Areas, s: f64) -> Vec<Mouth> {
     // room's wall: cells hex-adjacent AND sharing a dungeon room. (Adjacent
     // cells serving unrelated rooms pierce different walls — merging them
     // would hang one long door bar across open floor between the openings.)
-    let shared_room = |a: &Door, b: &Door| {
-        [a.a, a.b]
-            .into_iter()
-            .filter(|&r| dungeon(r))
-            .any(|r| r == b.a || r == b.b)
-    };
     for i in 0..doors.len() {
         for j in i + 1..doors.len() {
-            if doors[i].cell.distance(doors[j].cell) <= 1 && shared_room(&doors[i], &doors[j]) {
+            if doors[i].cell.distance(doors[j].cell) <= 1
+                && crate::topology::shared_dungeon_room(areas, &doors[i], &doors[j]).is_some()
+            {
                 let (a, b) = (find(&mut root, i), find(&mut root, j));
                 root[a] = b;
             }
         }
     }
-    // Also merge distance-2 pairs whose lone pillar the floor fills in (below).
-    for (i, j, _) in merged_pillar_pairs(areas, doors, s) {
+    // Also merge distance-2 pairs whose lone pillar the floor fills in — one
+    // wide opening across the pillar (computed once on `Topology`).
+    for &(i, j, _) in &topology.merged_doors {
         let (a, b) = (find(&mut root, i), find(&mut root, j));
         root[a] = b;
     }

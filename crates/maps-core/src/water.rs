@@ -54,7 +54,7 @@ pub fn build_water<R: Rng>(
         return Water::default();
     }
 
-    let (floor, _) = floor_and_narrow(areas, topology);
+    let (floor, _) = floor_and_narrow(areas, topology, params.hex_size);
     let scale = params.hex_size * 3.2;
     let elev = |h: &Hex| {
         let (x, y) = h.center(params.hex_size);

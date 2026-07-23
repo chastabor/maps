@@ -81,7 +81,7 @@ impl Default for OutlineParams {
 
 /// The cave floor cell set and its "narrow" subset (corridors, doors, exit
 /// passages — cells whose boundary vertices get pulled inward).
-pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology) -> (HashSet<Hex>, HashSet<Hex>) {
+pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology, s: f64) -> (HashSet<Hex>, HashSet<Hex>) {
     let mut floor: HashSet<Hex> = HashSet::new();
     let mut narrow: HashSet<Hex> = HashSet::new();
     for (i, area) in areas.cells.iter().enumerate() {
@@ -95,6 +95,13 @@ pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology) -> (HashSet<H
     for d in &topology.doors {
         floor.insert(d.cell);
         narrow.insert(d.cell);
+    }
+    // Fill the lone pillar between two merged distance-2 doors, so their one
+    // wide opening is backed by continuous floor instead of a floating rock nub
+    // (which the outline would weave around, crossing the two passages).
+    for (_, _, pillar) in crate::doorway::merged_pillar_pairs(areas, &topology.doors, s) {
+        floor.insert(pillar);
+        narrow.insert(pillar);
     }
     for e in &topology.exits {
         for &c in &e.stub {
@@ -126,7 +133,7 @@ pub fn build_outline<R: Rng>(
     params: &OutlineParams,
     rng: &mut R,
 ) -> (Vec<Vec<Point>>, Vec<(RuinShape, Vec<Point>)>) {
-    let (floor, narrow) = floor_and_narrow(areas, topology);
+    let (floor, narrow) = floor_and_narrow(areas, topology, params.hex_size);
     smooth_loops(trace_loops(&floor), &narrow, ruin_cells, dungeon_cells, jambs, params, rng)
 }
 
@@ -517,9 +524,13 @@ fn splice_dungeon_runs(
         for jamb in jambs.iter().filter(|j| &j.shape == shape) {
             let tw = shape.wall_param(jamb.center);
             let j = (tw + side * jamb.half).rem_euclid(per);
-            let d = cyc(t, j);
+            // A run endpoint that lands *inside* the opening (the raster left it
+            // in the gap — e.g. an opening spanning a whole short wall) must
+            // retract to the jamb edge however far it is, else the run walks the
+            // long way round and doubles a wall stub back across the gap.
+            let d = if cyc(t, tw) < jamb.half - 1e-6 { -1.0 } else { cyc(t, j) };
             if d < best.0 {
-                best = (d, j);
+                best = (d.max(0.0), j);
             }
         }
         best.1

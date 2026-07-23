@@ -391,7 +391,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     let (outline, dungeon_walls) =
         build_outline(&areas, &topology, &ruin_map, &dungeon_cells, &jambs, oparams, &mut rng);
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
-    let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
+    let (floor, narrow) = outline::floor_and_narrow(&areas, &topology, oparams.hex_size);
     let stones = decor::stones(&floor, &narrow, &w.cells, oparams.hex_size, &mut rng);
 
     // Only weathered (ruin) walls get stipple/masonry; dungeon and doorway

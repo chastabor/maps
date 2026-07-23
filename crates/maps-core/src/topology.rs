@@ -34,20 +34,18 @@ pub struct Topology {
 }
 
 pub fn build<R: Rng>(grid: &HexGrid, areas: &mut Areas, tags: &Tags, rng: &mut R) -> Topology {
-    let pairs = candidate_cells_by_pair(grid, areas);
+    // Fused rooms sharing an edge are one compound; door topology treats each
+    // compound as a single node so it gets one door per external neighbour (not
+    // one per member), and the seam between members gets none.
+    let group = fuse_groups(areas);
+    let pairs = candidate_cells_by_pair(grid, areas, &group);
     let edges = cull_edges(pairs.keys().copied().collect(), areas.count(), tags, rng);
     let doors: Vec<Door> = edges
         .iter()
-        // A fused pair (two dungeon rooms sharing an edge) is one open
-        // compound room — a doorway beside the seam would be noise.
-        .filter(|&&(a, b)| !cell_adjacent(areas, a, b))
-        .map(|&(a, b)| {
-            let cells = &pairs[&(a, b)];
-            Door {
-                cell: cells[rng.random_range(0..cells.len())],
-                a,
-                b,
-            }
+        .map(|&(ga, gb)| {
+            let cands = &pairs[&(ga, gb)];
+            let (cell, a, b) = cands[rng.random_range(0..cands.len())];
+            Door { cell, a, b }
         })
         .collect();
 
@@ -61,17 +59,44 @@ pub fn build<R: Rng>(grid: &HexGrid, areas: &mut Areas, tags: &Tags, rng: &mut R
     }
 }
 
-/// Whether two areas share a cell edge (fused dungeon rooms).
-fn cell_adjacent(areas: &Areas, a: usize, b: usize) -> bool {
-    let (small, other) = if areas.cells[a].len() <= areas.cells[b].len() { (a, b) } else { (b, a) };
-    areas.cells[small]
-        .iter()
-        .any(|c| c.neighbors().iter().any(|n| areas.owner_of(*n) == Some(other)))
+fn uf_find(parent: &mut [usize], x: usize) -> usize {
+    if parent[x] != x {
+        parent[x] = uf_find(parent, parent[x]);
+    }
+    parent[x]
 }
 
-/// Free cells adjacent to two or more areas, grouped by unordered area pair.
-fn candidate_cells_by_pair(grid: &HexGrid, areas: &Areas) -> BTreeMap<(usize, usize), Vec<Hex>> {
-    let mut by_pair: BTreeMap<(usize, usize), Vec<Hex>> = BTreeMap::new();
+/// Union areas that share a cell edge — only fused areas touch (everyone else
+/// keeps a rock gap) — and return each area's compound root. A non-fused area
+/// is its own singleton group, so this leaves non-fused maps unchanged.
+fn fuse_groups(areas: &Areas) -> Vec<usize> {
+    let n = areas.count();
+    let mut parent: Vec<usize> = (0..n).collect();
+    for (i, cells) in areas.cells.iter().enumerate() {
+        for c in cells {
+            for nb in c.neighbors() {
+                if let Some(o) = areas.owner_of(nb).filter(|&o| o != i) {
+                    let (ri, ro) = (uf_find(&mut parent, i), uf_find(&mut parent, o));
+                    if ri != ro {
+                        parent[ri] = ro;
+                    }
+                }
+            }
+        }
+    }
+    (0..n).map(|i| uf_find(&mut parent, i)).collect()
+}
+
+/// Free cells adjacent to two or more areas, grouped by the unordered pair of
+/// their fusion **groups**. Same-group adjacencies are interior to a compound
+/// (the seam) and contribute nothing. Each candidate keeps the two real
+/// bordering areas so the chosen door attaches to an actual room, not a group.
+fn candidate_cells_by_pair(
+    grid: &HexGrid,
+    areas: &Areas,
+    group: &[usize],
+) -> BTreeMap<(usize, usize), Vec<(Hex, usize, usize)>> {
+    let mut by_pair: BTreeMap<(usize, usize), Vec<(Hex, usize, usize)>> = BTreeMap::new();
     for &h in grid.cells() {
         if areas.owner_of(h).is_some() {
             continue;
@@ -81,7 +106,12 @@ fn candidate_cells_by_pair(grid: &HexGrid, areas: &Areas) -> BTreeMap<(usize, us
         adj.dedup();
         for i in 0..adj.len() {
             for j in i + 1..adj.len() {
-                by_pair.entry((adj[i], adj[j])).or_default().push(h);
+                let (a, b) = (adj[i], adj[j]);
+                let (ga, gb) = (group[a], group[b]);
+                if ga == gb {
+                    continue;
+                }
+                by_pair.entry((ga.min(gb), ga.max(gb))).or_default().push((h, a, b));
             }
         }
     }

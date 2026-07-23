@@ -27,6 +27,7 @@ pub struct Options {
     water_level: Option<f64>,
     ruins_level: Option<f64>,
     dungeon_level: Option<f64>,
+    fuse_level: Option<f64>,
     /// Use this exact map title instead of generating one.
     title: Option<String>,
     /// Overlay each area's index + content hash at its centroid (diagnostic).
@@ -93,6 +94,7 @@ pub fn generate(opts: JsValue) -> Result<JsValue, JsValue> {
             water_level: o.water_level.map(|v| v.clamp(0.0, 1.0)),
             ruins_level: o.ruins_level.map(|v| v.clamp(0.0, 1.0)),
             dungeon_level: o.dungeon_level.map(|v| v.clamp(0.0, 1.0)),
+            fuse_level: o.fuse_level.map(|v| v.clamp(0.0, 1.0)),
             shape_seed: parse_seed(&o.shape_seed, "shapeSeed")?,
             decor_seed: parse_seed(&o.decor_seed, "decorSeed")?,
             name_seed: parse_seed(&o.name_seed, "nameSeed")?,

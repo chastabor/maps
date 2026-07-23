@@ -34,6 +34,10 @@ pub struct Config {
     /// promoted to clean, doored dungeon rooms instead of weathered ruins.
     /// Overrides the dungeon tag default (0.6).
     pub dungeon_level: Option<f64>,
+    /// Fuse level in 0..=1: the chance each geometric area is marked fusible,
+    /// so two fusible same-kind neighbours merge into one compound instead of
+    /// keeping the rock gap. Overrides the fuse tag default (0.71).
+    pub fuse_level: Option<f64>,
     /// Override the shape sub-seed (map outline, water, stones).
     pub shape_seed: Option<u64>,
     /// Override the decoration sub-seed (hatch fans / tree canopies).

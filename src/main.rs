@@ -36,6 +36,8 @@ Options:
                        geometric (rectangles/circles) instead of organic
   -D, --dungeon <LEVEL> dungeon level 0.0..=1.0: fraction of the geometric
                        areas made clean, doored dungeon rooms
+  -F, --fuse <LEVEL>   fuse level 0.0..=1.0: chance each geometric area may
+                       fuse with a same-kind neighbour into one compound
   -o, --out <FILE>     output SVG path (default: cave.svg)
   -d, --debug          render raw hex cells instead of the finished map
   -h, --help           show this help"
@@ -59,6 +61,7 @@ fn main() {
     let mut title: Option<String> = None;
     let mut ruins_level: Option<f64> = None;
     let mut dungeon_level: Option<f64> = None;
+    let mut fuse_level: Option<f64> = None;
     let mut shape_seed: Option<u64> = None;
     let mut decor_seed: Option<u64> = None;
     let mut name_seed: Option<u64> = None;
@@ -133,6 +136,15 @@ fn main() {
                 }
                 dungeon_level = Some(level);
             }
+            "-F" | "--fuse" => {
+                let level: f64 = value("--fuse")
+                    .parse()
+                    .unwrap_or_else(|_| fail("--fuse must be a number"));
+                if !(0.0..=1.0).contains(&level) {
+                    fail("--fuse must be between 0.0 and 1.0");
+                }
+                fuse_level = Some(level);
+            }
             "--title" => title = Some(value("--title")),
             "-o" | "--out" => out = Some(value("--out")),
             "-d" | "--debug" => debug = Some(true),
@@ -188,6 +200,7 @@ fn main() {
             water_level: water_level.or(config.water_level),
             ruins_level: ruins_level.or(config.ruins_level),
             dungeon_level: dungeon_level.or(config.dungeon_level),
+            fuse_level: fuse_level.or(config.fuse_level),
             shape_seed: shape_seed.or(config.shape_seed),
             decor_seed: decor_seed.or(config.decor_seed),
             name_seed: name_seed.or(config.name_seed),

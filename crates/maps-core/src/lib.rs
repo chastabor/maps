@@ -60,12 +60,14 @@ pub enum AreaKind {
 
 impl AreaKind {
     /// Whether areas of these two kinds may sit cell-adjacent with no rock gap
-    /// between them. Only two **dungeon** areas fuse — into one compound room
-    /// (e.g. a rectangle with an attached circular silo); every other pair
-    /// keeps the one-cell doorway gap. Growth, reshaping and symmetry all
-    /// consult this one rule.
+    /// between them. Only two **same-kind geometric** areas fuse — two dungeon
+    /// rooms into one compound room (e.g. a rectangle with an attached circular
+    /// silo), or two ruins into one compound ruin. Every other pair (cross-kind
+    /// or anything touching organic) keeps the one-cell doorway gap. Whether a
+    /// *particular* eligible pair actually fuses is gated per-area by the
+    /// fusible flag (see `GenOptions::fuse_level`).
     pub fn may_fuse(self, other: AreaKind) -> bool {
-        self == AreaKind::Dungeon && other == AreaKind::Dungeon
+        self == other && matches!(self, AreaKind::Dungeon | AreaKind::Ruin)
     }
 }
 
@@ -177,6 +179,12 @@ pub struct GenOptions {
     /// no geometric areas it does nothing. Fine-tunes the dungeon tag's
     /// default (dungeon 0.6, untagged 0.0); the `natural` tag forces 0.
     pub dungeon_level: Option<f64>,
+    /// Probability (0..=1) that each geometric area (dungeon or ruin) is marked
+    /// **fusible** at classification. Two fusible same-kind areas that grow into
+    /// each other fuse into a compound (shared edge, no doorway) instead of
+    /// stopping at the rock gap. Fine-tunes the fuse tag's default (fused 0.71,
+    /// untagged 0.0); the `separate` tag forces 0.
+    pub fuse_level: Option<f64>,
     /// Override the shape stream (tags, areas, topology, outline, water,
     /// stones). Defaults to a sub-seed derived from the master seed.
     pub shape_seed: Option<u64>,
@@ -217,16 +225,25 @@ fn sub_seed(seed: u64, stream: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Assign a kind to each of the `n` area slots *before* growth, so growth can
-/// react (only dungeon areas may fuse). `round(ruins_level·n)` slots become
-/// geometric (ruin ∪ dungeon); of those, `round(dungeon_level·n_geo)` are
-/// dungeon and the rest ruin; all remaining slots are organic. Which slots take
-/// which kind is a shape-stream shuffle. With no geometric areas it draws
-/// nothing, so a fully-organic map's growth is untouched.
-fn classify_slots<R: Rng>(n: usize, ruins_level: f64, dungeon_level: f64, rng: &mut R) -> Vec<AreaKind> {
+/// Assign a kind (and a fusible flag) to each of the `n` area slots *before*
+/// growth, so growth can react. `round(ruins_level·n)` slots become geometric
+/// (ruin ∪ dungeon); of those, `round(dungeon_level·n_geo)` are dungeon and the
+/// rest ruin; all remaining slots are organic. Which slots take which kind is a
+/// shape-stream shuffle. Each geometric slot is independently marked **fusible**
+/// with probability `fuse_level` — two fusible same-kind areas that grow into
+/// each other fuse (see `AreaKind::may_fuse`); organic slots are never fusible.
+/// With no geometric areas it draws nothing, so a fully-organic map's growth is
+/// untouched.
+fn classify_slots<R: Rng>(
+    n: usize,
+    ruins_level: f64,
+    dungeon_level: f64,
+    fuse_level: f64,
+    rng: &mut R,
+) -> (Vec<AreaKind>, Vec<bool>) {
     let n_geo = ((ruins_level.clamp(0.0, 1.0) * n as f64).round() as usize).min(n);
     if n_geo == 0 {
-        return vec![AreaKind::Organic; n];
+        return (vec![AreaKind::Organic; n], vec![false; n]);
     }
     let n_dun = ((dungeon_level.clamp(0.0, 1.0) * n_geo as f64).round() as usize).min(n_geo);
     let mut slots: Vec<usize> = (0..n).collect();
@@ -238,7 +255,19 @@ fn classify_slots<R: Rng>(n: usize, ruins_level: f64, dungeon_level: f64, rng: &
     for &s in &slots[n_dun..n_geo] {
         kinds[s] = AreaKind::Ruin;
     }
-    kinds
+    // Fusible marking, on the geometric slots only, in slot order for a stable
+    // draw independent of the shuffle above. Skipped entirely (drawing no
+    // randomness) when fusion is off, so a map without fusion is byte-for-byte
+    // what it was before this feature existed.
+    let p = fuse_level.clamp(0.0, 1.0);
+    let fusible: Vec<bool> = if p <= 0.0 {
+        vec![false; n]
+    } else {
+        (0..n)
+            .map(|s| kinds[s] != AreaKind::Organic && rng.random_bool(p))
+            .collect()
+    };
+    (kinds, fusible)
 }
 
 /// Generate a map with explicit options.
@@ -279,16 +308,25 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         Some(tags::DungeonTag::Dungeon) => opts.dungeon_level.unwrap_or(0.6),
         None => opts.dungeon_level.unwrap_or(0.0),
     };
-    // Classify each area SLOT before growth, so growth can react to it (only
-    // dungeon areas may fuse). Classification, growth, reshaping and doors all
-    // draw from the one shape stream — determinism is per-seed, with no
-    // byte-compatibility to older output.
-    let slot_kinds = classify_slots(params.sizes.len(), ruins_level, dungeon_level, &mut rng);
+    // Per-area chance of being fusible: `separate` forces none, `fused` uses the
+    // default fraction, untagged is none unless overridden.
+    let fuse_level = match tags.fuse {
+        Some(tags::FuseTag::Separate) => 0.0,
+        Some(tags::FuseTag::Fused) => opts.fuse_level.unwrap_or(0.71),
+        None => opts.fuse_level.unwrap_or(0.0),
+    };
+    // Classify each area SLOT before growth, so growth can react to it (which
+    // slots are geometric, and which of those are fusible). Classification,
+    // growth, reshaping and doors all draw from the one shape stream —
+    // determinism is per-seed, with no byte-compatibility to older output.
+    let (slot_kinds, slot_fusible) =
+        classify_slots(params.sizes.len(), ruins_level, dungeon_level, fuse_level, &mut rng);
     let grid = HexGrid::hexagon(grid_radius(&params));
     // Staggered simultaneous growth: dungeon rooms grow as their geometry and
     // symmetric wings grow as lockstep sibling orbits (symmetry is chosen
     // inside, from the shape stream).
-    let mut areas = grow_areas(&grid, &mut rng, &params, &slot_kinds, oparams.hex_size);
+    let mut areas =
+        grow_areas(&grid, &mut rng, &params, &slot_kinds, &slot_fusible, oparams.hex_size);
     let topology = topology::build(&grid, &mut areas, &tags, &mut rng);
     // Reshape the ruin areas to their rasterized geometry, so all downstream
     // layers (outline, water, stones, decor) see the real footprint and

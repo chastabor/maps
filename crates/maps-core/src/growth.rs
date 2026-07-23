@@ -46,6 +46,60 @@ fn placeable(grid: &HexGrid, owner: &CellMap<u32>, idx: u32, c: Hex) -> bool {
         && c.neighbors().iter().all(|n| owner.get(*n).is_none_or(|o| o == idx))
 }
 
+/// Whether area `idx` may claim **all** of `cells` this step, and — if the
+/// claim drops a rock gap — which single partner it fuses with. Like
+/// [`placeable`] but a **fusible same-kind** neighbour is allowed (the two fuse
+/// into one compound, see [`AreaKind::may_fuse`]), subject to the **fuse-once**
+/// rule: each area fuses with at most one partner. Returns
+/// - `None` — blocked: a neighbour is a non-fusable/already-paired area, or the
+///   batch would touch two different partners at once;
+/// - `Some(None)` — claimable with the usual gap, no fusion;
+/// - `Some(Some(o))` — claimable, fusing `idx` with partner `o` (the caller
+///   records the pairing).
+///
+/// `meta[a] = (kind, fusible)` and `partner[a]` (the one area `a` has already
+/// fused with, or `None`) are owned/separate slices, so the caller can hold
+/// `&mut builds[idx]` while calling. Used only during expansion; seeding and
+/// orbits keep `placeable`'s hard gap.
+fn claim_batch(
+    grid: &HexGrid,
+    owner: &CellMap<u32>,
+    meta: &[(AreaKind, bool)],
+    partner: &[Option<u32>],
+    idx: usize,
+    cells: &[Hex],
+) -> Option<Option<u32>> {
+    // `idx`'s partner is fixed once set; a batch may only ever confirm it.
+    let mut fuse_o = partner[idx];
+    for &c in cells {
+        if !grid.contains(c) || owner.get(c).is_some() {
+            return None;
+        }
+        for n in c.neighbors() {
+            let Some(o) = owner.get(n) else { continue };
+            if o as usize == idx {
+                continue;
+            }
+            let ou = o as usize;
+            // The neighbour must be a fusible same-kind area that hasn't already
+            // paired with someone other than `idx`.
+            let eligible = meta[idx].1
+                && meta[ou].1
+                && meta[idx].0.may_fuse(meta[ou].0)
+                && partner[ou].is_none_or(|p| p == idx as u32);
+            if !eligible {
+                return None;
+            }
+            match fuse_o {
+                None => fuse_o = Some(o),
+                Some(f) if f == o => {}
+                Some(_) => return None, // would fuse `idx` with a second partner
+            }
+        }
+    }
+    Some(fuse_o)
+}
+
 // ---------------------------------------------------------------------------
 // Dungeon room geometry — grown one increment (ring / side-strip) per round.
 // ---------------------------------------------------------------------------
@@ -343,6 +397,8 @@ struct Build {
     grow: Grow,
     /// For dungeon rooms: whether the wall is a rectangle (else a circle).
     is_rect: bool,
+    /// Whether this area may grow into a same-kind fusible neighbour (no gap).
+    fusible: bool,
 }
 
 /// A lockstep sibling orbit: the generator's shape drives all members, each
@@ -382,17 +438,22 @@ impl Section {
 }
 
 /// Grow the areas (see the module docs). `slot_kinds[i]` is the pre-assigned
-/// kind of slot `i`; symmetry (chosen here from the shape stream) turns some
-/// dungeon slots into sibling-orbit generators.
+/// kind of slot `i` and `slot_fusible[i]` whether it may fuse with a same-kind
+/// neighbour it grows into; symmetry (chosen here from the shape stream) turns
+/// some dungeon slots into sibling-orbit generators.
 pub fn grow_areas<R: Rng>(
     grid: &HexGrid,
     rng: &mut R,
     params: &GrowthParams,
     slot_kinds: &[AreaKind],
+    slot_fusible: &[bool],
     hex_size: f64,
 ) -> Areas {
     let mut owner: CellMap<u32> = CellMap::new(grid.radius);
     let mut builds: Vec<Build> = Vec::new();
+    // `partner[a]` = the one area `a` has fused with (fuse-once). Grown in step
+    // with `builds` each round.
+    let mut partner: Vec<Option<u32>> = Vec::new();
     let mut orbits: Vec<Orbit> = Vec::new();
 
     // Symmetry plan + orbit centre (near the board centre, where wings fit).
@@ -417,17 +478,22 @@ pub fn grow_areas<R: Rng>(
     // free cell touching both), instead of finishing short and being dropped
     // as an unreachable component. The board is not resized, so the extra
     // growth fills the room the sections opened up.
+    // Each seeded single carries `(kind, target, fusible)`.
     let target = |i: usize| ((params.sizes[i] as f64 * GROWTH_BOOST).round() as usize).max(1);
-    let mut dungeon_targets: Vec<usize> =
-        (0..params.sizes.len()).filter(|&i| slot_kinds[i] == AreaKind::Dungeon).map(target).collect();
+    let mut dungeon_targets: Vec<(usize, bool)> = (0..params.sizes.len())
+        .filter(|&i| slot_kinds[i] == AreaKind::Dungeon)
+        .map(|i| (target(i), slot_fusible[i]))
+        .collect();
     let mut orbit_pending: Vec<usize> = Vec::new();
     for _ in 0..n_orbits {
-        orbit_pending.push(dungeon_targets.pop().unwrap());
+        // Orbit members never fuse (see `seed_orbit`), so their fusible flag is
+        // dropped here.
+        orbit_pending.push(dungeon_targets.pop().unwrap().0);
     }
     let n_dungeon_singles = dungeon_targets.len();
-    let mut others: Vec<(AreaKind, usize)> = (0..params.sizes.len())
+    let mut others: Vec<(AreaKind, usize, bool)> = (0..params.sizes.len())
         .filter(|&i| slot_kinds[i] != AreaKind::Dungeon)
-        .map(|i| (slot_kinds[i], target(i)))
+        .map(|i| (slot_kinds[i], target(i), slot_fusible[i]))
         .collect();
     others.shuffle(rng);
 
@@ -435,9 +501,9 @@ pub fn grow_areas<R: Rng>(
     // though seeded separately), dungeon singles forced into drop 0.
     let total = n_orbits + n_dungeon_singles + others.len();
     let third = total.div_ceil(3);
-    let mut drops: [Vec<(AreaKind, usize)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    for t in dungeon_targets {
-        drops[0].push((AreaKind::Dungeon, t));
+    let mut drops: [Vec<(AreaKind, usize, bool)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for (t, fusible) in dungeon_targets {
+        drops[0].push((AreaKind::Dungeon, t, fusible));
     }
     let mut d0 = n_orbits + drops[0].len();
     let mut rest = others.into_iter();
@@ -450,7 +516,7 @@ pub fn grow_areas<R: Rng>(
             None => break,
         }
     }
-    let leftover: Vec<(AreaKind, usize)> = rest.collect();
+    let leftover: Vec<(AreaKind, usize, bool)> = rest.collect();
     let half = leftover.len().div_ceil(2);
     for (k, u) in leftover.into_iter().enumerate() {
         drops[if k < half { 1 } else { 2 }].push(u);
@@ -487,8 +553,8 @@ pub fn grow_areas<R: Rng>(
                 });
             }
             let section = &sections[next_drop];
-            for &(kind, target) in &drops[next_drop] {
-                seed_single(grid, &mut owner, &mut builds, kind, target, section, hex_size, rng);
+            for &(kind, target, fusible) in &drops[next_drop] {
+                seed_single(grid, &mut owner, &mut builds, kind, target, fusible, section, hex_size, rng);
             }
             next_drop += 1;
             seed_gap = rng.random_range(1..=3);
@@ -497,10 +563,16 @@ pub fn grow_areas<R: Rng>(
         }
 
         // Advance every active independent area, then every active orbit.
+        // `partner[a]` tracks the one area `a` has fused with (fuse-once), and
+        // `meta` is a (kind, fusible) read-model — both per-area projections
+        // owned by the round loop (kind/fusible never change after seeding), so
+        // `advance_single` can consult all areas while holding `&mut builds[i]`.
+        partner.resize(builds.len(), None);
+        let meta: Vec<(AreaKind, bool)> = builds.iter().map(|b| (b.kind, b.fusible)).collect();
         let mut any_active = false;
         for i in 0..builds.len() {
             if builds[i].active {
-                advance_single(grid, &mut owner, &mut builds, i, params, hex_size, rng);
+                advance_single(grid, &mut owner, &mut builds, &mut partner, &meta, i, params, hex_size, rng);
                 any_active |= builds[i].active;
             }
         }
@@ -598,6 +670,7 @@ fn seed_single<R: Rng>(
     builds: &mut Vec<Build>,
     kind: AreaKind,
     target: usize,
+    fusible: bool,
     section: &Section,
     hex_size: f64,
     rng: &mut R,
@@ -619,7 +692,7 @@ fn seed_single<R: Rng>(
                     owner.insert(c, idx);
                 }
                 let shape = footprint_shape(seed, hex_size, is_rect, order);
-                builds.push(Build { cells, kind, target, active: true, grow: Grow::Shaped(shape), is_rect });
+                builds.push(Build { cells, kind, target, active: true, grow: Grow::Shaped(shape), is_rect, fusible });
                 return;
             }
         }
@@ -633,7 +706,8 @@ fn seed_single<R: Rng>(
     let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else { return };
     owner.insert(seed, idx);
     // A ruin reaching here couldn't take a shaped footprint: seed it organic.
-    let kind = if kind == AreaKind::Ruin { AreaKind::Organic } else { kind };
+    // Organic areas never fuse, so drop the fusible flag along with the kind.
+    let (kind, fusible) = if kind == AreaKind::Ruin { (AreaKind::Organic, false) } else { (kind, fusible) };
     builds.push(Build {
         cells: vec![seed],
         kind,
@@ -641,6 +715,7 @@ fn seed_single<R: Rng>(
         active: true,
         grow: Grow::Organic { frontier: BTreeSet::new() },
         is_rect: false,
+        fusible,
     });
 }
 
@@ -679,6 +754,10 @@ fn advance_single<R: Rng>(
     grid: &HexGrid,
     owner: &mut CellMap<u32>,
     builds: &mut [Build],
+    partner: &mut [Option<u32>],
+    // Per-round (kind, fusible) snapshot: an owned/separate read-model so a
+    // fusible area may consult every area while `builds[i]` is borrowed mutably.
+    meta: &[(AreaKind, bool)],
     i: usize,
     params: &GrowthParams,
     hex_size: f64,
@@ -688,6 +767,11 @@ fn advance_single<R: Rng>(
         builds[i].active = false;
         return;
     }
+    // Record a fusion between `idx` and `o` (both ends), so neither pairs again.
+    let pair = |partner: &mut [Option<u32>], idx: usize, o: u32| {
+        partner[idx] = Some(o);
+        partner[o as usize] = Some(idx as u32);
+    };
     match &mut builds[i].grow {
         Grow::Managed => {}
         Grow::Organic { .. } => {
@@ -699,14 +783,19 @@ fn advance_single<R: Rng>(
                     Grow::Organic { frontier } => frontier.iter().copied().collect(),
                     _ => break,
                 };
-                let cand: Vec<Hex> = frontier.into_iter().filter(|&h| placeable(grid, owner, i as u32, h)).collect();
+                // Each candidate carries the partner it would fuse with, so the
+                // chosen cell needn't re-run the eligibility scan.
+                let cand: Vec<(Hex, Option<u32>)> = frontier
+                    .into_iter()
+                    .filter_map(|h| claim_batch(grid, owner, meta, partner, i, &[h]).map(|ft| (h, ft)))
+                    .collect();
                 if cand.is_empty() {
                     // Seed the frontier from the current boundary once, else stop.
                     if builds[i].cells.len() == 1 {
                         let seed = builds[i].cells[0];
                         if let Grow::Organic { frontier } = &mut builds[i].grow {
                             for n in seed.neighbors() {
-                                if placeable(grid, owner, i as u32, n) {
+                                if claim_batch(grid, owner, meta, partner, i, &[n]).is_some() {
                                     frontier.insert(n);
                                 }
                             }
@@ -722,7 +811,7 @@ fn advance_single<R: Rng>(
                 }
                 let weights: Vec<f64> = cand
                     .iter()
-                    .map(|&h| {
+                    .map(|&(h, _)| {
                         let c = h.neighbors().iter().filter(|n| owner.get(**n) == Some(i as u32)).count();
                         if params.chaotic {
                             if c == 2 { 8.0 } else { 1.0 }
@@ -731,13 +820,16 @@ fn advance_single<R: Rng>(
                         }
                     })
                     .collect();
-                let pick = cand[weighted_index(rng, &weights)];
+                let (pick, ft) = cand[weighted_index(rng, &weights)];
                 owner.insert(pick, i as u32);
                 builds[i].cells.push(pick);
+                if let Some(o) = ft {
+                    pair(partner, i, o);
+                }
                 if let Grow::Organic { frontier } = &mut builds[i].grow {
                     frontier.remove(&pick);
                     for n in pick.neighbors() {
-                        if placeable(grid, owner, i as u32, n) {
+                        if claim_batch(grid, owner, meta, partner, i, &[n]).is_some() {
                             frontier.insert(n);
                         }
                     }
@@ -753,12 +845,18 @@ fn advance_single<R: Rng>(
             let cands = shape.candidates(grid, hex_size);
             let mut grew = false;
             for (cells, next) in cands {
-                if !cells.is_empty() && cells.iter().all(|&c| placeable(grid, owner, i as u32, c)) {
+                if cells.is_empty() {
+                    continue;
+                }
+                if let Some(ft) = claim_batch(grid, owner, meta, partner, i, &cells) {
                     for &c in &cells {
                         owner.insert(c, i as u32);
                     }
                     builds[i].cells.extend(cells);
                     builds[i].grow = Grow::Shaped(next);
+                    if let Some(o) = ft {
+                        pair(partner, i, o);
+                    }
                     grew = true;
                     break;
                 }
@@ -942,6 +1040,9 @@ fn seed_orbit<R: Rng>(
                 active: k == 0, // only the generator's `active` matters (orbit drives)
                 grow: Grow::Managed,
                 is_rect,
+                // Orbit members keep the gap (fusion is for independent growth
+                // only), so lockstep symmetric wings stay clean.
+                fusible: false,
             });
             members.push(idx);
         }

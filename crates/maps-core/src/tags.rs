@@ -61,6 +61,18 @@ pub enum DungeonTag {
     Natural,
 }
 
+/// Whether same-kind neighbouring areas may fuse into a compound (two dungeon
+/// rooms into one compound room, two ruins into one compound ruin) instead of
+/// keeping the rock gap between them. `separate` guarantees none. Untagged
+/// means none unless [`GenOptions::fuse_level`] overrides it. See
+/// [`GenOptions::fuse_level`] for exact control; no effect where there are too
+/// few geometric areas to touch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FuseTag {
+    Fused,
+    Separate,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WaterTag {
     Dry,
@@ -93,6 +105,10 @@ pub struct Tags {
     /// fraction of them clean, doored, symmetric rooms (see
     /// [`GenOptions::dungeon_level`]); `natural` guarantees none.
     pub dungeon: Option<DungeonTag>,
+    /// Whether same-kind neighbouring geometric areas may fuse into a compound:
+    /// `fused` lets a fraction of them touch (see [`GenOptions::fuse_level`]);
+    /// `separate` guarantees the rock gap stays between every pair.
+    pub fuse: Option<FuseTag>,
     /// Ruin floor tile pattern (mosaic/truchet/islamic/plain).
     pub pattern: Option<PatternTag>,
 }
@@ -147,12 +163,17 @@ impl Tags {
             70..=84 => PatternTag::Truchet,
             _ => PatternTag::Islamic,
         });
-        // Drawn last so adding this family leaves every other family's rolled
-        // value unchanged: only the presence of a dungeon tag is new.
+        // Drawn last so adding these families leaves every other family's
+        // rolled value unchanged: only their presence is new.
         let dungeon = Some(if rng.random_bool(0.2) {
             DungeonTag::Dungeon
         } else {
             DungeonTag::Natural
+        });
+        let fuse = Some(if rng.random_bool(0.6) {
+            FuseTag::Fused
+        } else {
+            FuseTag::Separate
         });
         Tags {
             size,
@@ -163,6 +184,7 @@ impl Tags {
             water,
             ruins,
             dungeon,
+            fuse,
             pattern,
         }
     }
@@ -224,5 +246,6 @@ tag_families! {
     water ("water", WaterTag): "wet" => Wet, "dry" => Dry;
     ruins ("ruins", RuinsTag): "ruins" => Ruins, "organic" => Organic;
     dungeon ("dungeon", DungeonTag): "dungeon" => Dungeon, "natural" => Natural;
+    fuse ("fuse", FuseTag): "fused" => Fused, "separate" => Separate;
     pattern ("pattern", PatternTag): "mosaic" => Mosaic, "truchet" => Truchet, "islamic" => Islamic, "plain" => Plain;
 }

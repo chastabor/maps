@@ -100,7 +100,10 @@ impl RuinShape {
     /// The room shape offset inward by `d`: the locus of points `d` inside
     /// the wall. Strokes of width `2d` centred on it span exactly from the
     /// wall to `2d` inside — the inward-thick dungeon wall band, whose outer
-    /// face stays on the traced outline. Halls pass through unchanged.
+    /// face stays on the traced outline. A `StraightHall` narrows its
+    /// half-width (its two side walls move `d` toward the centreline) — used
+    /// by the circle↔rectangle fusion connector to get its inner wall line;
+    /// `ArcHall` passes through unchanged.
     pub fn shrink(&self, d: f64) -> RuinShape {
         match *self {
             RuinShape::Rect { cx, cy, hw, hh } => RuinShape::Rect {
@@ -110,6 +113,9 @@ impl RuinShape {
                 hh: (hh - d).max(0.1),
             },
             RuinShape::Circle { cx, cy, r } => RuinShape::Circle { cx, cy, r: (r - d).max(0.1) },
+            RuinShape::StraightHall { ax, ay, bx, by, hw } => {
+                RuinShape::StraightHall { ax, ay, bx, by, hw: (hw - d).max(0.1) }
+            }
             other => other,
         }
     }

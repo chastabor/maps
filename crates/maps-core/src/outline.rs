@@ -129,12 +129,13 @@ pub fn build_outline<R: Rng>(
     topology: &Topology,
     ruin_cells: &HashMap<Hex, RuinShape>,
     dungeon_cells: &HashMap<Hex, RuinShape>,
+    neck_cells: &HashSet<Hex>,
     jambs: &[Jamb],
     params: &OutlineParams,
     rng: &mut R,
 ) -> (Vec<Vec<Point>>, Vec<Vec<(Point, RuinShape)>>) {
     let (floor, narrow) = floor_and_narrow(areas, topology);
-    smooth_loops(trace_loops(&floor), &narrow, ruin_cells, dungeon_cells, jambs, params, rng)
+    smooth_loops(trace_loops(&floor), &narrow, ruin_cells, dungeon_cells, neck_cells, jambs, params, rng)
 }
 
 /// Run any cell-set boundary through the full smoothing pipeline. Vertices
@@ -142,11 +143,13 @@ pub fn build_outline<R: Rng>(
 /// against all jitter, so those wall sections stay crisp; runs owned by
 /// dungeon cells are replaced wholesale by the room's exact wall (see
 /// `splice_dungeon_runs`) and locked from the start.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn smooth_loops<R: Rng>(
     loops: Vec<Vec<(Hex, usize)>>,
     narrow: &HashSet<Hex>,
     ruin_cells: &HashMap<Hex, RuinShape>,
     dungeon_cells: &HashMap<Hex, RuinShape>,
+    neck_cells: &HashSet<Hex>,
     jambs: &[Jamb],
     params: &OutlineParams,
     rng: &mut R,
@@ -164,10 +167,18 @@ pub(crate) fn smooth_loops<R: Rng>(
             let mut pts: Vec<TaggedPoint> = lp
                 .iter()
                 .map(|&(cell, corner)| {
+                    let p = corner_point(cell, corner, size);
                     let tag = narrow.contains(&cell).then(|| cell.center(size));
+                    // A narrow fused seam's cells are dungeon-locked but carry
+                    // NO shape, so they stay on their raw hex corners — the
+                    // full-width neck — instead of projecting onto either
+                    // room's pinching wall.
+                    if neck_cells.contains(&cell) {
+                        return (p, tag, None, true);
+                    }
                     let dungeon_shape = dungeon_cells.get(&cell).copied();
                     let ruin = dungeon_shape.or_else(|| ruin_cells.get(&cell).copied());
-                    (corner_point(cell, corner, size), tag, ruin, dungeon_shape.is_some())
+                    (p, tag, ruin, dungeon_shape.is_some())
                 })
                 .collect();
 

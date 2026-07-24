@@ -157,6 +157,219 @@ impl CaveMap {
     }
 }
 
+/// Cells forming the "neck" of every narrowly-fused dungeon pair: two dungeon
+/// rooms that grew cell-adjacent but touch across only one or two faces. The
+/// neck is the touching cells of both rooms. The outline locks these on their
+/// raw hex corners (rather than projecting each side onto its own pinching room
+/// wall), so the join is a full-hex-width, hex-aligned neck — the two touching
+/// hexes are already floor, so nothing new is filled. Rooms touching across ≥3
+/// faces already read as one compound and contribute nothing.
+fn fused_necks(areas: &Areas) -> std::collections::HashSet<grid::Hex> {
+    use std::collections::{HashMap, HashSet};
+    let n = areas.count();
+    let is_d = |i: usize| areas.kind(i) == AreaKind::Dungeon;
+    // Touching cells per dungeon pair; the (cell, foreign-neighbour) adjacency
+    // count is twice the seam's face width (each face is seen from both sides).
+    let mut seam: HashMap<(usize, usize), (Vec<grid::Hex>, usize)> = HashMap::new();
+    for a in 0..n {
+        if !is_d(a) {
+            continue;
+        }
+        for &h in &areas.cells[a] {
+            for nb in h.neighbors() {
+                if let Some(b) = areas.owner_of(nb).filter(|&b| b != a && is_d(b)) {
+                    let e = seam.entry((a.min(b), a.max(b))).or_default();
+                    e.0.push(h);
+                    e.1 += 1;
+                }
+            }
+        }
+    }
+    let mut neck = HashSet::new();
+    for (cells, faces) in seam.values() {
+        if faces / 2 <= 2 {
+            neck.extend(cells.iter().copied()); // narrow touch: give it a neck
+        }
+    }
+    neck
+}
+
+/// A clean, hex-aligned neck joining a fused **circle↔rectangle** pair, in
+/// place of the pinched improvised join two independently-derived shapes give.
+/// The two `line`s are the neck's outer walls — parallel, along the hex-edge
+/// axis toward the circle (150°-family diagonal) — each `(circle_arc_hit,
+/// rectangle_anchor)`; one anchored at the rectangle's near corner, the other
+/// at the connecting wall-hex's far point (one hex row over). `hall` is a
+/// `StraightHall` spanning between them so the renderer's per-vertex inner
+/// offset draws the neck's inner wall.
+struct Neck {
+    circ: ruins::RuinShape,
+    rect: ruins::RuinShape,
+    lines: [(Point, Point); 2],
+    hall: ruins::RuinShape,
+}
+
+/// One [`Neck`] per fused circle↔rectangle pair (see [`splice_necks`]).
+fn circle_rect_necks(areas: &Areas, s: f64) -> Vec<Neck> {
+    use ruins::RuinShape;
+    let mut necks = Vec::new();
+    let n = areas.count();
+    for a in 0..n {
+        for b in 0..n {
+            // a = rectangle, b = circle.
+            let (Some(rect @ RuinShape::Rect { cx: rcx, cy: rcy, hw: rhw, hh: rhh }), Some(circ @ RuinShape::Circle { cx: ccx, cy: ccy, r: cr })) =
+                (areas.shape(a), areas.shape(b))
+            else {
+                continue;
+            };
+            // Only fused pairs touch (everyone else keeps a rock gap).
+            if !areas.cells[a].iter().any(|h| h.neighbors().iter().any(|nb| areas.owner_of(*nb) == Some(b))) {
+                continue;
+            }
+            // Interior (non-border) rows/columns of each shape — a cell is
+            // interior when all its neighbours share the area, so the wall
+            // doesn't cut it. A shared interior ROW means a straight horizontal
+            // corridor could join the two (a shared COLUMN → a vertical one);
+            // those clean alignments get a straight path (deferred). The angle
+            // neck is only for CORNER fusions, where neither axis aligns.
+            let interior = |i: usize| {
+                let (mut rows, mut cols) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+                for &h in &areas.cells[i] {
+                    if h.neighbors().iter().all(|nb| areas.owner_of(*nb) == Some(i)) {
+                        rows.insert(h.r);
+                        cols.insert(h.q);
+                    }
+                }
+                (rows, cols)
+            };
+            let (r_rows, r_cols) = interior(a);
+            let (c_rows, c_cols) = interior(b);
+            if r_rows.intersection(&c_rows).next().is_some()
+                || r_cols.intersection(&c_cols).next().is_some()
+            {
+                continue; // horizontal/vertical alignment → straight path (deferred)
+            }
+            // The geometry below assumes the circle sits beyond a left/right
+            // edge (its offset is x-dominant). A corner where the circle is
+            // beyond a top/bottom edge needs the transposed construction —
+            // deferred, since pointy-top top/bottom edges differ from sides.
+            if ((ccx - rcx) / rhw).abs() < ((ccy - rcy) / rhh).abs() {
+                continue;
+            }
+            // The rectangle's wall-cell adjacent to the circle, on the edge
+            // facing it (its centre sits on that edge).
+            let sgnx = if ccx < rcx { -1.0 } else { 1.0 };
+            let near_x = rcx + sgnx * rhw;
+            let Some(conn) = areas.cells[a]
+                .iter()
+                .filter(|h| h.neighbors().iter().any(|nb| areas.owner_of(*nb) == Some(b)))
+                .copied()
+                .min_by(|p, q| {
+                    (p.center(s).0 - near_x).abs().total_cmp(&(q.center(s).0 - near_x).abs())
+                })
+            else {
+                continue;
+            };
+            let sgny = if ccy < rcy { -1.0 } else { 1.0 };
+            let cc = conn.center(s);
+            // Anchors on the rectangle's near edge: the near corner on the
+            // circle's vertical side, and the connecting hex's opposite point.
+            let corner = (near_x, rcy + sgny * rhh);
+            let hex_pt = (cc.0, cc.1 - sgny * s);
+            // Neck direction: the hex-edge diagonal pointing at the circle.
+            let dir = (sgnx * crate::grid::SQRT3 / 2.0, sgny * 0.5);
+            // Extend each anchor along `dir` to the circle's outer arc.
+            let hit = |p: Point| -> Option<Point> {
+                let (ex, ey) = (p.0 - ccx, p.1 - ccy);
+                let bq = ex * dir.0 + ey * dir.1;
+                let cq = ex * ex + ey * ey - cr * cr;
+                let disc = bq * bq - cq;
+                (disc >= 0.0).then(|| -bq - disc.sqrt()).filter(|&t| t > 0.0).map(|t| (p.0 + t * dir.0, p.1 + t * dir.1))
+            };
+            let (Some(c_hit), Some(h_hit)) = (hit(corner), hit(hex_pt)) else { continue };
+            // A `StraightHall` whose two sides are the neck walls: centreline
+            // midway between them, half-width the perpendicular half-distance.
+            let mid0 = ((corner.0 + hex_pt.0) / 2.0, (corner.1 + hex_pt.1) / 2.0);
+            let mid1 = ((c_hit.0 + h_hit.0) / 2.0, (c_hit.1 + h_hit.1) / 2.0);
+            let nrm = (-dir.1, dir.0);
+            let hw = ((corner.0 - hex_pt.0) * nrm.0 + (corner.1 - hex_pt.1) * nrm.1).abs() / 2.0;
+            let hall = RuinShape::StraightHall { ax: mid0.0, ay: mid0.1, bx: mid1.0, by: mid1.1, hw };
+            necks.push(Neck { circ, rect, lines: [(c_hit, corner), (h_hit, hex_pt)], hall });
+        }
+    }
+    necks
+}
+
+/// Splice each [`Neck`] into the `dungeon_walls` band: in the merged compound
+/// run, the two seam crossings (where circle vertices meet rectangle vertices,
+/// the pinch) are replaced by the neck's outer wall line for that side, tagged
+/// with the hall so the renderer offsets its inner wall. The band then flows
+/// circle arc → neck → rectangle wall as one continuous wall.
+fn splice_necks(walls: &mut [Vec<(Point, ruins::RuinShape)>], necks: &[Neck]) {
+    let dist = |a: Point, b: Point| (a.0 - b.0).hypot(a.1 - b.1);
+    for neck in necks {
+        let ruins::RuinShape::StraightHall { ax, ay, bx, by, hw } = neck.hall else { continue };
+        let (a, len, dir, nrm) = {
+            let d = (bx - ax, by - ay);
+            let l = d.0.hypot(d.1).max(1e-9);
+            ((ax, ay), l, (d.0 / l, d.1 / l), (-d.1 / l, d.0 / l))
+        };
+        // Point projected onto the hall: (distance along axis, signed perp).
+        let proj = |p: Point| {
+            ((p.0 - a.0) * dir.0 + (p.1 - a.1) * dir.1, (p.0 - a.0) * nrm.0 + (p.1 - a.1) * nrm.1)
+        };
+        let in_neck = |p: Point| {
+            let (t, pp) = proj(p);
+            t >= -2.0 && t <= len + 2.0 && pp.abs() <= hw + 2.0
+        };
+        // Which line lies on which perpendicular side.
+        let side = |l: &(Point, Point)| {
+            proj(((l.0.0 + l.1.0) / 2.0, (l.0.1 + l.1.1) / 2.0)).1.signum()
+        };
+        for run in walls.iter_mut() {
+            if !run.iter().any(|v| v.1 == neck.circ) || !run.iter().any(|v| v.1 == neck.rect) {
+                continue;
+            }
+            let closed = run.len() > 2 && run.first().map(|v| v.0) == run.last().map(|v| v.0);
+            let core = if closed { &run[..run.len() - 1] } else { &run[..] };
+            // Rotate so index 0 is a kept (non-neck) vertex, else a neck run
+            // wrapping the seam would be split.
+            let Some(start) = core.iter().position(|v| !in_neck(v.0)) else { continue };
+            let n = core.len();
+            let mut out: Vec<(Point, ruins::RuinShape)> = Vec::with_capacity(n + 4);
+            let mut k = 0;
+            while k < n {
+                let v = core[(start + k) % n];
+                if in_neck(v.0) {
+                    let s = proj(v.0).1.signum();
+                    let line = if side(&neck.lines[0]) == s { neck.lines[0] } else { neck.lines[1] };
+                    while k < n && in_neck(core[(start + k) % n].0) {
+                        k += 1;
+                    }
+                    // Order the line's two ends to continue the polyline.
+                    let prev = out.last().map(|v| v.0).unwrap_or(line.0);
+                    let (e0, e1) = if dist(prev, line.0) <= dist(prev, line.1) {
+                        (line.0, line.1)
+                    } else {
+                        (line.1, line.0)
+                    };
+                    out.push((e0, neck.hall));
+                    out.push((e1, neck.hall));
+                } else {
+                    out.push(v);
+                    k += 1;
+                }
+            }
+            if closed {
+                if let Some(&first) = out.first() {
+                    out.push(first);
+                }
+            }
+            *run = out;
+        }
+    }
+}
+
 /// Everything that shapes generation besides the seed.
 #[derive(Clone, Debug, Default)]
 pub struct GenOptions {
@@ -388,11 +601,20 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         .filter_map(|i| areas.shapes()[i].map(|sh| (i, sh)))
         .flat_map(|(i, sh)| areas.cells[i].iter().map(move |&c| (c, sh)))
         .collect();
-    // Jamb anchors: the outline snaps each wall gap to its mouth's opening
-    // width, so wall, throat and door bar always agree.
+    // Narrow fused seams: two dungeon rooms that grew cell-adjacent but touch
+    // across only one or two cell-faces pinch to a thin waist when each side
+    // projects onto its own room wall. Collect the touching cells (and the
+    // unowned rock pockets flanking them) as a "neck": the outline locks these
+    // on their raw hex corners instead — a full-width, hex-aligned connection
+    // between the two rooms (see `smooth_loops`). Wide touches (≥3 faces)
+    // already read as one compound and are left alone.
+    let neck_cells = fused_necks(&areas);
     let jambs = doorway::jambs(&mouths, &topology, &areas, oparams.hex_size);
-    let (outline, dungeon_walls) =
-        build_outline(&areas, &topology, &ruin_map, &dungeon_cells, &jambs, oparams, &mut rng);
+    let (outline, mut dungeon_walls) =
+        build_outline(&areas, &topology, &ruin_map, &dungeon_cells, &neck_cells, &jambs, oparams, &mut rng);
+    // A fused circle+rectangle joins with a clean hex-aligned neck: splice the
+    // neck's outer walls into the band in place of the pinched seam.
+    splice_necks(&mut dungeon_walls, &circle_rect_necks(&areas, oparams.hex_size));
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
     let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
     let stones = decor::stones(&floor, &narrow, &w.cells, oparams.hex_size, &mut rng);

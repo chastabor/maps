@@ -111,12 +111,13 @@ pub fn build_water<R: Rng>(
     // its edges smooth organically even inside a dungeon room.
     let no_ruins = std::collections::HashMap::new();
     let no_dungeon = std::collections::HashMap::new();
+    let no_neck: HashSet<Hex> = HashSet::new();
     let (mud_loops, _) =
-        smooth_loops(trace_loops(&mud), &HashSet::new(), &no_ruins, &no_dungeon, &[], &wparams, rng);
+        smooth_loops(trace_loops(&mud), &HashSet::new(), &no_ruins, &no_dungeon, &no_neck, &[], &wparams, rng);
     let (pools, _) =
-        smooth_loops(trace_loops(&water), &HashSet::new(), &no_ruins, &no_dungeon, &[], &wparams, rng);
+        smooth_loops(trace_loops(&water), &HashSet::new(), &no_ruins, &no_dungeon, &no_neck, &[], &wparams, rng);
     let (deep_loops, _) =
-        smooth_loops(trace_loops(&deep), &HashSet::new(), &no_ruins, &no_dungeon, &[], &wparams, rng);
+        smooth_loops(trace_loops(&deep), &HashSet::new(), &no_ruins, &no_dungeon, &no_neck, &[], &wparams, rng);
 
     Water {
         cells: water,

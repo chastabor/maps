@@ -474,6 +474,17 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
                 let _ = write!(d, "{cmd}{} {}", D1(x), D1(y));
             }
         };
+        // Intersection of the infinite lines through (p0,p1) and (p2,p3); None
+        // if parallel. Used to mitre inner wall corners (see below).
+        let line_intersect = |p0: Point, p1: Point, p2: Point, p3: Point| -> Option<Point> {
+            let (dx1, dy1) = (p1.0 - p0.0, p1.1 - p0.1);
+            let (dx2, dy2) = (p3.0 - p2.0, p3.1 - p2.1);
+            let den = dx1 * dy2 - dy1 * dx2;
+            (den.abs() >= 1e-9).then(|| {
+                let t = ((p2.0 - p0.0) * dy2 - (p2.1 - p0.1) * dx2) / den;
+                (p0.0 + t * dx1, p0.1 + t * dy1)
+            })
+        };
         for run in &map.dungeon_walls {
             let closed =
                 run.len() > 2 && run.first().map(|v| v.0) == run.last().map(|v| v.0);
@@ -483,7 +494,23 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
             }
             // Each vertex offsets inward on its OWN room's shrunk shape, so a
             // run spanning a fused seam stays flush with both rooms' walls.
-            let inner_pts: Vec<Point> = verts.iter().map(|&(p, sh)| sh.shrink(w).project(p)).collect();
+            let mut inner_pts: Vec<Point> = verts.iter().map(|&(p, sh)| sh.shrink(w).project(p)).collect();
+            // A neck corner is emitted as two coincident outer vertices with
+            // different owning shapes (e.g. the rectangle wall meeting the
+            // horizontal fusion corridor), so each side keeps its own straight
+            // inner offset — but the two inner points don't meet, leaving the
+            // corner drooping to the outer boundary. Replace both with the true
+            // mitre: where the inner line arriving from before crosses the one
+            // leaving after. Only coincident vertices trigger this, which
+            // nothing but a neck splice produces, so ordinary walls are untouched.
+            for i in 1..verts.len().saturating_sub(2) {
+                if verts[i].0 == verts[i + 1].0 && verts[i].1 != verts[i + 1].1 {
+                    if let Some(m) = line_intersect(inner_pts[i - 1], inner_pts[i], inner_pts[i + 1], inner_pts[i + 2]) {
+                        inner_pts[i] = m;
+                        inner_pts[i + 1] = m;
+                    }
+                }
+            }
             // Shadow follows the inner line only (closed only when the run is a
             // full ring; an open run's shadow stays an open polyline).
             emit(&mut shadow_d, &inner_pts, false);

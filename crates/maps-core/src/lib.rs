@@ -207,6 +207,11 @@ struct Neck {
     rect: ruins::RuinShape,
     lines: [(Point, Point); 2],
     hall: ruins::RuinShape,
+    /// Tag each wall's arc-side endpoint with the circle (not the hall) so its
+    /// inner offset blends into the arc. Set for the wide horizontal corridor,
+    /// whose walls meet a steeply-rising arc; the narrow angle neck leaves it
+    /// off (its endpoints hug the hall centreline cleanly).
+    blend_arc: bool,
 }
 
 /// One [`Neck`] per fused circle↔rectangle pair (see [`splice_necks`]).
@@ -244,22 +249,69 @@ fn circle_rect_necks(areas: &Areas, s: f64) -> Vec<Neck> {
             };
             let (r_rows, r_cols) = interior(a);
             let (c_rows, c_cols) = interior(b);
-            if r_rows.intersection(&c_rows).next().is_some()
-                || r_cols.intersection(&c_cols).next().is_some()
-            {
-                continue; // horizontal/vertical alignment → straight path (deferred)
+            // Which side the circle lies on, and the rectangle's near edge x.
+            let sgnx = if ccx < rcx { -1.0 } else { 1.0 };
+            let near_x = rcx + sgnx * rhw;
+            // Extend anchor `p` along `dir` to the circle's outer arc (nearest).
+            let hit = |p: Point, dir: (f64, f64)| -> Option<Point> {
+                let (ex, ey) = (p.0 - ccx, p.1 - ccy);
+                let bq = ex * dir.0 + ey * dir.1;
+                let cq = ex * ex + ey * ey - cr * cr;
+                let disc = bq * bq - cq;
+                (disc >= 0.0).then(|| -bq - disc.sqrt()).filter(|&t| t > 0.0).map(|t| (p.0 + t * dir.0, p.1 + t * dir.1))
+            };
+            // A shared interior ROW → the two shapes line up horizontally, so a
+            // straight horizontal corridor joins them: the contiguous band of
+            // touching rows becomes one opening whose top/bottom walls lie on the
+            // outermost rows' pointy vertices (top point of the topmost touching
+            // row, bottom point of the bottommost), spanning from the rectangle's
+            // near edge to the circle's arc.
+            if r_rows.intersection(&c_rows).next().is_some() {
+                let rows: Vec<i32> = areas.cells[a]
+                    .iter()
+                    .filter(|h| h.neighbors().iter().any(|nb| areas.owner_of(*nb) == Some(b)))
+                    .map(|h| h.r)
+                    .collect();
+                let (Some(&rmin), Some(&rmax)) = (rows.iter().min(), rows.iter().max()) else {
+                    continue;
+                };
+                // Pointy (top/bottom) vertices of the band's outer rows.
+                let y_top = 1.5 * s * rmin as f64 - s;
+                let y_bot = 1.5 * s * rmax as f64 + s;
+                // Near-side arc intersection at height `y` (the side facing the rect).
+                let arc_x = |y: f64| -> Option<f64> {
+                    let d = cr * cr - (y - ccy) * (y - ccy);
+                    (d >= 0.0).then(|| ccx - sgnx * d.sqrt())
+                };
+                let (Some(ax_top), Some(ax_bot)) = (arc_x(y_top), arc_x(y_bot)) else {
+                    continue;
+                };
+                // Outer walls: (circle_arc_hit, rectangle_edge) for top and bottom.
+                let top = ((ax_top, y_top), (near_x, y_top));
+                let bot = ((ax_bot, y_bot), (near_x, y_bot));
+                // Hall: rect-edge midpoint → arc-hit midpoint, half-height the band.
+                let y_mid = (y_top + y_bot) / 2.0;
+                let hall = RuinShape::StraightHall {
+                    ax: near_x,
+                    ay: y_mid,
+                    bx: (ax_top + ax_bot) / 2.0,
+                    by: y_mid,
+                    hw: (y_bot - y_top) / 2.0,
+                };
+                necks.push(Neck { circ, rect, lines: [top, bot], hall, blend_arc: true });
+                continue;
             }
-            // The geometry below assumes the circle sits beyond a left/right
-            // edge (its offset is x-dominant). A corner where the circle is
-            // beyond a top/bottom edge needs the transposed construction —
-            // deferred, since pointy-top top/bottom edges differ from sides.
+            // A shared interior COLUMN → the vertical analogue — deferred (the
+            // wide-touch band merge still reads acceptably there).
+            if r_cols.intersection(&c_cols).next().is_some() {
+                continue;
+            }
+            // The angle geometry below assumes the circle sits beyond a
+            // left/right edge (x-dominant offset). A corner beyond a top/bottom
+            // edge needs the transposed construction — deferred.
             if ((ccx - rcx) / rhw).abs() < ((ccy - rcy) / rhh).abs() {
                 continue;
             }
-            // The rectangle's wall-cell adjacent to the circle, on the edge
-            // facing it (its centre sits on that edge).
-            let sgnx = if ccx < rcx { -1.0 } else { 1.0 };
-            let near_x = rcx + sgnx * rhw;
             let Some(conn) = areas.cells[a]
                 .iter()
                 .filter(|h| h.neighbors().iter().any(|nb| areas.owner_of(*nb) == Some(b)))
@@ -278,15 +330,7 @@ fn circle_rect_necks(areas: &Areas, s: f64) -> Vec<Neck> {
             let hex_pt = (cc.0, cc.1 - sgny * s);
             // Neck direction: the hex-edge diagonal pointing at the circle.
             let dir = (sgnx * crate::grid::SQRT3 / 2.0, sgny * 0.5);
-            // Extend each anchor along `dir` to the circle's outer arc.
-            let hit = |p: Point| -> Option<Point> {
-                let (ex, ey) = (p.0 - ccx, p.1 - ccy);
-                let bq = ex * dir.0 + ey * dir.1;
-                let cq = ex * ex + ey * ey - cr * cr;
-                let disc = bq * bq - cq;
-                (disc >= 0.0).then(|| -bq - disc.sqrt()).filter(|&t| t > 0.0).map(|t| (p.0 + t * dir.0, p.1 + t * dir.1))
-            };
-            let (Some(c_hit), Some(h_hit)) = (hit(corner), hit(hex_pt)) else { continue };
+            let (Some(c_hit), Some(h_hit)) = (hit(corner, dir), hit(hex_pt, dir)) else { continue };
             // A `StraightHall` whose two sides are the neck walls: centreline
             // midway between them, half-width the perpendicular half-distance.
             let mid0 = ((corner.0 + hex_pt.0) / 2.0, (corner.1 + hex_pt.1) / 2.0);
@@ -294,7 +338,7 @@ fn circle_rect_necks(areas: &Areas, s: f64) -> Vec<Neck> {
             let nrm = (-dir.1, dir.0);
             let hw = ((corner.0 - hex_pt.0) * nrm.0 + (corner.1 - hex_pt.1) * nrm.1).abs() / 2.0;
             let hall = RuinShape::StraightHall { ax: mid0.0, ay: mid0.1, bx: mid1.0, by: mid1.1, hw };
-            necks.push(Neck { circ, rect, lines: [(c_hit, corner), (h_hit, hex_pt)], hall });
+            necks.push(Neck { circ, rect, lines: [(c_hit, corner), (h_hit, hex_pt)], hall, blend_arc: false });
         }
     }
     necks
@@ -326,6 +370,11 @@ fn splice_necks(walls: &mut [Vec<(Point, ruins::RuinShape)>], necks: &[Neck]) {
         let side = |l: &(Point, Point)| {
             proj(((l.0.0 + l.1.0) / 2.0, (l.0.1 + l.1.1) / 2.0)).1.signum()
         };
+        // Whether a spliced endpoint sits on the circle's arc (vs. the rect edge).
+        let on_arc = |p: Point| -> bool {
+            matches!(neck.circ, ruins::RuinShape::Circle { cx, cy, r }
+                if ((p.0 - cx).hypot(p.1 - cy) - r).abs() <= 1.5)
+        };
         for run in walls.iter_mut() {
             if !run.iter().any(|v| v.1 == neck.circ) || !run.iter().any(|v| v.1 == neck.rect) {
                 continue;
@@ -353,8 +402,33 @@ fn splice_necks(walls: &mut [Vec<(Point, ruins::RuinShape)>], necks: &[Neck]) {
                     } else {
                         (line.1, line.0)
                     };
-                    out.push((e0, neck.hall));
-                    out.push((e1, neck.hall));
+                    if neck.blend_arc {
+                        // Wide horizontal corridor. Both walls are level, so both
+                        // endpoints are hall-tagged (their inner offset drops
+                        // straight to the corridor half-width → a horizontal inner
+                        // line). Each endpoint is emitted as a COINCIDENT pair with
+                        // its abutting room — the rectangle at the near edge, the
+                        // circle at the arc — so the renderer mitres the inner
+                        // corner where the level corridor wall meets the vertical
+                        // rect wall / the curving arc. The matching-room tag sits
+                        // against that room's own vertices: first at `e0` (whose
+                        // predecessor is that room), last at `e1` (successor).
+                        let push_end = |out: &mut Vec<(Point, ruins::RuinShape)>, e: Point, is_first: bool| {
+                            let matching = if on_arc(e) { neck.circ } else { neck.rect };
+                            if is_first {
+                                out.push((e, matching));
+                                out.push((e, neck.hall));
+                            } else {
+                                out.push((e, neck.hall));
+                                out.push((e, matching));
+                            }
+                        };
+                        push_end(&mut out, e0, true);
+                        push_end(&mut out, e1, false);
+                    } else {
+                        out.push((e0, neck.hall));
+                        out.push((e1, neck.hall));
+                    }
                 } else {
                     out.push(v);
                     k += 1;
@@ -366,6 +440,121 @@ fn splice_necks(walls: &mut [Vec<(Point, ruins::RuinShape)>], necks: &[Neck]) {
                 }
             }
             *run = out;
+        }
+    }
+}
+
+/// Splice one horizontal-corridor neck into a single floor-outline loop:
+/// replace the contiguous run of pinched seam vertices with the neck's level
+/// top/bottom outer walls. Returns the rebuilt loop, or `None` if this loop
+/// doesn't pass through the neck (leave it unchanged). Point-only analogue of
+/// the per-run body of [`splice_necks`].
+fn spliced_loop(neck: &Neck, loop_: &[Point]) -> Option<Vec<Point>> {
+    let dist = |a: Point, b: Point| (a.0 - b.0).hypot(a.1 - b.1);
+    let ruins::RuinShape::StraightHall { ax, ay, bx, by, hw } = neck.hall else { return None };
+    let (a, len, dir, nrm) = {
+        let d = (bx - ax, by - ay);
+        let l = d.0.hypot(d.1).max(1e-9);
+        ((ax, ay), l, (d.0 / l, d.1 / l), (-d.1 / l, d.0 / l))
+    };
+    let proj = |p: Point| {
+        ((p.0 - a.0) * dir.0 + (p.1 - a.1) * dir.1, (p.0 - a.0) * nrm.0 + (p.1 - a.1) * nrm.1)
+    };
+    let in_neck = |p: Point| {
+        let (t, pp) = proj(p);
+        t >= -2.0 && t <= len + 2.0 && pp.abs() <= hw + 2.0
+    };
+    let side = |l: &(Point, Point)| {
+        proj(((l.0.0 + l.1.0) / 2.0, (l.0.1 + l.1.1) / 2.0)).1.signum()
+    };
+    if !loop_.iter().any(|&p| in_neck(p)) {
+        return None;
+    }
+    let closed = loop_.len() > 2 && loop_.first() == loop_.last();
+    let core = if closed { &loop_[..loop_.len() - 1] } else { &loop_[..] };
+    let start = core.iter().position(|&p| !in_neck(p))?;
+    let n = core.len();
+    let mut out: Vec<Point> = Vec::with_capacity(n + 2);
+    let mut k = 0;
+    while k < n {
+        let v = core[(start + k) % n];
+        if in_neck(v) {
+            let s = proj(v).1.signum();
+            let line = if side(&neck.lines[0]) == s { neck.lines[0] } else { neck.lines[1] };
+            while k < n && in_neck(core[(start + k) % n]) {
+                k += 1;
+            }
+            let prev = *out.last().unwrap_or(&line.0);
+            let (e0, e1) = if dist(prev, line.0) <= dist(prev, line.1) {
+                (line.0, line.1)
+            } else {
+                (line.1, line.0)
+            };
+            out.push(e0);
+            out.push(e1);
+        } else {
+            out.push(v);
+            k += 1;
+        }
+    }
+    if closed {
+        if let Some(&first) = out.first() {
+            out.push(first);
+        }
+    }
+    Some(out)
+}
+
+/// Proper (transversal) intersection of segments `a→b` and `c→d`.
+fn segs_cross(a: Point, b: Point, c: Point, d: Point) -> bool {
+    let o = |p: Point, q: Point, r: Point| (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
+    let (s1, s2, s3, s4) =
+        (o(a, b, c).signum(), o(a, b, d).signum(), o(c, d, a).signum(), o(c, d, b).signum());
+    s1 != s2 && s3 != s4 && s1 != 0.0 && s2 != 0.0 && s3 != 0.0 && s4 != 0.0
+}
+
+/// Count self-crossings among segments within `win` indices of each other — the
+/// local folds a splice can introduce (distant near-collinear pairs, which the
+/// cell-union outline always has some of, are ignored so they don't mask a real
+/// new fold).
+fn local_crossings(pts: &[Point], win: usize) -> usize {
+    let n = pts.len();
+    if n < 4 {
+        return 0;
+    }
+    let mut c = 0;
+    for i in 0..n - 1 {
+        for j in (i + 2)..(i + win).min(n - 1) {
+            if segs_cross(pts[i], pts[i + 1], pts[j], pts[j + 1]) {
+                c += 1;
+            }
+        }
+    }
+    c
+}
+
+/// Whether splicing `neck` into `outline` stays simple — no loop gains a local
+/// self-fold. Where the fusion isn't a clean horizontal side-by-side the arc
+/// can dip back across the corridor wall; those necks are dropped so the pair
+/// falls back to the band-merge instead of producing a self-crossing outline.
+fn outline_splice_safe(neck: &Neck, outline: &[Vec<Point>]) -> bool {
+    outline.iter().all(|lp| match spliced_loop(neck, lp) {
+        Some(new) => local_crossings(&new, 24) <= local_crossings(lp, 24),
+        None => true,
+    })
+}
+
+/// Splice each horizontal-corridor neck's outer walls into the floor outline
+/// loops so the `#fp` border and fill follow the corridor rather than the old
+/// pinched cell-union seam (the wall band alone would leave a stray outline
+/// line across the opening). Only `blend_arc` (horizontal) necks are spliced —
+/// the angle neck's floor outline already reads correctly.
+fn splice_outline_necks(outline: &mut [Vec<Point>], necks: &[Neck]) {
+    for neck in necks.iter().filter(|n| n.blend_arc) {
+        for loop_ in outline.iter_mut() {
+            if let Some(new) = spliced_loop(neck, loop_) {
+                *loop_ = new;
+            }
         }
     }
 }
@@ -610,11 +799,18 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // already read as one compound and are left alone.
     let neck_cells = fused_necks(&areas);
     let jambs = doorway::jambs(&mouths, &topology, &areas, oparams.hex_size);
-    let (outline, mut dungeon_walls) =
+    let (mut outline, mut dungeon_walls) =
         build_outline(&areas, &topology, &ruin_map, &dungeon_cells, &neck_cells, &jambs, oparams, &mut rng);
     // A fused circle+rectangle joins with a clean hex-aligned neck: splice the
-    // neck's outer walls into the band in place of the pinched seam.
-    splice_necks(&mut dungeon_walls, &circle_rect_necks(&areas, oparams.hex_size));
+    // neck's outer walls into the band in place of the pinched seam, and into
+    // the floor outline too so the `#fp` border/fill follows the same corridor
+    // rather than tracing the old cell-union seam across it.
+    let necks: Vec<Neck> = circle_rect_necks(&areas, oparams.hex_size)
+        .into_iter()
+        .filter(|n| !n.blend_arc || outline_splice_safe(n, &outline))
+        .collect();
+    splice_necks(&mut dungeon_walls, &necks);
+    splice_outline_necks(&mut outline, &necks);
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
     let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
     let stones = decor::stones(&floor, &narrow, &w.cells, oparams.hex_size, &mut rng);

@@ -623,17 +623,39 @@ fn splice_dungeon_runs(
             let tm = shape.wall_param(shape.project(pts[i + (j - i) / 2].0));
             (tm - raw_a).rem_euclid(per) <= fwd_raw + 1e-9
         };
-        // A snap that folds the run to nothing (both ends grabbed by one
-        // jamb) falls back to the raw endpoints. The run's start follows a
-        // gap and its end precedes one, so with walk direction `d` the start
-        // snaps to a jamb's `tw + d·half` edge and the end to `tw - d·half`.
+        // A run endpoint jamb-snaps only where the run actually meets a GAP (a
+        // non-splicable stretch — a doorway or organic passage). At a fused
+        // seam the band continues straight into the next shape's run, and that
+        // junction is mid-wall, not a doorway edge: snapping it can grab a
+        // nearby door's FAR jamb and inflate the walk to nearly the whole
+        // perimeter (measured: a one-vertex run beside a door walked 313 of a
+        // 334 perimeter, drawing the room's far wall across open fused floor).
         let d_sign = if forward { 1.0 } else { -1.0 };
         let len_of = |a: f64, b: f64| {
             if forward { (b - a).rem_euclid(per) } else { (a - b).rem_euclid(per) }
         };
-        let mut ta = snap(&shape, raw_a, d_sign);
-        let mut len = len_of(ta, snap(&shape, raw_b, -d_sign));
-        if len < 1e-6 && fwd_raw > 1e-6 {
+        let gap_before = !splicable(&pts[(i + n - 1) % n]);
+        let gap_after = !splicable(&pts[(j + 1) % n]);
+        // A snap that folds the run to nothing (both ends grabbed by one
+        // jamb) falls back to the raw endpoints. The run's start follows a
+        // gap and its end precedes one, so with walk direction `d` the start
+        // snaps to a jamb's `tw + d·half` edge and the end to `tw - d·half`.
+        let mut ta = if gap_before { snap(&shape, raw_a, d_sign) } else { raw_a };
+        let tb = if gap_after { snap(&shape, raw_b, -d_sign) } else { raw_b };
+        let mut len = len_of(ta, tb);
+        // Snapping may only lengthen the run by as much as its endpoints actually
+        // moved — that is all "close the gap to the jamb edge" can ever justify. A
+        // longer result means an endpoint snapped to an edge BEHIND the walk (the
+        // far side of its own doorway, typically from a one-vertex run where an
+        // organic passage grazes the wall) and the walk wrapped the long way round
+        // the room — drawing its far wall across open floor. Fold back to the raw
+        // endpoints instead, like the folded-to-nothing case below.
+        let cyc = |a: f64, b: f64| {
+            let d = (a - b).rem_euclid(per);
+            d.min(per - d)
+        };
+        let expected = len_of(raw_a, raw_b) + cyc(raw_a, ta) + cyc(raw_b, tb);
+        if len > expected + 1e-6 || (len < 1e-6 && fwd_raw > 1e-6) {
             ta = raw_a;
             len = len_of(raw_a, raw_b);
         }

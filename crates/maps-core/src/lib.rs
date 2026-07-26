@@ -550,6 +550,25 @@ fn shapes_overlap(a: &ruins::RuinShape, b: &ruins::RuinShape) -> bool {
     }
 }
 
+/// How far along `n` a wall may sit and still cross this shape on a chord at least
+/// two cells wide — `None` for anything but a circle, which is the only border that
+/// can be grazed (a rect's sides meet a perpendicular wall squarely at every
+/// offset).
+///
+/// The half-chord at offset `u` is `√(r² − (c·n − u)²)`, zero exactly at the
+/// circle's extreme. Requiring a cell's span of it costs the corridor almost
+/// nothing — the arc is nearly flat there, so for `r = 46` the bound moves in by
+/// 1.6px — and it is what stops a wall leaving the border tangentially. Measured
+/// over the sweep, halving the requirement leaves the worst wall-in-room case at
+/// 13px instead of 10.5, so the full cell is the setting that earns its keep.
+fn chord_bounds(sh: &ruins::RuinShape, n: Point, s: f64) -> Option<(f64, f64)> {
+    let ruins::RuinShape::Circle { cx, cy, r } = *sh else { return None };
+    let cn = cx * n.0 + cy * n.1;
+    // Shortest half-chord worth a wall: one cell's span.
+    let reach = (r * r - s * s).max(0.0).sqrt();
+    Some((cn - reach, cn + reach))
+}
+
 /// Snap a corridor wall offset onto the hex lattice, moving **inward** (`up` for a
 /// lower bound, else a upper one).
 ///
@@ -648,10 +667,26 @@ fn axis_necks(
                 else {
                     return None;
                 };
-                // Snap before comparing, so the axis is chosen on the width the
-                // corridor will really have.
-                let lo = snap_wall(a_lo.max(b_lo), n, s, true);
-                let hi = snap_wall(a_hi.min(b_hi), n, s, false);
+                // A wall must cross a circle on a real CHORD, not graze it. The
+                // clamp's inner bound is often the circle's own extreme along `n`,
+                // and the wall there leaves the border at zero angle: the traced
+                // outline wobbles across it, and the splice is refused for crossing
+                // itself. `snap_wall` already moves the level corridor's bound off
+                // the extreme as a side effect of landing on a lattice line, but a
+                // flat normal is deliberately left unsnapped — measured, 400 clamp
+                // bounds per sweep sat *exactly* tangent there.
+                let (mut lo, mut hi) = (a_lo.max(b_lo), a_hi.min(b_hi));
+                for sh in [&sa, &sb] {
+                    if let Some((in_lo, in_hi)) = chord_bounds(sh, n, s) {
+                        lo = lo.max(in_lo);
+                        hi = hi.min(in_hi);
+                    }
+                }
+                // Snap after, so the axis is chosen on the width the corridor will
+                // really have (snapping only ever moves a bound further inward, so
+                // it cannot undo the guard).
+                let lo = snap_wall(lo, n, s, true);
+                let hi = snap_wall(hi, n, s, false);
                 (hi - lo > 0.0).then_some((ax, lo, hi))
             })
             .max_by(|x, y| (x.2 - x.1).total_cmp(&(y.2 - y.1)))
@@ -844,38 +879,46 @@ impl Neck {
             (self.lines[0].0 .1 + self.lines[0].1 .1) / 2.0,
         ))
         .signum();
-        // Rotate so the walk starts on a kept vertex, else a dropped run wrapping
-        // the seam would be split in two.
-        let Some(start) = (0..n).find(|&i| !self.blocks(pos(i))) else { return false };
+        // A CLOSED sequence rotates to start on a kept vertex, else a dropped run
+        // wrapping the seam would be split in two. An OPEN one must NOT rotate: it
+        // is a polyline, not a cycle, so reordering it welds parts that are not
+        // neighbours. (A band run is cut open at every doorway gap; rotating one
+        // drew a wall straight across a room's interior, from the far end of its
+        // arc back to the spliced stretch.) Its own ends are gap edges instead, so
+        // `run_end` resolves both.
+        let Some(first_kept) = (0..n).find(|&i| !self.blocks(pos(i))) else { return false };
+        let idx = |k: usize| if closed { (first_kept + k) % n } else { k };
         // The last position emitted, for orienting each wall stretch.
-        let mut last = pos(start);
+        let mut last: Option<Point> = None;
         let mut k = 0;
         while k < n {
-            let i = (start + k) % n;
+            let i = idx(k);
             let v = pos(i);
             if self.blocks(v) {
                 let li = if side0 == pp(v).signum() { 0 } else { 1 };
                 let line = self.lines[li];
+                let first_dropped = v;
                 let mut last_dropped = v;
-                while k < n && self.blocks(pos((start + k) % n)) {
-                    last_dropped = pos((start + k) % n);
+                while k < n && self.blocks(pos(idx(k))) {
+                    last_dropped = pos(idx(k));
                     k += 1;
                 }
                 // Clip the wall to the stretch this run covered, so a doorway
                 // interrupting the run leaves a gap instead of a spike.
+                let prev = last.unwrap_or_else(|| run_end(line, first_dropped));
                 let next = if k < n {
-                    pos((start + k) % n)
+                    pos(idx(k))
                 } else if closed {
-                    pos(start)
+                    pos(idx(0))
                 } else {
                     run_end(line, last_dropped)
                 };
-                let ((e0, at0), (e1, at1)) = self.wall_stretch(line, last, next);
+                let ((e0, at0), (e1, at1)) = self.wall_stretch(line, prev, next);
                 emit(SpliceStep::Wall((e0, at0), (e1, at1)));
-                last = e1;
+                last = Some(e1);
             } else {
                 emit(SpliceStep::Keep(i));
-                last = v;
+                last = Some(v);
                 k += 1;
             }
         }

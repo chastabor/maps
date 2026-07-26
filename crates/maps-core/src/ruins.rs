@@ -23,6 +23,41 @@ pub enum RuinShape {
     /// A corridor bent into a circular arc: an annulus band of half-width
     /// `hw` around radius `r`.
     ArcHall { cx: f64, cy: f64, r: f64, hw: f64 },
+    /// One pointy-top hex cell's own boundary — circumradius `s`, corners at
+    /// `60k − 30°`. Carried by the cells of a narrowly-fused seam so those
+    /// vertices are *splicable* (they have a perimeter) while still sitting
+    /// exactly where they already are: a neck vertex is on one of these corners
+    /// already, so `project` is the identity for it. That keeps the raw-hex neck
+    /// lock by construction instead of by opting out of the wall splice, which
+    /// is what previously broke the band merge across a fused seam.
+    HexCell { cx: f64, cy: f64, s: f64 },
+}
+
+/// The six corners of a pointy-top hex, in `wall_param` order (see
+/// [`grid::hex_corner`](crate::grid::hex_corner) for the one corner convention).
+fn hex_corners(cx: f64, cy: f64, s: f64) -> [Point; 6] {
+    std::array::from_fn(|k| crate::grid::hex_corner((cx, cy), k, s))
+}
+
+/// Nearest point on a hex cell's boundary: `(edge index, offset within the
+/// edge, the point)`. The one edge scan behind both `HexCell::project` and
+/// `HexCell::wall_param`, so the two can never disagree about which edge a
+/// point belongs to.
+fn hex_edge_nearest(cx: f64, cy: f64, s: f64, p: Point) -> (usize, f64, Point) {
+    let c = hex_corners(cx, cy, s);
+    let mut best = (f64::MAX, 0, 0.0, p);
+    for k in 0..6 {
+        let (a, b) = (c[k], c[(k + 1) % 6]);
+        let d = (b.0 - a.0, b.1 - a.1);
+        let l2 = (d.0 * d.0 + d.1 * d.1).max(1e-9);
+        let t = (((p.0 - a.0) * d.0 + (p.1 - a.1) * d.1) / l2).clamp(0.0, 1.0);
+        let q = (a.0 + d.0 * t, a.1 + d.1 * t);
+        let dist = (p.0 - q.0).hypot(p.1 - q.1);
+        if dist < best.0 {
+            best = (dist, k, t, q);
+        }
+    }
+    (best.1, best.2, best.3)
 }
 
 impl RuinShape {
@@ -67,6 +102,9 @@ impl RuinShape {
                 let rw = if d >= r { r + hw } else { r - hw };
                 (cx + dx / d * rw, cy + dy / d * rw)
             }
+            // Nearest point on the six edges. A neck vertex already sits on a
+            // corner, so this returns it unchanged — the raw-hex lock.
+            RuinShape::HexCell { cx, cy, s } => hex_edge_nearest(cx, cy, s, p).2,
         }
     }
 }
@@ -116,6 +154,12 @@ impl RuinShape {
             RuinShape::StraightHall { ax, ay, bx, by, hw } => {
                 RuinShape::StraightHall { ax, ay, bx, by, hw: (hw - d).max(0.1) }
             }
+            // Inset: the apothem (√3/2·s) drops by `d`, so s' = s − 2d/√3.
+            RuinShape::HexCell { cx, cy, s } => RuinShape::HexCell {
+                cx,
+                cy,
+                s: (s - 2.0 * d / crate::grid::SQRT3).max(0.1),
+            },
             other => other,
         }
     }
@@ -128,6 +172,7 @@ impl RuinShape {
         match *self {
             RuinShape::Rect { hw, hh, .. } => Some(4.0 * (hw + hh)),
             RuinShape::Circle { r, .. } => Some(std::f64::consts::TAU * r),
+            RuinShape::HexCell { s, .. } => Some(6.0 * s),
             _ => None,
         }
     }
@@ -157,6 +202,12 @@ impl RuinShape {
             RuinShape::Circle { cx, cy, r } => {
                 (p.1 - cy).atan2(p.0 - cx).rem_euclid(std::f64::consts::TAU) * r
             }
+            // Edge `k` spans [k·s, (k+1)·s); every edge of a regular hexagon is
+            // exactly `s` long, so the offset within an edge is its own length.
+            RuinShape::HexCell { cx, cy, s } => {
+                let (k, t, _) = hex_edge_nearest(cx, cy, s, p);
+                (k as f64 + t) * s
+            }
             _ => 0.0,
         }
     }
@@ -182,6 +233,13 @@ impl RuinShape {
                 let a = t / r;
                 (cx + r * a.cos(), cy + r * a.sin())
             }
+            RuinShape::HexCell { cx, cy, s } => {
+                let c = hex_corners(cx, cy, s);
+                let u = (t / s.max(1e-9)).rem_euclid(6.0);
+                let (k, f) = (u.floor() as usize % 6, u.fract());
+                let (a, b) = (c[k], c[(k + 1) % 6]);
+                (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f)
+            }
             _ => (0.0, 0.0),
         }
     }
@@ -194,6 +252,7 @@ impl RuinShape {
                 let (w, h) = (2.0 * hw, 2.0 * hh);
                 vec![0.0, w, w + h, 2.0 * w + h]
             }
+            RuinShape::HexCell { s, .. } => (0..6).map(|k| k as f64 * s).collect(),
             _ => Vec::new(),
         }
     }
@@ -217,6 +276,12 @@ impl RuinShape {
             }
             RuinShape::ArcHall { cx, cy, r, hw: _ } => {
                 ((p.0 - cx).hypot(p.1 - cy) - r).abs() <= 0.87 * s
+            }
+            // Inside the hexagon: within the apothem on all three axes.
+            RuinShape::HexCell { cx, cy, s: hs } => {
+                let (dx, dy) = ((p.0 - cx).abs(), (p.1 - cy).abs());
+                let ap = crate::grid::SQRT3 / 2.0 * hs + m;
+                dy <= hs + m && dx <= ap && crate::grid::SQRT3 * ap - crate::grid::SQRT3 * dx >= dy - hs - m
             }
         }
     }

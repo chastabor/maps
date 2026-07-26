@@ -1,6 +1,18 @@
 //! Axial-coordinate, pointy-top hexagonal grid.
 
 pub(crate) const SQRT3: f64 = 1.732_050_807_568_877_2;
+/// A pointy-top hex cell's apothem (flat-edge distance) per unit of size.
+pub(crate) const HEX_APOTHEM: f64 = SQRT3 / 2.0;
+
+/// Corner `i` of a pointy-top hex around `center` — angle `60i − 30°`. The one
+/// definition of the corner convention: [`Hex::corners`], the outline's raster
+/// corners and `RuinShape::HexCell` all delegate here, and the HexCell design
+/// depends on them agreeing bit-for-bit (a neck vertex must land exactly on its
+/// own cell's corner).
+pub(crate) fn hex_corner(center: (f64, f64), i: usize, size: f64) -> (f64, f64) {
+    let angle = std::f64::consts::PI / 180.0 * (60.0 * i as f64 - 30.0);
+    (center.0 + size * angle.cos(), center.1 + size * angle.sin())
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct Hex {
@@ -58,11 +70,8 @@ impl Hex {
     }
 
     pub fn corners(self, size: f64) -> [(f64, f64); 6] {
-        let (cx, cy) = self.center(size);
-        std::array::from_fn(|i| {
-            let angle = std::f64::consts::PI / 180.0 * (60.0 * i as f64 - 30.0);
-            (cx + size * angle.cos(), cy + size * angle.sin())
-        })
+        let c = self.center(size);
+        std::array::from_fn(|i| hex_corner(c, i, size))
     }
 }
 

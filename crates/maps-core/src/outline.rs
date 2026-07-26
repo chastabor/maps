@@ -169,14 +169,21 @@ pub(crate) fn smooth_loops<R: Rng>(
                 .map(|&(cell, corner)| {
                     let p = corner_point(cell, corner, size);
                     let tag = narrow.contains(&cell).then(|| cell.center(size));
-                    // A narrow fused seam's cells are dungeon-locked but carry
-                    // NO shape, so they stay on their raw hex corners — the
-                    // full-width neck — instead of projecting onto either
-                    // room's pinching wall.
-                    if neck_cells.contains(&cell) {
-                        return (p, tag, None, true);
-                    }
+                    // A join's cells — a narrow fused seam's, and the floor a
+                    // corridor claimed across a gap — carry their OWN hex
+                    // boundary, so they stay on their raw hex corners (the
+                    // full-width neck) instead of projecting onto either room's
+                    // pinching wall. Tagging them with a real (perimeter-bearing)
+                    // shape rather than `None` keeps them *splicable*, so the band
+                    // merge flows through the seam and a fused pair's two rooms
+                    // land in one wall run — which is what lets the fusion
+                    // connectors reach them at all.
                     let dungeon_shape = dungeon_cells.get(&cell).copied();
+                    if neck_cells.contains(&cell) {
+                        let c = cell.center(size);
+                        let hex = RuinShape::HexCell { cx: c.0, cy: c.1, s: size };
+                        return (p, tag, Some(hex), dungeon_shape.is_some());
+                    }
                     let ruin = dungeon_shape.or_else(|| ruin_cells.get(&cell).copied());
                     (p, tag, ruin, dungeon_shape.is_some())
                 })
@@ -250,7 +257,13 @@ pub(crate) fn smooth_loops<R: Rng>(
                     // beyond 1.5 cells. Rooms are convex with a coverage-
                     // filtered raster, so their pull-in is always fold-safe.
                     let w_disp = match shape {
-                        RuinShape::Rect { .. } | RuinShape::Circle { .. } => 1.0,
+                        // `HexCell` joins the rooms: it is convex, and a neck
+                        // vertex already lies on one of its corners, so the
+                        // projection is a no-op and locking it is exactly the
+                        // raw-hex lock the neck wants.
+                        RuinShape::Rect { .. }
+                        | RuinShape::Circle { .. }
+                        | RuinShape::HexCell { .. } => 1.0,
                         RuinShape::StraightHall { .. } | RuinShape::ArcHall { .. } => {
                             let d = (proj.0 - p.0).hypot(proj.1 - p.1);
                             ((1.5 * size - d) / size).clamp(0.0, 1.0)
@@ -472,9 +485,7 @@ pub(crate) fn trace_loops(floor: &HashSet<Hex>) -> Vec<Vec<(Hex, usize)>> {
 
 /// Corner `i` of `cell` at angle `60i - 30` degrees.
 fn corner_point(cell: Hex, i: usize, size: f64) -> Point {
-    let (cx, cy) = cell.center(size);
-    let angle = std::f64::consts::PI / 180.0 * (60.0 * i as f64 - 30.0);
-    (cx + size * angle.cos(), cy + size * angle.sin())
+    crate::grid::hex_corner(cell.center(size), i, size)
 }
 
 impl Hex {

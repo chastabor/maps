@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 /// √3/2 — the apothem of a unit-side hex (centre to edge midpoint). Half of
 /// a single doorway's span, in hex-size units.
-pub const HEX_APOTHEM: f64 = crate::grid::SQRT3 / 2.0;
+pub const HEX_APOTHEM: f64 = crate::grid::HEX_APOTHEM;
 
 /// The three across-flats hex axes (edge-midpoint to opposite edge-midpoint),
 /// as unit vectors at 0°, 60° and 120°. A mouth with no usable wall geometry
@@ -72,7 +72,16 @@ pub struct Mouth {
 
 /// Cluster the map's doors into mouths. Only clusters that touch a dungeon
 /// room produce one — other doors carve plain organic gaps and draw nothing.
-pub fn mouths(topology: &Topology, areas: &Areas, s: f64) -> Vec<Mouth> {
+/// `blocked(p)` reports that wall point `p` is consumed by a fusion connector,
+/// so no door may be cut there — the corridor already opens that stretch. Door
+/// *cells* are chosen upstream in `topology::build`; only the opening's position
+/// along the wall responds to this, so no randomness is involved.
+pub fn mouths(
+    topology: &Topology,
+    areas: &Areas,
+    s: f64,
+    blocked: &dyn Fn(Point) -> bool,
+) -> Vec<Mouth> {
     let find = crate::growth::find;
     let doors = &topology.doors;
     let dungeon = |i: usize| areas.kind(i) == AreaKind::Dungeon;
@@ -106,11 +115,17 @@ pub fn mouths(topology: &Topology, areas: &Areas, s: f64) -> Vec<Mouth> {
     clusters
         .into_values()
         .filter(|members| members.iter().any(|&i| dungeon(doors[i].a) || dungeon(doors[i].b)))
-        .filter_map(|members| mouth(members, doors, areas, s))
+        .filter_map(|members| mouth(members, doors, areas, s, blocked))
         .collect()
 }
 
-fn mouth(members: Vec<usize>, doors: &[Door], areas: &Areas, s: f64) -> Option<Mouth> {
+fn mouth(
+    members: Vec<usize>,
+    doors: &[Door],
+    areas: &Areas,
+    s: f64,
+    blocked: &dyn Fn(Point) -> bool,
+) -> Option<Mouth> {
     let dungeon = |i: usize| areas.kind(i) == AreaKind::Dungeon;
     let centers: Vec<Point> = members.iter().map(|&i| doors[i].cell.center(s)).collect();
     let c0 = centers.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
@@ -221,7 +236,53 @@ fn mouth(members: Vec<usize>, doors: &[Door], areas: &Areas, s: f64) -> Option<M
         Some(sh) => clamp_opening(sh, raw, opening / 2.0, out),
         None => raw,
     };
+    // A fusion connector replaces a stretch of this wall, so an opening cut
+    // there would breach the corridor instead of the room. Slide it along the
+    // wall to the nearest clear placement.
+    let center = slide_clear(anchor_shape, center, axis, out, opening / 2.0, blocked);
     Some(Mouth { members, anchor, center, out, axis, shape: anchor_shape, opening })
+}
+
+/// Slide an opening along its wall until the whole span clears `blocked`,
+/// nearest placement first in both directions, re-clamped to the same edge each
+/// step (so a rectangle's gap still never crosses a corner and a circle's walks
+/// around the arc). Returns `center` unchanged when it is already clear, and
+/// also when nothing within a wall's length is — then the fusion opening simply
+/// subsumes this door, which is the honest outcome rather than a forced move.
+fn slide_clear(
+    shape: Option<RuinShape>,
+    center: Point,
+    axis: Point,
+    out: Point,
+    half: f64,
+    blocked: &dyn Fn(Point) -> bool,
+) -> Point {
+    // Sample the span's ends, quarters and centre: the blocked regions are
+    // hex-scale and the span is at most three hexes, so this cannot step over one.
+    let span_clear = |c: Point| {
+        [-1.0, -0.5, 0.0, 0.5, 1.0]
+            .iter()
+            .all(|f| !blocked((c.0 + axis.0 * half * f, c.1 + axis.1 * half * f)))
+    };
+    if span_clear(center) {
+        return center;
+    }
+    // Bounded to about one opening width. An unbounded walk pushed doors to the
+    // far end of an edge (or saturated at a corner), which is what folded the
+    // traced outline at the jamb; a door that cannot clear the connector within
+    // one opening simply stays, and the connector yields to it instead.
+    let step = (half / 2.0).max(1.0);
+    (1..=4)
+        .flat_map(|k| [-1.0, 1.0].map(|sgn| sgn * step * k as f64))
+        .map(|t| {
+            let p = (center.0 + axis.0 * t, center.1 + axis.1 * t);
+            match shape {
+                Some(sh) => clamp_opening(sh, p, half, out),
+                None => p,
+            }
+        })
+        .find(|&c| span_clear(c))
+        .unwrap_or(center)
 }
 
 /// Slide an opening of half-width `half` along the one wall edge that the

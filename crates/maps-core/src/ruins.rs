@@ -131,8 +131,10 @@ impl RuinShape {
     /// Whether `p` lies within the space this shape walls in — inside the perimeter
     /// for a room, between the side walls for a hall, inside the hexagon for a cell.
     ///
-    /// Distinct from [`wall_dist`](Self::wall_dist), which is unsigned and so cannot
-    /// tell inside from out. Used to answer "is this floor enclosed by anything?".
+    /// Exact. Distinct from its two neighbours: [`wall_dist`](Self::wall_dist) is
+    /// unsigned and so cannot tell inside from out, and `covers` is a rasterization test
+    /// that deliberately admits a margin and ignores a hall's real half-width. Used to
+    /// answer "is this floor enclosed by anything?".
     pub fn contains(&self, p: Point) -> bool {
         match *self {
             RuinShape::Rect { cx, cy, hw, hh } => {
@@ -325,6 +327,11 @@ impl RuinShape {
     /// with a margin so the claimed cells extend slightly past the exact
     /// geometry — the traced cell boundary then lies outside the shape and
     /// projection only ever pulls walls inward, within the area's own cells.
+    ///
+    /// **Cell-granularity, not exact** — and deliberately so, which is the difference
+    /// from [`contains`](Self::contains): rooms get a `0.35·s` margin, and both hall
+    /// variants substitute a cell-scale band for the hall's actual half-width. Use
+    /// `contains` for an exact test.
     fn covers(&self, p: Point, s: f64) -> bool {
         let m = 0.35 * s;
         match *self {
@@ -361,7 +368,7 @@ impl RuinShape {
 /// from a flower into their exact rectangle/circle geometry — hex-aligned and
 /// one rock cell from every neighbour, exactly like dungeon rooms — and
 /// `growth::finalize` derived their [`RuinShape`]. Here we only **erode** them
-/// (see [`erode`]): drop a fraction of boundary cells so the footprint weathers
+/// (see `erode`): drop a fraction of boundary cells so the footprint weathers
 /// into organic bites while the intact walls still project onto the clean shape
 /// (the soft ruin projection in [`ruin_cell_map`], vs a dungeon's hard-locked
 /// wall). A ruin that `topology` shrank into a corridor is refitted as a

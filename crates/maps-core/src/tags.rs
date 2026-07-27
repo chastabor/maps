@@ -53,7 +53,7 @@ pub enum RuinsTag {
 /// Dungeon presence, nested inside ruins: of the areas that ruins turned
 /// geometric, `dungeon` regrows a fraction as clean, doored, symmetric rooms
 /// instead of weathered ruins; `natural` guarantees none. Untagged means none
-/// unless [`GenOptions::dungeon_level`] overrides it. Has no effect where
+/// unless [`crate::GenOptions::dungeon_level`] overrides it. Has no effect where
 /// there are no geometric areas (organic maps, `ruins_level` 0).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DungeonTag {
@@ -64,8 +64,8 @@ pub enum DungeonTag {
 /// Whether same-kind neighbouring areas may fuse into a compound (two dungeon
 /// rooms into one compound room, two ruins into one compound ruin) instead of
 /// keeping the rock gap between them. `separate` guarantees none. Untagged
-/// means none unless [`GenOptions::fuse_level`] overrides it. See
-/// [`GenOptions::fuse_level`] for exact control; no effect where there are too
+/// means none unless [`crate::GenOptions::fuse_level`] overrides it. See
+/// [`crate::GenOptions::fuse_level`] for exact control; no effect where there are too
 /// few geometric areas to touch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FuseTag {
@@ -103,10 +103,10 @@ pub struct Tags {
     pub ruins: Option<RuinsTag>,
     /// Dungeon presence within the geometric (ruin) areas: `dungeon` makes a
     /// fraction of them clean, doored, symmetric rooms (see
-    /// [`GenOptions::dungeon_level`]); `natural` guarantees none.
+    /// [`crate::GenOptions::dungeon_level`]); `natural` guarantees none.
     pub dungeon: Option<DungeonTag>,
     /// Whether same-kind neighbouring geometric areas may fuse into a compound:
-    /// `fused` lets a fraction of them touch (see [`GenOptions::fuse_level`]);
+    /// `fused` lets a fraction of them touch (see [`crate::GenOptions::fuse_level`]);
     /// `separate` guarantees the rock gap stays between every pair.
     pub fuse: Option<FuseTag>,
     /// Ruin floor tile pattern (mosaic/truchet/islamic/plain).

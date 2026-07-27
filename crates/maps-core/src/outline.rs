@@ -14,6 +14,7 @@ use crate::ruins::RuinShape;
 use crate::topology::Topology;
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 pub use crate::geom::Point;
 
@@ -34,13 +35,32 @@ pub struct Constraints<'a> {
     /// lock against all jitter, keeping the wall crisp.
     pub ruin_cells: &'a HashMap<Hex, RuinShape>,
     /// Every dungeon room cell's shape. Those boundary runs are replaced wholesale by
-    /// the room's exact wall — see [`splice_dungeon_runs`] — and locked from the start.
+    /// the room's exact wall — see `splice_dungeon_runs` — and locked from the start.
     pub dungeon_cells: &'a HashMap<Hex, RuinShape>,
     /// Fusion-seam and corridor cells, locked on their own raw hex boundary rather
     /// than projected onto either room's shape (projecting would undo the fill).
     pub neck_cells: &'a HashSet<Hex>,
     /// Doorway jambs, which hold an opening open against the smoothing.
     pub jambs: &'a [Jamb],
+}
+
+impl Constraints<'static> {
+    /// No constraints: a purely organic boundary, which is every caller outside the
+    /// cave floor itself (water, mud, and the timing bench's bare floor).
+    ///
+    /// Shared empty statics, so a caller needs no locals of its own. Combine with
+    /// struct-update syntax to constrain just one thing —
+    /// `Constraints { ruin_cells: &map, ..Constraints::none() }`.
+    pub fn none() -> Self {
+        static SHAPES: LazyLock<HashMap<Hex, RuinShape>> = LazyLock::new(HashMap::new);
+        static CELLS: LazyLock<HashSet<Hex>> = LazyLock::new(HashSet::new);
+        Constraints {
+            ruin_cells: &SHAPES,
+            dungeon_cells: &SHAPES,
+            neck_cells: &CELLS,
+            jambs: &[],
+        }
+    }
 }
 
 /// Quantize a coordinate to an exact tenth of a pixel. All geometry stored
@@ -600,8 +620,7 @@ fn splice_dungeon_runs(
             let shape = pts[0].2.unwrap();
             let t0 = shape.wall_param(shape.project(pts[0].0));
             let walk = wall_walk(&shape, t0, 1.0, shape.perimeter().unwrap_or(0.0), s, true);
-            let mut run: Vec<(Point, RuinShape)> =
-                walk.iter().map(|&p| (quantize_pt(p), shape)).collect();
+            let mut run: WallRun = walk.iter().map(|&p| (quantize_pt(p), shape)).collect();
             if let Some(&first) = run.first() {
                 run.push(first);
             }
@@ -623,9 +642,9 @@ fn splice_dungeon_runs(
     // end. A fused compound then renders as one continuous wall, not two
     // capsules notched at the seam. Non-fused rooms keep a rock gap, so every
     // run is gap-bounded and flushes alone — output unchanged.
-    let mut current: Vec<(Point, RuinShape)> = Vec::new();
+    let mut current: WallRun = Vec::new();
     // Emit the accumulated band (a polyline needs ≥2 points) and reset.
-    let mut flush = |current: &mut Vec<(Point, RuinShape)>| {
+    let mut flush = |current: &mut WallRun| {
         let band = std::mem::take(current);
         if band.len() > 1 {
             walls.push(band);

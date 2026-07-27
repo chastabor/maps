@@ -84,33 +84,6 @@ fn self_intersects(loop_: &[(f64, f64)]) -> bool {
     })
 }
 
-/// Whether `p` is inside a wall geometry. Every [`RuinShape`] variant, so the count
-/// does not swing with the mix of shapes a configuration happens to produce.
-fn inside(p: (f64, f64), sh: RuinShape) -> bool {
-    const APOTHEM: f64 = 0.866_025_403_784_438_6; // √3/2
-    match sh {
-        RuinShape::Circle { cx, cy, r } => (p.0 - cx).hypot(p.1 - cy) <= r + 1e-6,
-        RuinShape::Rect { cx, cy, hw, hh } => {
-            (p.0 - cx).abs() <= hw + 1e-6 && (p.1 - cy).abs() <= hh + 1e-6
-        }
-        RuinShape::StraightHall { ax, ay, bx, by, hw } => {
-            let d = (bx - ax, by - ay);
-            let l2 = (d.0 * d.0 + d.1 * d.1).max(1e-9);
-            let t = (((p.0 - ax) * d.0 + (p.1 - ay) * d.1) / l2).clamp(0.0, 1.0);
-            (p.0 - (ax + d.0 * t)).hypot(p.1 - (ay + d.1 * t)) <= hw + 1e-6
-        }
-        RuinShape::ArcHall { cx, cy, r, hw } => ((p.0 - cx).hypot(p.1 - cy) - r).abs() <= hw + 1e-6,
-        // A pointy-top hex contains p iff p is within the apothem of the centre on
-        // all three edge normals (0° and ±60°).
-        RuinShape::HexCell { cx, cy, s } => {
-            let (dx, dy) = (p.0 - cx, p.1 - cy);
-            [(1.0, 0.0), (0.5, APOTHEM), (-0.5, APOTHEM)]
-                .iter()
-                .all(|&(nx, ny)| (dx * nx + dy * ny).abs() <= APOTHEM * s + 1e-6)
-        }
-    }
-}
-
 /// Corridor floor that no wall encloses: fusion-corridor cells whose centre falls
 /// inside none of the map's wall geometries.
 ///
@@ -124,10 +97,9 @@ fn corridor_floor_outside(m: &CaveMap, s: f64) -> usize {
     m.areas
         .join()
         .iter()
-        .filter(|c| m.areas.owner_of(**c).is_some())
         .filter(|c| {
             let p = c.center(s);
-            !shapes.iter().any(|&sh| inside(p, sh))
+            !shapes.iter().any(|sh| sh.contains(p))
         })
         .count()
 }
@@ -148,15 +120,14 @@ fn worst_interior_depth(m: &CaveMap) -> f64 {
             for t in 1..8 {
                 let f = t as f64 / 8.0;
                 let c = (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
+                // Rooms only: a hall IS a wall pair, so a wall lying in one is not a
+                // wall lying inside a room.
                 for sh in m.ruins.iter().flatten() {
-                    let depth = match *sh {
-                        RuinShape::Circle { cx, cy, r } => r - (c.0 - cx).hypot(c.1 - cy),
-                        RuinShape::Rect { cx, cy, hw, hh } => {
-                            (hw - (c.0 - cx).abs()).min(hh - (c.1 - cy).abs())
-                        }
-                        _ => -1.0,
-                    };
-                    worst = worst.max(depth);
+                    if matches!(sh, RuinShape::Circle { .. } | RuinShape::Rect { .. })
+                        && sh.contains(c)
+                    {
+                        worst = worst.max(sh.wall_dist(c));
+                    }
                 }
             }
         }

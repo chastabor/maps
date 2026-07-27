@@ -129,7 +129,7 @@ pub fn svg(map: &CaveMap) -> String {
 
 /// Like [`svg`], but with `labels` overlaying each area's index and a stable
 /// content hash at its centroid — a diagnostic aid for pinpointing a specific
-/// room across renders (see [`area_label_layer`]).
+/// room across renders (see `area_label_layer`).
 pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for lp in &map.outline {

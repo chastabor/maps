@@ -21,7 +21,7 @@ pub mod water;
 
 use grid::HexGrid;
 use growth::{Areas, GrowthParams, grid_radius, grow_areas, resolve};
-use outline::{OutlineParams, Point, build_outline};
+use outline::{OutlineParams, Point, WallRun, build_outline};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
@@ -116,7 +116,7 @@ pub struct CaveMap {
     /// the seam. At render time each run is offset inward per-vertex on its
     /// shape and stroked thick — the wall the outline traced, its outer face on
     /// the traced boundary, with gaps only at doorway and exit openings.
-    pub dungeon_walls: Vec<Vec<(Point, ruins::RuinShape)>>,
+    pub dungeon_walls: Vec<WallRun>,
     /// Smoothed water pool loops at the waterline.
     pub water: Vec<Vec<Point>>,
     /// Deep-water band inside the pools (terrain well below the level).
@@ -358,6 +358,8 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // here mutates `areas`; accepting a connector needs the traced outline, so the
     // splice waits until after `build_outline` (see `fuse::Fusion`).
     let (fusion, neck_cells) = fuse::plan(&areas, oparams.hex_size);
+    // Before anything reads the floor: corridor floor whose pair dissolved is not floor.
+    fusion.release_orphans(&mut areas);
     let mut ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
 
     // Doorway mouths onto dungeon rooms: flush openings cut into the exact

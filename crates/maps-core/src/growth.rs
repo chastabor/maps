@@ -10,7 +10,7 @@
 //!
 //! A **fused** pair is the exception: it closes that gap instead, so it gets no
 //! doorway and needs a corridor. That corridor's floor is claimed here too, as the
-//! last thing [`grow_areas`] does — see [`claim_join_floor`]. Floor ownership is
+//! last thing [`grow_areas`] does — see `claim_join_floor`. Floor ownership is
 //! growth's business start to finish, so every later stage sees a corridor as
 //! ordinary floor; `fuse` only draws the walls.
 
@@ -505,7 +505,9 @@ pub struct Areas {
     kinds: Vec<AreaKind>,
     shapes: Vec<Option<RuinShape>>,
     owner: CellMap<u32>,
-    /// Cells growth claimed as fusion-corridor floor (see [`claim_join_floor`]).
+    /// The fusion-corridor floor (see `claim_join_floor`) — cells that ARE corridor
+    /// floor, not cells that once were: `remove_from_area` and `keep_largest_component`
+    /// both prune it, so a reader needs no ownership filter.
     /// They belong to a room's cell set like any other floor, but the outline must
     /// lock them on their own hex corners rather than project them onto that room's
     /// wall — they lie outside its geometry, and projecting would undo the fill.
@@ -571,14 +573,26 @@ impl Areas {
             self.owner.insert(c, i as u32);
         }
         self.cells[i] = new_cells;
+        // Reshaping can drop a cell the corridor claimed — this is how a fused pair loses
+        // a side (see `fuse::Fusion::release_orphans`). Keep `join` to owned cells only.
+        self.prune_join();
     }
 
     /// Free the given cells of `area` (used by corridor shrinking).
     pub fn remove_from_area(&mut self, area: usize, remove: &[Hex]) {
         for &c in remove {
             self.owner.remove(c);
+            self.join.remove(&c);
         }
         self.cells[area].retain(|c| !remove.contains(c));
+    }
+
+    /// Drop any corridor floor that is no longer owned, so [`join`](Self::join) keeps
+    /// meaning "is corridor floor" rather than "was once claimed" and its readers need no
+    /// ownership filter of their own.
+    fn prune_join(&mut self) {
+        let owner = &self.owner;
+        self.join.retain(|c| owner.get(*c).is_some());
     }
 }
 
@@ -857,11 +871,17 @@ pub fn grow_areas<R: Rng>(
 /// Rooms have finished growing, so their wall shapes are settled: `derive_shape` on
 /// the live cells gives exactly what [`finalize`] will record, so the corridor is
 /// planned against the geometry the walls will finally use. `fuse` says *where* a
-/// corridor wants floor; the decision of whether it may have it is **growth's**. It
-/// is growth's own [`claim_batch`] — the rock gap relaxed for a fused pair, plus
-/// fuse-once, no longer mirrored by hand in a post-growth pass — tightened by one
-/// rule a corridor needs and ordinary growth does not: see the neighbour check
-/// below.
+/// corridor wants floor; the decision of whether it may have it is **growth's**, and it
+/// is growth's own [`claim_batch`] unchanged — the rock gap relaxed for a fused pair,
+/// plus fuse-once — rather than the hand-mirrored copy a post-growth pass needed.
+///
+/// A corridor needs no extra neighbour rule, though it looks like it should: a cell
+/// touching some *third* area would lay floor against that area's wall. `claim_batch`
+/// already refuses it, because by the end of growth a fused pair has
+/// `partner[want] == Some(other)`, so a third owned neighbour trips "would fuse `idx`
+/// with a second partner". An explicit guard here was measured **inert** — it fired
+/// twice over 300 maps and `claim_batch` rejected both cells anyway, and removing it
+/// left every digest bit-identical over 200 seeds in both level settings.
 ///
 /// Doing it here also removes a reservation the old pass needed: `topology` picks
 /// door cells from *unowned* cells, and it runs later, so it now simply never
@@ -883,14 +903,15 @@ fn claim_join_floor(
     let mut kinds = Vec::with_capacity(builds.len());
     let mut shapes = Vec::with_capacity(builds.len());
     let mut pown: CellMap<u32> = CellMap::new(grid.radius);
+    // Nothing is claimed yet, so no cell is corridor floor to exclude.
+    let unclaimed = HashSet::new();
     for (i, b) in builds.iter().enumerate() {
         for &c in &b.cells {
             pown.insert(c, i as u32);
         }
         cells.push(b.cells.clone());
         kinds.push(b.kind);
-        // Nothing is claimed yet, so no cell is corridor floor to exclude.
-        shapes.push(build_shape(b, hex_size, &HashSet::new()));
+        shapes.push(build_shape(b, hex_size, &unclaimed));
     }
     let provisional = Areas {
         cells,
@@ -905,45 +926,39 @@ fn claim_join_floor(
     for side in crate::fuse::corridor_floor(&provisional, grid, hex_size) {
         let (a, b) = side.pair;
         for line in side.lines {
-            // Claim the line one cell at a time against the live state — each cell
-            // sees what the ones before it did — and undo the whole line if any cell
-            // refuses. Testing the cells first and committing afterwards would let a
-            // line pass the test and then commit only partway, since claiming an
-            // early cell can fix `want`'s partner and so bar a later one.
-            let restore = partner.to_vec();
+            // Claim the line one cell at a time against the live state, so each cell sees
+            // what the ones before it did, and undo the whole line if any cell refuses.
+            // Testing every cell first and committing afterwards would let a line pass the
+            // test and then commit only partway: claiming an early cell can fix `want`'s
+            // partner and so bar a later one.
             let mut added: Vec<(Hex, usize)> = Vec::new();
-            let complete = line.iter().all(|&(c, want)| match owner.get(c) {
-                // Already this pair's floor: the line passes through it untouched.
-                Some(o) => o as usize == a || o as usize == b,
-                // Corridor floor answers to growth's rule *and* to one more of its
-                // own: every owned neighbour must be one of this pair's two rooms.
-                // A corridor cell lies outside both rooms' geometry, so a third
-                // room touching it gets floor laid against its wall — which is what
-                // that room's wall band then runs through. `claim_batch` alone is
-                // too permissive here; it would happily take the cell and fuse the
-                // corridor's room to the stranger.
-                None if c.neighbors().iter().any(|&nb| {
-                    owner
-                        .get(nb)
-                        .is_some_and(|o| o as usize != a && o as usize != b)
-                }) =>
-                {
-                    false
-                }
-                None => match claim_batch(grid, owner, &meta, partner, want, &[c]) {
-                    Some(fused_to) => {
-                        owner.insert(c, want as u32);
-                        builds[want].cells.push(c);
-                        added.push((c, want));
-                        if let Some(o) = fused_to {
-                            partner[want] = Some(o);
-                            partner[o as usize] = Some(want as u32);
-                        }
-                        true
+            let mut repaired: Vec<(usize, Option<u32>)> = Vec::new();
+            let mut complete = true;
+            for &(c, want) in &line {
+                match owner.get(c) {
+                    // Already this pair's floor: the line passes through it untouched.
+                    Some(o) if o as usize == a || o as usize == b => continue,
+                    Some(_) => {
+                        complete = false;
+                        break;
                     }
-                    None => false,
-                },
-            });
+                    None => {}
+                }
+                let Some(fused_to) = claim_batch(grid, owner, &meta, partner, want, &[c]) else {
+                    complete = false;
+                    break;
+                };
+                owner.insert(c, want as u32);
+                builds[want].cells.push(c);
+                added.push((c, want));
+                if let Some(o) = fused_to {
+                    // At most two entries move, so remember those rather than the slice.
+                    repaired.push((want, partner[want]));
+                    repaired.push((o as usize, partner[o as usize]));
+                    partner[want] = Some(o);
+                    partner[o as usize] = Some(want as u32);
+                }
+            }
             if !complete {
                 // Reverse order, so each area's own pushes come off its tail in turn.
                 for (c, want) in added.into_iter().rev() {
@@ -951,7 +966,9 @@ fn claim_join_floor(
                     debug_assert_eq!(builds[want].cells.last(), Some(&c));
                     builds[want].cells.pop();
                 }
-                partner.copy_from_slice(&restore);
+                for (i, was) in repaired.into_iter().rev() {
+                    partner[i] = was;
+                }
                 break;
             }
             join.extend(added.into_iter().map(|(c, _)| c));
@@ -1024,12 +1041,18 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
         kinds.push(areas.kinds[i]);
         shapes.push(areas.shapes[i]);
     }
+    // Cells of a dropped area are no longer floor, so they are no longer corridor floor.
+    let join = areas
+        .join
+        .into_iter()
+        .filter(|c| owner.get(*c).is_some())
+        .collect();
     Areas {
         cells,
         kinds,
         shapes,
         owner,
-        join: areas.join,
+        join,
     }
 }
 

@@ -33,7 +33,7 @@ pub struct Topology {
     /// Per-area flag: true if the area was shrunk into a corridor.
     pub is_corridor: Vec<bool>,
     /// Door pairs merged into one wide opening on a short rect wall, as
-    /// `(door_i, door_j, pillar_cell)` — see [`merged_pillar_pairs`]. Computed
+    /// `(door_i, door_j, pillar_cell)` — see `merged_pillar_pairs`. Computed
     /// once here; `doorway::mouths` unions each pair into one mouth and
     /// `outline::floor_and_narrow` fills the pillar cell so the wide opening is
     /// backed by continuous floor.

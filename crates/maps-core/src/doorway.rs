@@ -5,7 +5,7 @@
 //! dungeon-touching cluster becomes a [`Mouth`]: where the opening pierces
 //! the room wall, which way it runs, and how wide it spans. Doorways are
 //! **flush**: the opening is a gap cut into the room's exact wall (clamped so
-//! it never crosses a rect corner — see [`clamp_opening`]) and nothing is
+//! it never crosses a rect corner — see `clamp_opening`) and nothing is
 //! built outside the measured shape. Two consumers share the mouths so they
 //! always agree:
 //!
@@ -387,7 +387,7 @@ pub fn apply_plugs(
 
 /// Jamb anchors for the outline's wall splice: for every dungeon room a
 /// mouth or exit pierces, its opening on that room's wall (see [`Jamb`]).
-/// Every jamb centre goes through [`clamp_opening`], so no gap crosses a
+/// Every jamb centre goes through `clamp_opening`, so no gap crosses a
 /// corner; the anchor room's jamb is exactly the mouth's (already-clamped)
 /// centre, keeping the wall gap and the door bar in lockstep.
 pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Vec<Jamb> {

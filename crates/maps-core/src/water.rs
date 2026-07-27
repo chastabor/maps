@@ -115,13 +115,7 @@ pub fn build_water<R: Rng>(
     };
     // Water is a natural element: no ruin projection, no dungeon splice —
     // its edges smooth organically even inside a dungeon room.
-    let (no_shapes, no_cells) = (std::collections::HashMap::new(), HashSet::new());
-    let organic = Constraints {
-        ruin_cells: &no_shapes,
-        dungeon_cells: &no_shapes,
-        neck_cells: &no_cells,
-        jambs: &[],
-    };
+    let organic = Constraints::none();
     let (mud_loops, _) = smooth_loops(trace_loops(&mud), &HashSet::new(), organic, &wparams, rng);
     let (pools, _) = smooth_loops(trace_loops(&water), &HashSet::new(), organic, &wparams, rng);
     let (deep_loops, _) = smooth_loops(trace_loops(&deep), &HashSet::new(), organic, &wparams, rng);

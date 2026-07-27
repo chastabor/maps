@@ -15,7 +15,6 @@ fn stages() {
     use maps_core::{render, ruins, topology, water};
     use rand::SeedableRng;
     use rand_pcg::Pcg64;
-    use std::collections::{HashMap, HashSet};
 
     let tags = Tags::parse("large,burrow,wet,ruins,truchet").unwrap();
     let n = 60;
@@ -50,12 +49,9 @@ fn stages() {
         let t = Instant::now();
         let ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
         // Ruin projection only — no dungeon splice, necks or jambs in the bench.
-        let (no_shapes, no_cells) = (HashMap::new(), HashSet::new());
         let constraints = Constraints {
             ruin_cells: &ruin_map,
-            dungeon_cells: &no_shapes,
-            neck_cells: &no_cells,
-            jambs: &[],
+            ..Constraints::none()
         };
         let (outline, _walls) = build_outline(&areas, &topo, constraints, &oparams, &mut rng);
         acc[3] += t.elapsed().as_secs_f64();

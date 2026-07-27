@@ -129,24 +129,46 @@ pub fn choose<R: Rng>(rng: &mut R) -> Option<SymPlan> {
         // ~30% asymmetric.
         0..30 => return None,
         30..58 => {
-            let sym = if rng.random_bool(0.5) { Sym::FlipX } else { Sym::FlipY };
-            SymPlan { xforms: vec![Xform::Identity, Xform::About { sym, times: 1 }], generators: gens(rng) }
+            let sym = if rng.random_bool(0.5) {
+                Sym::FlipX
+            } else {
+                Sym::FlipY
+            };
+            SymPlan {
+                xforms: vec![Xform::Identity, Xform::About { sym, times: 1 }],
+                generators: gens(rng),
+            }
         }
         58..80 => SymPlan {
-            xforms: vec![Xform::Identity, Xform::About { sym: Sym::Rot180, times: 1 }],
+            xforms: vec![
+                Xform::Identity,
+                Xform::About {
+                    sym: Sym::Rot180,
+                    times: 1,
+                },
+            ],
             generators: gens(rng),
         },
         80..90 => {
             // Translated ("identical") pair: a random 3–6 cell offset.
             let dq = rng.random_range(-5..=5);
             let dr = rng.random_range(3..=6) * if rng.random_bool(0.5) { 1 } else { -1 };
-            SymPlan { xforms: vec![Xform::Identity, Xform::Translate { dq, dr }], generators: gens(rng) }
+            SymPlan {
+                xforms: vec![Xform::Identity, Xform::Translate { dq, dr }],
+                generators: gens(rng),
+            }
         }
         90..97 => SymPlan {
             xforms: vec![
                 Xform::Identity,
-                Xform::About { sym: Sym::Rot120, times: 1 },
-                Xform::About { sym: Sym::Rot120, times: 2 },
+                Xform::About {
+                    sym: Sym::Rot120,
+                    times: 1,
+                },
+                Xform::About {
+                    sym: Sym::Rot120,
+                    times: 2,
+                },
             ],
             generators: 1,
         },
@@ -156,7 +178,10 @@ pub fn choose<R: Rng>(rng: &mut R) -> Option<SymPlan> {
                     if k == 0 {
                         Xform::Identity
                     } else {
-                        Xform::About { sym: Sym::Rot60, times: k }
+                        Xform::About {
+                            sym: Sym::Rot60,
+                            times: k,
+                        }
                     }
                 })
                 .collect(),

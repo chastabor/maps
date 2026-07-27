@@ -23,12 +23,12 @@
 //! The design record, including the measurements behind the constants and the
 //! approaches that were tried and rejected, is in `plans/fuse-case-taxonomy.md`.
 
+use crate::AreaKind;
 use crate::geom::{self, Point};
 use crate::grid::{self, HexGrid};
 use crate::growth::Areas;
 use crate::ruins;
 use crate::topology::Topology;
-use crate::AreaKind;
 
 /// Cells forming the "neck" of every narrowly-fused dungeon pair: two dungeon
 /// rooms that grew cell-adjacent but touch across only one or two faces. The
@@ -155,10 +155,17 @@ impl Neck {
     /// The hall's frame, shared by everything that has to agree on where the
     /// connector sits.
     fn frame(&self) -> Option<Frame> {
-        let ruins::RuinShape::StraightHall { ax, ay, bx, by, .. } = self.hall else { return None };
+        let ruins::RuinShape::StraightHall { ax, ay, bx, by, .. } = self.hall else {
+            return None;
+        };
         let d = (bx - ax, by - ay);
         let l = d.0.hypot(d.1).max(1e-9);
-        Some(Frame { o: (ax, ay), len: l, dir: (d.0 / l, d.1 / l), nrm: (-d.1 / l, d.0 / l) })
+        Some(Frame {
+            o: (ax, ay),
+            len: l,
+            dir: (d.0 / l, d.1 / l),
+            nrm: (-d.1 / l, d.0 / l),
+        })
     }
 
     /// Whether `p` falls inside the footprint this connector replaces — which
@@ -167,10 +174,16 @@ impl Neck {
     fn blocks(&self, p: Point) -> bool {
         // A claimed cell's corners can reach past the hall box; its vertices are
         // the connector's to replace all the same.
-        if self.claimed.iter().any(|&c| (p.0 - c.0).hypot(p.1 - c.1) <= self.cell + 0.5) {
+        if self
+            .claimed
+            .iter()
+            .any(|&c| (p.0 - c.0).hypot(p.1 - c.1) <= self.cell + 0.5)
+        {
             return true;
         }
-        let ruins::RuinShape::StraightHall { hw, .. } = self.hall else { return false };
+        let ruins::RuinShape::StraightHall { hw, .. } = self.hall else {
+            return false;
+        };
         let Some(f) = self.frame() else { return false };
         let (t, pp) = f.local(p);
         if pp.abs() > hw + FOOTPRINT_SLOP {
@@ -191,7 +204,11 @@ impl Neck {
         let (n0, f0) = (f.local(self.lines[0].0), f.local(self.lines[0].1));
         let (n1, f1) = (f.local(self.lines[1].0), f.local(self.lines[1].1));
         let span = n1.1 - n0.1;
-        let w = if span.abs() < 1e-9 { 0.5 } else { ((pp - n0.1) / span).clamp(0.0, 1.0) };
+        let w = if span.abs() < 1e-9 {
+            0.5
+        } else {
+            ((pp - n0.1) / span).clamp(0.0, 1.0)
+        };
         let near = n0.0 + (n1.0 - n0.0) * w;
         let far = f0.0 + (f1.0 - f0.0) * w;
         t >= near.min(far) - FOOTPRINT_SLOP && t <= near.max(far) + FOOTPRINT_SLOP
@@ -212,14 +229,14 @@ impl Neck {
     /// the line has its centre within one cell of it (the cell reaches its
     /// circumradius), and its projection must fall inside the wall's span.
     fn jamb_edge(&self, line: (Point, Point), doors: &[Point], from: Point) -> Option<Point> {
-        let d = (line.1 .0 - line.0 .0, line.1 .1 - line.0 .1);
+        let d = (line.1.0 - line.0.0, line.1.1 - line.0.1);
         let len = d.0.hypot(d.1);
         if len < 1e-9 {
             return None;
         }
         let (u, nrm) = ((d.0 / len, d.1 / len), (-d.1 / len, d.0 / len));
-        let par = |p: Point| (p.0 - line.0 .0) * u.0 + (p.1 - line.0 .1) * u.1;
-        let perp = |p: Point| ((p.0 - line.0 .0) * nrm.0 + (p.1 - line.0 .1) * nrm.1).abs();
+        let par = |p: Point| (p.0 - line.0.0) * u.0 + (p.1 - line.0.1) * u.1;
+        let perp = |p: Point| ((p.0 - line.0.0) * nrm.0 + (p.1 - line.0.1) * nrm.1).abs();
         let half = grid::HEX_APOTHEM * self.cell;
         let t_from = par(from);
         doors
@@ -231,7 +248,7 @@ impl Neck {
             .map(|t| if t >= t_from { t - half } else { t + half })
             .filter(|&e| e > 0.0 && e < len && (e - t_from).abs() < 2.0 * self.cell)
             .min_by(|a, b| (a - t_from).abs().total_cmp(&(b - t_from).abs()))
-            .map(|e| (line.0 .0 + u.0 * e, line.0 .1 + u.1 * e))
+            .map(|e| (line.0.0 + u.0 * e, line.0.1 + u.1 * e))
     }
 
     /// The stretch of side-`line` wall that replaces one dropped run of outline
@@ -248,8 +265,13 @@ impl Neck {
     /// `prev` and `next` are the kept vertices either side of the run; the returned
     /// `bool`s say whether each endpoint is the wall's own end, which is where the
     /// wall meets a room border and so may be tagged with that room's shape.
-    fn wall_stretch(&self, line: (Point, Point), prev: Point, next: Point) -> ((Point, bool), (Point, bool)) {
-        let d = (line.1 .0 - line.0 .0, line.1 .1 - line.0 .1);
+    fn wall_stretch(
+        &self,
+        line: (Point, Point),
+        prev: Point,
+        next: Point,
+    ) -> ((Point, bool), (Point, bool)) {
+        let d = (line.1.0 - line.0.0, line.1.1 - line.0.1);
         let len = d.0.hypot(d.1).max(1e-9);
         // A neighbour within HALF A CELL of a wall end is that end: the clip must
         // only ever SPLIT a wall, never shorten it away from a room, and a smoothed
@@ -269,7 +291,10 @@ impl Neck {
         };
         let (s0, s1) = (param(prev), param(next));
         let at = |t: f64| geom::lerp(line.0, line.1, t);
-        ((at(s0), s0 == 0.0 || s0 == 1.0), (at(s1), s1 == 0.0 || s1 == 1.0))
+        (
+            (at(s0), s0 == 0.0 || s0 == 1.0),
+            (at(s1), s1 == 0.0 || s1 == 1.0),
+        )
     }
 }
 
@@ -334,13 +359,24 @@ fn rows_cols(
     areas: &Areas,
     i: usize,
     interior_only: bool,
-) -> (std::collections::HashSet<i32>, std::collections::HashSet<i32>) {
-    let (mut rows, mut cols) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+) -> (
+    std::collections::HashSet<i32>,
+    std::collections::HashSet<i32>,
+) {
+    let (mut rows, mut cols) = (
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+    );
     for &h in &areas.cells[i] {
         if areas.join().contains(&h) {
             continue;
         }
-        if interior_only && !h.neighbors().iter().all(|nb| areas.owner_of(*nb) == Some(i)) {
+        if interior_only
+            && !h
+                .neighbors()
+                .iter()
+                .all(|nb| areas.owner_of(*nb) == Some(i))
+        {
             continue;
         }
         rows.insert(h.r);
@@ -393,22 +429,27 @@ fn fuse_class(areas: &Areas, a: usize, b: usize) -> FuseClass {
 /// sweep needs no such care — a fused pair already touched before its corridor
 /// existed, and corridor floor may not touch a third area at all.
 fn fuse_pairs(areas: &Areas) -> Vec<(usize, usize, FuseClass)> {
-    let mut touching: std::collections::BTreeSet<(usize, usize)> = std::collections::BTreeSet::new();
+    let mut touching: std::collections::BTreeSet<(usize, usize)> =
+        std::collections::BTreeSet::new();
     for a in 0..areas.count() {
         if areas.shape(a).is_none() {
             continue;
         }
         for &h in &areas.cells[a] {
             for nb in h.neighbors() {
-                if let Some(b) =
-                    areas.owner_of(nb).filter(|&b| b != a && areas.shape(b).is_some())
+                if let Some(b) = areas
+                    .owner_of(nb)
+                    .filter(|&b| b != a && areas.shape(b).is_some())
                 {
                     touching.insert((a.min(b), a.max(b)));
                 }
             }
         }
     }
-    touching.into_iter().map(|(a, b)| (a, b, fuse_class(areas, a, b))).collect()
+    touching
+        .into_iter()
+        .map(|(a, b)| (a, b, fuse_class(areas, a, b)))
+        .collect()
 }
 
 /// Whether two shapes' drawn borders overlap. A class-D pair that overlaps is
@@ -417,14 +458,50 @@ fn fuse_pairs(areas: &Areas) -> Vec<(usize, usize, FuseClass)> {
 fn shapes_overlap(a: &ruins::RuinShape, b: &ruins::RuinShape) -> bool {
     use ruins::RuinShape as R;
     match (*a, *b) {
-        (R::Circle { cx: x1, cy: y1, r: r1 }, R::Circle { cx: x2, cy: y2, r: r2 }) => {
-            (x1 - x2).hypot(y1 - y2) < r1 + r2
-        }
-        (R::Rect { cx: x1, cy: y1, hw: w1, hh: h1 }, R::Rect { cx: x2, cy: y2, hw: w2, hh: h2 }) => {
-            (x1 - x2).abs() < w1 + w2 && (y1 - y2).abs() < h1 + h2
-        }
-        (R::Circle { cx, cy, r }, R::Rect { cx: rx, cy: ry, hw, hh })
-        | (R::Rect { cx: rx, cy: ry, hw, hh }, R::Circle { cx, cy, r }) => {
+        (
+            R::Circle {
+                cx: x1,
+                cy: y1,
+                r: r1,
+            },
+            R::Circle {
+                cx: x2,
+                cy: y2,
+                r: r2,
+            },
+        ) => (x1 - x2).hypot(y1 - y2) < r1 + r2,
+        (
+            R::Rect {
+                cx: x1,
+                cy: y1,
+                hw: w1,
+                hh: h1,
+            },
+            R::Rect {
+                cx: x2,
+                cy: y2,
+                hw: w2,
+                hh: h2,
+            },
+        ) => (x1 - x2).abs() < w1 + w2 && (y1 - y2).abs() < h1 + h2,
+        (
+            R::Circle { cx, cy, r },
+            R::Rect {
+                cx: rx,
+                cy: ry,
+                hw,
+                hh,
+            },
+        )
+        | (
+            R::Rect {
+                cx: rx,
+                cy: ry,
+                hw,
+                hh,
+            },
+            R::Circle { cx, cy, r },
+        ) => {
             let dx = ((cx - rx).abs() - hw).max(0.0);
             let dy = ((cy - ry).abs() - hh).max(0.0);
             dx.hypot(dy) < r
@@ -445,7 +522,9 @@ fn shapes_overlap(a: &ruins::RuinShape, b: &ruins::RuinShape) -> bool {
 /// over the sweep, halving the requirement leaves the worst wall-in-room case at
 /// 13px instead of 10.5, so the full cell is the setting that earns its keep.
 fn chord_bounds(sh: &ruins::RuinShape, n: Point, s: f64) -> Option<(f64, f64)> {
-    let ruins::RuinShape::Circle { cx, cy, r } = *sh else { return None };
+    let ruins::RuinShape::Circle { cx, cy, r } = *sh else {
+        return None;
+    };
     let cn = cx * n.0 + cy * n.1;
     // Shortest half-chord worth a wall: one cell's span.
     let reach = (r * r - s * s).max(0.0).sqrt();
@@ -522,7 +601,9 @@ fn axis_necks(
         if cls != class {
             continue;
         }
-        let (Some(sa), Some(sb)) = (areas.shape(a), areas.shape(b)) else { continue };
+        let (Some(sa), Some(sb)) = (areas.shape(a), areas.shape(b)) else {
+            continue;
+        };
         // A class-D pair whose shapes already overlap is open once cropped.
         if class == FuseClass::Both && shapes_overlap(&sa, &sb) {
             continue;
@@ -532,8 +613,13 @@ fn axis_necks(
         if class == FuseClass::Angle
             && matches!(
                 (&sa, &sb),
-                (ruins::RuinShape::Rect { .. }, ruins::RuinShape::Circle { .. })
-                    | (ruins::RuinShape::Circle { .. }, ruins::RuinShape::Rect { .. })
+                (
+                    ruins::RuinShape::Rect { .. },
+                    ruins::RuinShape::Circle { .. }
+                ) | (
+                    ruins::RuinShape::Circle { .. },
+                    ruins::RuinShape::Rect { .. }
+                )
             )
         {
             continue;
@@ -545,8 +631,7 @@ fn axis_necks(
         let Some((&(d, n), clamp_lo, clamp_hi)) = axes
             .iter()
             .filter_map(|ax @ &(_, n)| {
-                let (Some((a_lo, a_hi)), Some((b_lo, b_hi))) =
-                    (support(&sa, n), support(&sb, n))
+                let (Some((a_lo, a_hi)), Some((b_lo, b_hi))) = (support(&sa, n), support(&sb, n))
                 else {
                     return None;
                 };
@@ -577,7 +662,11 @@ fn axis_necks(
             continue;
         };
         // The nearer shape along `d` faces forward (+1) and the farther back.
-        let (sl, sr) = if support(&sa, d) <= support(&sb, d) { (sa, sb) } else { (sb, sa) };
+        let (sl, sr) = if support(&sa, d) <= support(&sb, d) {
+            (sa, sb)
+        } else {
+            (sb, sa)
+        };
         // The full clamp is the widest corridor that still meets both borders,
         // and it is deliberately aggressive — that is what produces the
         // distinctive compound shapes. But a very long wall can cross other
@@ -613,7 +702,9 @@ fn axis_necks(
                     at(u, border_along(&sr, n, u, d, -1.0)?),
                 ))
             };
-            let (Some(top), Some(bot)) = (wall(u_lo), wall(u_hi)) else { continue };
+            let (Some(top), Some(bot)) = (wall(u_lo), wall(u_hi)) else {
+                continue;
+            };
             // Hall: near-border midpoint → far-border midpoint, half-width the span.
             let mid = |x: Point, y: Point| ((x.0 + y.0) / 2.0, (x.1 + y.1) / 2.0);
             let (near, far) = (mid(top.0, bot.0), mid(top.1, bot.1));
@@ -659,8 +750,23 @@ fn circle_rect_necks(areas: &Areas, pairs: &[(usize, usize, FuseClass)], s: f64)
     rc_pairs.sort_unstable();
     for (a, b) in rc_pairs {
         // a = rectangle, b = circle.
-        let (Some(rect @ RuinShape::Rect { cx: rcx, cy: rcy, hw: rhw, hh: rhh }), Some(circ @ RuinShape::Circle { cx: ccx, cy: ccy, r: cr })) =
-            (areas.shape(a), areas.shape(b))
+        let (
+            Some(
+                rect @ RuinShape::Rect {
+                    cx: rcx,
+                    cy: rcy,
+                    hw: rhw,
+                    hh: rhh,
+                },
+            ),
+            Some(
+                circ @ RuinShape::Circle {
+                    cx: ccx,
+                    cy: ccy,
+                    r: cr,
+                },
+            ),
+        ) = (areas.shape(a), areas.shape(b))
         else {
             continue;
         };
@@ -673,7 +779,10 @@ fn circle_rect_necks(areas: &Areas, pairs: &[(usize, usize, FuseClass)], s: f64)
             let bq = ex * dir.0 + ey * dir.1;
             let cq = ex * ex + ey * ey - cr * cr;
             let disc = bq * bq - cq;
-            (disc >= 0.0).then(|| -bq - disc.sqrt()).filter(|&t| t > 0.0).map(|t| (p.0 + t * dir.0, p.1 + t * dir.1))
+            (disc >= 0.0)
+                .then(|| -bq - disc.sqrt())
+                .filter(|&t| t > 0.0)
+                .map(|t| (p.0 + t * dir.0, p.1 + t * dir.1))
         };
         // The angle geometry below assumes the circle sits beyond a
         // left/right edge (x-dominant offset). A corner beyond a top/bottom
@@ -683,10 +792,16 @@ fn circle_rect_necks(areas: &Areas, pairs: &[(usize, usize, FuseClass)], s: f64)
         }
         let Some(conn) = areas.cells[a]
             .iter()
-            .filter(|h| h.neighbors().iter().any(|nb| areas.owner_of(*nb) == Some(b)))
+            .filter(|h| {
+                h.neighbors()
+                    .iter()
+                    .any(|nb| areas.owner_of(*nb) == Some(b))
+            })
             .copied()
             .min_by(|p, q| {
-                (p.center(s).0 - near_x).abs().total_cmp(&(q.center(s).0 - near_x).abs())
+                (p.center(s).0 - near_x)
+                    .abs()
+                    .total_cmp(&(q.center(s).0 - near_x).abs())
             })
         else {
             continue;
@@ -699,14 +814,22 @@ fn circle_rect_necks(areas: &Areas, pairs: &[(usize, usize, FuseClass)], s: f64)
         let hex_pt = (cc.0, cc.1 - sgny * s);
         // Neck direction: the hex-edge diagonal pointing at the circle.
         let dir = (sgnx * grid::HEX_APOTHEM, sgny * 0.5);
-        let (Some(c_hit), Some(h_hit)) = (hit(corner, dir), hit(hex_pt, dir)) else { continue };
+        let (Some(c_hit), Some(h_hit)) = (hit(corner, dir), hit(hex_pt, dir)) else {
+            continue;
+        };
         // A `StraightHall` whose two sides are the neck walls: centreline
         // midway between them, half-width the perpendicular half-distance.
         let mid0 = ((corner.0 + hex_pt.0) / 2.0, (corner.1 + hex_pt.1) / 2.0);
         let mid1 = ((c_hit.0 + h_hit.0) / 2.0, (c_hit.1 + h_hit.1) / 2.0);
         let nrm = (-dir.1, dir.0);
         let hw = ((corner.0 - hex_pt.0) * nrm.0 + (corner.1 - hex_pt.1) * nrm.1).abs() / 2.0;
-        let hall = RuinShape::StraightHall { ax: mid0.0, ay: mid0.1, bx: mid1.0, by: mid1.1, hw };
+        let hall = RuinShape::StraightHall {
+            ax: mid0.0,
+            ay: mid0.1,
+            bx: mid1.0,
+            by: mid1.1,
+            hw,
+        };
         necks.push(Neck {
             pair: (a, b),
             shape_a: rect,
@@ -758,8 +881,8 @@ impl Neck {
         // vertex (or a wall line's midpoint) lies on.
         let pp = |p: Point| f.local(p).1;
         let side0 = pp((
-            (self.lines[0].0 .0 + self.lines[0].1 .0) / 2.0,
-            (self.lines[0].0 .1 + self.lines[0].1 .1) / 2.0,
+            (self.lines[0].0.0 + self.lines[0].1.0) / 2.0,
+            (self.lines[0].0.1 + self.lines[0].1.1) / 2.0,
         ))
         .signum();
         // A CLOSED sequence rotates to start on a kept vertex, else a dropped run
@@ -769,7 +892,9 @@ impl Neck {
         // drew a wall straight across a room's interior, from the far end of its
         // arc back to the spliced stretch.) Its own ends are gap edges instead, so
         // `run_end` resolves both.
-        let Some(first_kept) = (0..n).find(|&i| !self.blocks(pos(i))) else { return false };
+        let Some(first_kept) = (0..n).find(|&i| !self.blocks(pos(i))) else {
+            return false;
+        };
         let idx = |k: usize| if closed { (first_kept + k) % n } else { k };
         // The last position emitted, for orienting each wall stretch.
         let mut last: Option<Point> = None;
@@ -814,11 +939,7 @@ impl Neck {
 /// the pinch) are replaced by the neck's outer wall line for that side, tagged
 /// with the hall so the renderer offsets its inner wall. The band then flows
 /// circle arc → neck → rectangle wall as one continuous wall.
-fn splice_necks(
-    walls: &mut [Vec<(Point, ruins::RuinShape)>],
-    necks: &[Neck],
-    doors: &[Point],
-) {
+fn splice_necks(walls: &mut [Vec<(Point, ruins::RuinShape)>], necks: &[Neck], doors: &[Point]) {
     for neck in necks {
         // Which of the two shapes a spliced endpoint sits on — the endpoint is on
         // one border or the other by construction, so the nearer one wins.
@@ -837,13 +958,19 @@ fn splice_necks(
             // which is how a connector ended up with walls in the floor outline but
             // none in the band. Per-run clipping (see `wall_stretch`) makes the
             // weaker test safe: each run only ever receives its own stretch.
-            if !run.iter().any(|v| v.1 == neck.shape_a || v.1 == neck.shape_b)
+            if !run
+                .iter()
+                .any(|v| v.1 == neck.shape_a || v.1 == neck.shape_b)
                 || !run.iter().any(|v| neck.blocks(v.0))
             {
                 continue;
             }
             let closed = run.len() > 2 && run.first().map(|v| v.0) == run.last().map(|v| v.0);
-            let core = if closed { &run[..run.len() - 1] } else { &run[..] };
+            let core = if closed {
+                &run[..run.len() - 1]
+            } else {
+                &run[..]
+            };
             let mut out: Vec<(Point, ruins::RuinShape)> = Vec::with_capacity(core.len() + 4);
             let ok = neck.splice_walk(
                 core.len(),
@@ -853,7 +980,8 @@ fn splice_necks(
                 // gap: ask the doorway where its jamb is, since the band's own
                 // last vertex stops a cell short of it.
                 &|line, last_dropped| {
-                    neck.jamb_edge(line, doors, last_dropped).unwrap_or(last_dropped)
+                    neck.jamb_edge(line, doors, last_dropped)
+                        .unwrap_or(last_dropped)
                 },
                 &mut |step| match step {
                     SpliceStep::Keep(i) => out.push(core[i]),
@@ -890,10 +1018,8 @@ fn splice_necks(
             if !ok {
                 continue;
             }
-            if closed {
-                if let Some(&first) = out.first() {
-                    out.push(first);
-                }
+            if closed && let Some(&first) = out.first() {
+                out.push(first);
             }
             *run = out;
         }
@@ -910,7 +1036,11 @@ fn spliced_loop(neck: &Neck, loop_: &[Point]) -> Option<(Vec<Point>, Vec<usize>)
         return None;
     }
     let closed = loop_.len() > 2 && loop_.first() == loop_.last();
-    let core = if closed { &loop_[..loop_.len() - 1] } else { &loop_[..] };
+    let core = if closed {
+        &loop_[..loop_.len() - 1]
+    } else {
+        loop_
+    };
     let mut out: Vec<Point> = Vec::with_capacity(core.len() + 2);
     let mut inserted: Vec<usize> = Vec::new();
     let ok = neck.splice_walk(
@@ -933,10 +1063,8 @@ fn spliced_loop(neck: &Neck, loop_: &[Point]) -> Option<(Vec<Point>, Vec<usize>)
     if !ok {
         return None;
     }
-    if closed {
-        if let Some(&first) = out.first() {
-            out.push(first);
-        }
+    if closed && let Some(&first) = out.first() {
+        out.push(first);
     }
     Some((out, inserted))
 }
@@ -944,8 +1072,12 @@ fn spliced_loop(neck: &Neck, loop_: &[Point]) -> Option<(Vec<Point>, Vec<usize>)
 /// Proper (transversal) intersection of segments `a→b` and `c→d`.
 fn segs_cross(a: Point, b: Point, c: Point, d: Point) -> bool {
     let o = |p: Point, q: Point, r: Point| (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
-    let (s1, s2, s3, s4) =
-        (o(a, b, c).signum(), o(a, b, d).signum(), o(c, d, a).signum(), o(c, d, b).signum());
+    let (s1, s2, s3, s4) = (
+        o(a, b, c).signum(),
+        o(a, b, d).signum(),
+        o(c, d, a).signum(),
+        o(c, d, b).signum(),
+    );
     s1 != s2 && s3 != s4 && s1 != 0.0 && s2 != 0.0 && s3 != 0.0 && s4 != 0.0
 }
 
@@ -1122,7 +1254,9 @@ pub(crate) fn corridor_floor(areas: &Areas, grid: &HexGrid, s: f64) -> Vec<Corri
         if !neck.is_corridor() || !seen.insert((a, b)) {
             continue;
         }
-        let (Some(sa), Some(sb)) = (areas.shape(a), areas.shape(b)) else { continue };
+        let (Some(sa), Some(sb)) = (areas.shape(a), areas.shape(b)) else {
+            continue;
+        };
         let Some(f) = neck.frame() else { continue };
         // Group the cells the corridor covers into lines by their offset across it.
         let mut lines: BTreeMap<i64, Vec<(grid::Hex, usize)>> = BTreeMap::new();
@@ -1138,18 +1272,30 @@ pub(crate) fn corridor_floor(areas: &Areas, grid: &HexGrid, s: f64) -> Vec<Corri
                 continue;
             }
             let pp = f.local(p).1;
-            let owner = if sa.wall_dist(p) <= sb.wall_dist(p) { a } else { b };
-            lines.entry((pp * 64.0).round() as i64).or_default().push((c, owner));
+            let owner = if sa.wall_dist(p) <= sb.wall_dist(p) {
+                a
+            } else {
+                b
+            };
+            lines
+                .entry((pp * 64.0).round() as i64)
+                .or_default()
+                .push((c, owner));
         }
         // Split into the two sides and order each outward from the centreline.
         let keys: Vec<i64> = lines.keys().copied().collect();
         let split = keys.partition_point(|&k| k < 0);
-        for side in [keys[split..].to_vec(), keys[..split].iter().rev().copied().collect::<Vec<_>>()]
-        {
+        for side in [
+            keys[split..].to_vec(),
+            keys[..split].iter().rev().copied().collect::<Vec<_>>(),
+        ] {
             let ls: Vec<Vec<(grid::Hex, usize)>> =
                 side.into_iter().map(|k| lines[&k].clone()).collect();
             if !ls.is_empty() {
-                out.push(CorridorSide { pair: (a, b), lines: ls });
+                out.push(CorridorSide {
+                    pair: (a, b),
+                    lines: ls,
+                });
             }
         }
     }
@@ -1180,9 +1326,10 @@ fn release_unused_claims(
     s: f64,
 ) {
     for neck in necks {
-        let Some(cells) = claimed.get(&neck.pair) else { continue };
-        let (Some(f), ruins::RuinShape::StraightHall { hw, .. }) = (neck.frame(), neck.hall)
-        else {
+        let Some(cells) = claimed.get(&neck.pair) else {
+            continue;
+        };
+        let (Some(f), ruins::RuinShape::StraightHall { hw, .. }) = (neck.frame(), neck.hall) else {
             continue;
         };
         for &c in cells {
@@ -1241,13 +1388,12 @@ fn crop_internal_barriers(
             let endpoint = i == 0 || i == last;
             i += 1;
             endpoint
-                || !pairs.iter().any(|(sa, sb)| {
-                    (sh == *sa && inside(sb, p)) || (sh == *sb && inside(sa, p))
-                })
+                || !pairs
+                    .iter()
+                    .any(|(sa, sb)| (sh == *sa && inside(sb, p)) || (sh == *sb && inside(sa, p)))
         });
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // The two entry points `generate_with` uses.
@@ -1313,14 +1459,29 @@ pub(crate) fn plan(areas: &Areas, s: f64) -> (Fusion, std::collections::HashSet<
     // The outline must lock join floor on its own hex corners, not project it onto a
     // room's wall: it lies outside that room's geometry, and projecting undoes the fill.
     if std::env::var_os("MAPS_JOIN_PROBE").is_some() {
-        let lost = areas.join().iter().filter(|&&c| areas.owner_of(c).is_none()).count();
+        let lost = areas
+            .join()
+            .iter()
+            .filter(|&&c| areas.owner_of(c).is_none())
+            .count();
         if lost > 0 {
-            eprintln!("PROBE join cells lost between growth and fuse: {lost} of {}", areas.join().len());
+            eprintln!(
+                "PROBE join cells lost between growth and fuse: {lost} of {}",
+                areas.join().len()
+            );
         }
     }
     let mut join_cells = fused_necks(areas);
     join_cells.extend(areas.join().iter().copied());
-    (Fusion { necks, barriers, claimed, cell: s }, join_cells)
+    (
+        Fusion {
+            necks,
+            barriers,
+            claimed,
+            cell: s,
+        },
+        join_cells,
+    )
 }
 
 impl Fusion {
@@ -1330,7 +1491,10 @@ impl Fusion {
     /// a corridor lets the door stay where it is and breaks its own wall for the
     /// doorway instead — see [`Neck::jamb_edge`].
     pub(crate) fn blocks_narrow(&self, p: Point) -> bool {
-        self.necks.iter().filter(|n| !n.is_corridor()).any(|n| n.blocks(p))
+        self.necks
+            .iter()
+            .filter(|n| !n.is_corridor())
+            .any(|n| n.blocks(p))
     }
 
     /// Splice the accepted connectors into both layers that draw a wall, crop the

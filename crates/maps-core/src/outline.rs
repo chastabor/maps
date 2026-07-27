@@ -17,6 +17,32 @@ use std::collections::{HashMap, HashSet};
 
 pub use crate::geom::Point;
 
+/// One dungeon wall run: a polyline of `(point, owning shape)`, closed runs
+/// repeating their first point. Each vertex carries the shape it projects onto, so a
+/// run can cross the seam between two fused rooms and still offset correctly.
+pub type WallRun = Vec<(Point, RuinShape)>;
+
+/// What the smoothing passes must respect on a boundary, and how.
+///
+/// Bundled because these four always travel together and mean nothing apart: they are
+/// the answer to "which of these vertices are not free to move". Water and mud
+/// boundaries have none of them — they are purely organic — so most callers pass one
+/// value built once.
+#[derive(Clone, Copy)]
+pub struct Constraints<'a> {
+    /// Every ruin cell's geometric shape. Those vertices project onto the shape and
+    /// lock against all jitter, keeping the wall crisp.
+    pub ruin_cells: &'a HashMap<Hex, RuinShape>,
+    /// Every dungeon room cell's shape. Those boundary runs are replaced wholesale by
+    /// the room's exact wall — see [`splice_dungeon_runs`] — and locked from the start.
+    pub dungeon_cells: &'a HashMap<Hex, RuinShape>,
+    /// Fusion-seam and corridor cells, locked on their own raw hex boundary rather
+    /// than projected onto either room's shape (projecting would undo the fill).
+    pub neck_cells: &'a HashSet<Hex>,
+    /// Doorway jambs, which hold an opening open against the smoothing.
+    pub jambs: &'a [Jamb],
+}
+
 /// Quantize a coordinate to an exact tenth of a pixel. All geometry stored
 /// on `CaveMap` goes through this (or `quantize2` for radii), so the SVG
 /// writer can print coordinates with pure integer formatting and the stored
@@ -127,15 +153,12 @@ pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology) -> (HashSet<H
 pub fn build_outline<R: Rng>(
     areas: &Areas,
     topology: &Topology,
-    ruin_cells: &HashMap<Hex, RuinShape>,
-    dungeon_cells: &HashMap<Hex, RuinShape>,
-    neck_cells: &HashSet<Hex>,
-    jambs: &[Jamb],
+    constraints: Constraints<'_>,
     params: &OutlineParams,
     rng: &mut R,
-) -> (Vec<Vec<Point>>, Vec<Vec<(Point, RuinShape)>>) {
+) -> (Vec<Vec<Point>>, Vec<WallRun>) {
     let (floor, narrow) = floor_and_narrow(areas, topology);
-    smooth_loops(trace_loops(&floor), &narrow, ruin_cells, dungeon_cells, neck_cells, jambs, params, rng)
+    smooth_loops(trace_loops(&floor), &narrow, constraints, params, rng)
 }
 
 /// Run any cell-set boundary through the full smoothing pipeline. Vertices
@@ -143,22 +166,24 @@ pub fn build_outline<R: Rng>(
 /// against all jitter, so those wall sections stay crisp; runs owned by
 /// dungeon cells are replaced wholesale by the room's exact wall (see
 /// `splice_dungeon_runs`) and locked from the start.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn smooth_loops<R: Rng>(
     loops: Vec<Vec<(Hex, usize)>>,
     narrow: &HashSet<Hex>,
-    ruin_cells: &HashMap<Hex, RuinShape>,
-    dungeon_cells: &HashMap<Hex, RuinShape>,
-    neck_cells: &HashSet<Hex>,
-    jambs: &[Jamb],
+    constraints: Constraints<'_>,
     params: &OutlineParams,
     rng: &mut R,
-) -> (Vec<Vec<Point>>, Vec<Vec<(Point, RuinShape)>>) {
+) -> (Vec<Vec<Point>>, Vec<WallRun>) {
+    let Constraints {
+        ruin_cells,
+        dungeon_cells,
+        neck_cells,
+        jambs,
+    } = constraints;
     let size = params.hex_size;
-    let mut walls: Vec<Vec<(Point, RuinShape)>> = Vec::new();
+    let mut walls: Vec<WallRun> = Vec::new();
     let out = loops
         .into_iter()
-        .map(|lp| {
+        .flat_map(|lp| {
             // Tagged points: position, the owning cell's centre if that cell
             // is a narrow tunnel, its ruin shape if it has one, and whether
             // it belongs to a dungeon room. A dungeon cell's shape comes from
@@ -181,7 +206,11 @@ pub(crate) fn smooth_loops<R: Rng>(
                     let dungeon_shape = dungeon_cells.get(&cell).copied();
                     if neck_cells.contains(&cell) {
                         let c = cell.center(size);
-                        let hex = RuinShape::HexCell { cx: c.0, cy: c.1, s: size };
+                        let hex = RuinShape::HexCell {
+                            cx: c.0,
+                            cy: c.1,
+                            s: size,
+                        };
                         return (p, tag, Some(hex), dungeon_shape.is_some());
                     }
                     let ruin = dungeon_shape.or_else(|| ruin_cells.get(&cell).copied());
@@ -303,7 +332,6 @@ pub(crate) fn smooth_loops<R: Rng>(
             }
             loops_out
         })
-        .flatten()
         .collect();
     (out, walls)
 }
@@ -379,7 +407,10 @@ fn first_crossing(lp: &[Point]) -> Option<(usize, usize, Point)> {
     let key = |x: f64, y: f64| ((x / CELL).floor() as i64, (y / CELL).floor() as i64);
     for i in 0..n {
         let (a, b) = (lp[i], lp[(i + 1) % n]);
-        let (k0, k1) = (key(a.0.min(b.0), a.1.min(b.1)), key(a.0.max(b.0), a.1.max(b.1)));
+        let (k0, k1) = (
+            key(a.0.min(b.0), a.1.min(b.1)),
+            key(a.0.max(b.0), a.1.max(b.1)),
+        );
         for kx in k0.0..=k1.0 {
             for ky in k0.1..=k1.1 {
                 buckets.entry((kx, ky)).or_default().push(i);
@@ -394,8 +425,7 @@ fn first_crossing(lp: &[Point]) -> Option<(usize, usize, Point)> {
                 if j == i + 1 || (i == 0 && j == n - 1) {
                     continue;
                 }
-                if let Some(p) =
-                    seg_intersection(lp[i], lp[(i + 1) % n], lp[j], lp[(j + 1) % n])
+                if let Some(p) = seg_intersection(lp[i], lp[(i + 1) % n], lp[j], lp[(j + 1) % n])
                     && best.is_none_or(|(bi, bj, _)| (i, j) < (bi, bj))
                 {
                     best = Some((i, j, p));
@@ -516,7 +546,7 @@ fn splice_dungeon_runs(
     pts: &mut Vec<TaggedPoint>,
     jambs: &[Jamb],
     s: f64,
-    walls: &mut Vec<Vec<(Point, RuinShape)>>,
+    walls: &mut Vec<WallRun>,
 ) {
     // A vertex is splicable when it belongs to a dungeon room *and* carries a
     // room shape (one with a perimeter — rooms, not halls); `perimeter()` is
@@ -550,7 +580,11 @@ fn splice_dungeon_runs(
             // in the gap — e.g. an opening spanning a whole short wall) must
             // retract to the jamb edge however far it is, else the run walks the
             // long way round and doubles a wall stub back across the gap.
-            let d = if cyc(t, tw) < jamb.half - 1e-6 { -1.0 } else { cyc(t, j) };
+            let d = if cyc(t, tw) < jamb.half - 1e-6 {
+                -1.0
+            } else {
+                cyc(t, j)
+            };
             if d < best.0 {
                 best = (d.max(0.0), j);
             }
@@ -574,7 +608,10 @@ fn splice_dungeon_runs(
             if run.len() > 2 {
                 walls.push(run);
             }
-            *pts = walk.into_iter().map(|p| (p, None, Some(shape), true)).collect();
+            *pts = walk
+                .into_iter()
+                .map(|p| (p, None, Some(shape), true))
+                .collect();
             return;
         }
     }
@@ -632,7 +669,11 @@ fn splice_dungeon_runs(
         // 334 perimeter, drawing the room's far wall across open fused floor).
         let d_sign = if forward { 1.0 } else { -1.0 };
         let len_of = |a: f64, b: f64| {
-            if forward { (b - a).rem_euclid(per) } else { (a - b).rem_euclid(per) }
+            if forward {
+                (b - a).rem_euclid(per)
+            } else {
+                (a - b).rem_euclid(per)
+            }
         };
         let gap_before = !splicable(&pts[(i + n - 1) % n]);
         let gap_after = !splicable(&pts[(j + 1) % n]);
@@ -640,8 +681,16 @@ fn splice_dungeon_runs(
         // jamb) falls back to the raw endpoints. The run's start follows a
         // gap and its end precedes one, so with walk direction `d` the start
         // snaps to a jamb's `tw + d·half` edge and the end to `tw - d·half`.
-        let mut ta = if gap_before { snap(&shape, raw_a, d_sign) } else { raw_a };
-        let tb = if gap_after { snap(&shape, raw_b, -d_sign) } else { raw_b };
+        let mut ta = if gap_before {
+            snap(&shape, raw_a, d_sign)
+        } else {
+            raw_a
+        };
+        let tb = if gap_after {
+            snap(&shape, raw_b, -d_sign)
+        } else {
+            raw_b
+        };
         let mut len = len_of(ta, tb);
         // Snapping may only lengthen the run by as much as its endpoints actually
         // moved — that is all "close the gap to the jamb edge" can ever justify. A

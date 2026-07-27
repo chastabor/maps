@@ -273,8 +273,10 @@ fn tree_ring_layer(map: &CaveMap, style: &Style) -> String {
                 if *depth != band {
                     continue;
                 }
-                let pts: Vec<String> =
-                    tree.iter().map(|(x, y)| format!("{},{}", D1(*x), D1(*y))).collect();
+                let pts: Vec<String> = tree
+                    .iter()
+                    .map(|(x, y)| format!("{},{}", D1(*x), D1(*y)))
+                    .collect();
                 let _ = write!(s, r##"<polygon points="{}"/>"##, pts.join(" "));
             }
             s.push_str("</g>");
@@ -308,14 +310,24 @@ fn floor_pattern_layer(map: &CaveMap, style: &Style) -> String {
                     let _ = write!(
                         curves,
                         "M{} {}Q{} {} {} {}",
-                        D1(from.0), D1(from.1), D1(ctrl.0), D1(ctrl.1), D1(to.0), D1(to.1)
+                        D1(from.0),
+                        D1(from.1),
+                        D1(ctrl.0),
+                        D1(ctrl.1),
+                        D1(to.0),
+                        D1(to.1)
                     );
                 }
                 PatternElem::Elbow { from, tip, to } => {
                     let _ = write!(
                         elbows,
                         "M{} {}L{} {}L{} {}",
-                        D1(from.0), D1(from.1), D1(tip.0), D1(tip.1), D1(to.0), D1(to.1)
+                        D1(from.0),
+                        D1(from.1),
+                        D1(tip.0),
+                        D1(tip.1),
+                        D1(to.0),
+                        D1(to.1)
                     );
                 }
             }
@@ -389,8 +401,9 @@ fn grid_layer(map: &CaveMap, style: &Style, bounds: (f64, f64, f64, f64)) -> Str
             for e in &map.topology.exits {
                 floor.extend(e.stub.iter().copied());
             }
-            let near_floor =
-                |h: Hex| floor.contains(&h) || h.neighbors().into_iter().any(|n| floor.contains(&n));
+            let near_floor = |h: Hex| {
+                floor.contains(&h) || h.neighbors().into_iter().any(|n| floor.contains(&n))
+            };
             let _ = write!(
                 s,
                 r##"<g clip-path="url(#floor)" stroke="{}" stroke-opacity="0.14" stroke-width="0.6" fill="none">"##,
@@ -408,21 +421,27 @@ fn grid_layer(map: &CaveMap, style: &Style, bounds: (f64, f64, f64, f64)) -> Str
             // vertical lines meet the hex centres of every other row.
             let step = 3f64.sqrt() * HEX_SIZE;
             let mut d = String::new();
-            let (k0, k1) = (
-                (min_x / step).floor() as i64,
-                (max_x / step).ceil() as i64,
-            );
+            let (k0, k1) = ((min_x / step).floor() as i64, (max_x / step).ceil() as i64);
             for k in k0..=k1 {
                 let x = (k as f64 + 0.5) * step;
-                let _ = write!(d, "M{x} {mn}L{x} {mx}", x = D1(x), mn = D1(min_y), mx = D1(max_y));
+                let _ = write!(
+                    d,
+                    "M{x} {mn}L{x} {mx}",
+                    x = D1(x),
+                    mn = D1(min_y),
+                    mx = D1(max_y)
+                );
             }
-            let (m0, m1) = (
-                (min_y / step).floor() as i64,
-                (max_y / step).ceil() as i64,
-            );
+            let (m0, m1) = ((min_y / step).floor() as i64, (max_y / step).ceil() as i64);
             for m in m0..=m1 {
                 let y = (m as f64 + 0.5) * step;
-                let _ = write!(d, "M{mn} {y}L{mx} {y}", y = D1(y), mn = D1(min_x), mx = D1(max_x));
+                let _ = write!(
+                    d,
+                    "M{mn} {y}L{mx} {y}",
+                    y = D1(y),
+                    mn = D1(min_x),
+                    mx = D1(max_x)
+                );
             }
             let _ = write!(
                 s,
@@ -445,7 +464,10 @@ fn stones_layer(map: &CaveMap, style: &Style) -> String {
             style.stone, style.line
         );
         for stone in &map.stones {
-            let pts: Vec<String> = stone.iter().map(|(x, y)| format!("{},{}", D1(*x), D1(*y))).collect();
+            let pts: Vec<String> = stone
+                .iter()
+                .map(|(x, y)| format!("{},{}", D1(*x), D1(*y)))
+                .collect();
             let _ = write!(s, r##"<polygon points="{}"/>"##, pts.join(" "));
         }
         s.push_str("</g>");
@@ -518,7 +540,10 @@ fn masonry_layer(map: &CaveMap, style: &Style) -> String {
             style.tile, style.tree_line
         );
         for t in &map.tiles {
-            let pts: Vec<String> = t.iter().map(|(x, y)| format!("{},{}", D1(*x), D1(*y))).collect();
+            let pts: Vec<String> = t
+                .iter()
+                .map(|(x, y)| format!("{},{}", D1(*x), D1(*y)))
+                .collect();
             let _ = write!(s, r##"<polygon points="{}"/>"##, pts.join(" "));
         }
         s.push_str("</g>");
@@ -563,15 +588,21 @@ fn wall_band_layer(map: &CaveMap, style: &Style) -> String {
             })
         };
         for run in &map.dungeon_walls {
-            let closed =
-                run.len() > 2 && run.first().map(|v| v.0) == run.last().map(|v| v.0);
-            let verts = if closed { &run[..run.len() - 1] } else { &run[..] };
+            let closed = run.len() > 2 && run.first().map(|v| v.0) == run.last().map(|v| v.0);
+            let verts = if closed {
+                &run[..run.len() - 1]
+            } else {
+                &run[..]
+            };
             if verts.is_empty() {
                 continue;
             }
             // Each vertex offsets inward on its OWN room's shrunk shape, so a
             // run spanning a fused seam stays flush with both rooms' walls.
-            let mut inner_pts: Vec<Point> = verts.iter().map(|&(p, sh)| sh.shrink(w).project(p)).collect();
+            let mut inner_pts: Vec<Point> = verts
+                .iter()
+                .map(|&(p, sh)| sh.shrink(w).project(p))
+                .collect();
             // A neck corner is emitted as two coincident outer vertices with
             // different owning shapes (e.g. the rectangle wall meeting the
             // horizontal fusion corridor), so each side keeps its own straight
@@ -581,11 +612,17 @@ fn wall_band_layer(map: &CaveMap, style: &Style) -> String {
             // leaving after. Only coincident vertices trigger this, which
             // nothing but a neck splice produces, so ordinary walls are untouched.
             for i in 1..verts.len().saturating_sub(2) {
-                if verts[i].0 == verts[i + 1].0 && verts[i].1 != verts[i + 1].1 {
-                    if let Some(m) = line_intersect(inner_pts[i - 1], inner_pts[i], inner_pts[i + 1], inner_pts[i + 2]) {
-                        inner_pts[i] = m;
-                        inner_pts[i + 1] = m;
-                    }
+                if verts[i].0 == verts[i + 1].0
+                    && verts[i].1 != verts[i + 1].1
+                    && let Some(m) = line_intersect(
+                        inner_pts[i - 1],
+                        inner_pts[i],
+                        inner_pts[i + 1],
+                        inner_pts[i + 2],
+                    )
+                {
+                    inner_pts[i] = m;
+                    inner_pts[i + 1] = m;
                 }
             }
             // Shadow follows the inner line only (closed only when the run is a
@@ -673,7 +710,13 @@ fn area_label_layer(map: &CaveMap) -> String {
             AreaKind::Ruin => 'R',
             AreaKind::Dungeon => 'D',
         };
-        label(cx / n, cy / n, &format!("{}{kind}", i + 1), &area_hash(&map.areas.cells[i]), &mut s);
+        label(
+            cx / n,
+            cy / n,
+            &format!("{}{kind}", i + 1),
+            &area_hash(&map.areas.cells[i]),
+            &mut s,
+        );
     }
     // Exits: label the outer end (last stub cell) so exit passages can be named
     // like rooms (1E, 2E, ...).
@@ -762,8 +805,10 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
                 let d = nx.hypot(ny).max(1e-9);
                 (wp.0 + nx / d * inward, wp.1 + ny / d * inward)
             } else {
-                (m.center.0 + m.axis.0 * t - m.out.0 * inward,
-                 m.center.1 + m.axis.1 * t - m.out.1 * inward)
+                (
+                    m.center.0 + m.axis.0 * t - m.out.0 * inward,
+                    m.center.1 + m.axis.1 * t - m.out.1 * inward,
+                )
             }
         };
         let (e1, e2) = (endpoint(t0), endpoint(t1));
@@ -797,7 +842,11 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
         let _ = write!(
             caps,
             r##"<circle cx="{}" cy="{}" r="{cr}"/><circle cx="{}" cy="{}" r="{cr}"/>"##,
-            D1(e1.0), D1(e1.1), D1(e2.0), D1(e2.1), cr = D1(cr),
+            D1(e1.0),
+            D1(e1.1),
+            D1(e2.0),
+            D1(e2.1),
+            cr = D1(cr),
         );
         // Leaf normal from the chord between the ends (the leaf plank spans
         // the opening; on a circle its ends sit on the ring, its centre a
@@ -815,7 +864,13 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
                 for k in 0..n {
                     let t = b0 + (b1 - b0) * (k as f64 + 0.5) / n as f64;
                     let p = at(t);
-                    let _ = write!(bars, r##"<circle cx="{}" cy="{}" r="{}"/>"##, D1(p.0), D1(p.1), D1(pr));
+                    let _ = write!(
+                        bars,
+                        r##"<circle cx="{}" cy="{}" r="{}"/>"##,
+                        D1(p.0),
+                        D1(p.1),
+                        D1(pr)
+                    );
                 }
             }
             kind => {
@@ -824,12 +879,23 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
                     let p = at(t);
                     (p.0 + perp.0 * lw * sp, p.1 + perp.1 * lw * sp)
                 };
-                let (p1, p2, p3, p4) =
-                    (corner(t1, 1.0), corner(t0, 1.0), corner(t0, -1.0), corner(t1, -1.0));
+                let (p1, p2, p3, p4) = (
+                    corner(t1, 1.0),
+                    corner(t0, 1.0),
+                    corner(t0, -1.0),
+                    corner(t1, -1.0),
+                );
                 let _ = write!(
                     leaves,
                     "M{} {}L{} {}L{} {}L{} {}Z",
-                    D1(p1.0), D1(p1.1), D1(p2.0), D1(p2.1), D1(p3.0), D1(p3.1), D1(p4.0), D1(p4.1),
+                    D1(p1.0),
+                    D1(p1.1),
+                    D1(p2.0),
+                    D1(p2.1),
+                    D1(p3.0),
+                    D1(p3.1),
+                    D1(p4.0),
+                    D1(p4.1),
                 );
                 // Double doors: a seam between each pair of leaves.
                 for k in 1..leaves_n {
@@ -878,7 +944,6 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
     out
 }
 
-
 fn outline_path(loops: &[Vec<Point>]) -> String {
     let mut d = String::new();
     for lp in loops {
@@ -890,7 +955,6 @@ fn outline_path(loops: &[Vec<Point>]) -> String {
     }
     d
 }
-
 
 pub fn debug_svg(map: &CaveMap) -> String {
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
@@ -927,7 +991,10 @@ pub fn debug_svg(map: &CaveMap) -> String {
 
     for (i, area) in map.areas.cells.iter().enumerate() {
         let color = PALETTE[i % PALETTE.len()];
-        let _ = write!(s, r##"<g fill="{color}" fill-opacity="0.85" stroke="none">"##);
+        let _ = write!(
+            s,
+            r##"<g fill="{color}" fill-opacity="0.85" stroke="none">"##
+        );
         for &h in area {
             let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(h));
         }
@@ -962,8 +1029,18 @@ pub fn debug_svg(map: &CaveMap) -> String {
     s.push_str("</g>");
 
     let n_corridors = map.topology.is_corridor.iter().filter(|&&c| c).count();
-    let n_ruin = map.areas.kinds().iter().filter(|&&k| k == AreaKind::Ruin).count();
-    let n_dungeon = map.areas.kinds().iter().filter(|&&k| k == AreaKind::Dungeon).count();
+    let n_ruin = map
+        .areas
+        .kinds()
+        .iter()
+        .filter(|&&k| k == AreaKind::Ruin)
+        .count();
+    let n_dungeon = map
+        .areas
+        .kinds()
+        .iter()
+        .filter(|&&k| k == AreaKind::Dungeon)
+        .count();
     let _ = write!(
         s,
         r##"<text x="{}" y="{}" fill="#aaaab4" font-family="monospace" font-size="11">seed {} | tags: {} | {} areas ({} ruin, {} dungeon), {} doors, {} corridors, {} exits</text>"##,

@@ -2,7 +2,7 @@
 //! hatching along the outside of the cave walls.
 
 use crate::grid::Hex;
-use crate::outline::{Point, quantize2, quantize_pt};
+use crate::outline::{Point, quantize_pt, quantize2};
 use crate::ruins::RuinShape;
 use rand::Rng;
 use rand::seq::SliceRandom;
@@ -322,12 +322,7 @@ fn tile<R: Rng>(p: Point, dir: (f64, f64), n: (f64, f64), rng: &mut R) -> Vec<Po
 
 /// A corner stone: a mitered block bent around the corner so both faces get
 /// an arm — the "L" shape of dressed quoins in the reference style.
-fn corner_tile<R: Rng>(
-    p: Point,
-    t_in: (f64, f64),
-    t_out: (f64, f64),
-    rng: &mut R,
-) -> Vec<Point> {
+fn corner_tile<R: Rng>(p: Point, t_in: (f64, f64), t_out: (f64, f64), rng: &mut R) -> Vec<Point> {
     let n1 = (t_in.1, -t_in.0);
     let n2 = (t_out.1, -t_out.0);
     let mut bis = (n1.0 + n2.0, n1.1 + n2.1);
@@ -348,7 +343,10 @@ fn corner_tile<R: Rng>(
         p.1 + bis.1 * (inner + depth) * miter,
     );
     let pts = [
-        (p.0 - t_in.0 * arm + n1.0 * inner, p.1 - t_in.1 * arm + n1.1 * inner),
+        (
+            p.0 - t_in.0 * arm + n1.0 * inner,
+            p.1 - t_in.1 * arm + n1.1 * inner,
+        ),
         (
             p.0 - t_in.0 * arm + n1.0 * (inner + depth),
             p.1 - t_in.1 * arm + n1.1 * (inner + depth),
@@ -358,7 +356,10 @@ fn corner_tile<R: Rng>(
             p.0 + t_out.0 * arm + n2.0 * (inner + depth),
             p.1 + t_out.1 * arm + n2.1 * (inner + depth),
         ),
-        (p.0 + t_out.0 * arm + n2.0 * inner, p.1 + t_out.1 * arm + n2.1 * inner),
+        (
+            p.0 + t_out.0 * arm + n2.0 * inner,
+            p.1 + t_out.1 * arm + n2.1 * inner,
+        ),
         ci,
     ];
     pts.iter()

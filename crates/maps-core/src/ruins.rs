@@ -16,13 +16,33 @@ use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RuinShape {
-    Rect { cx: f64, cy: f64, hw: f64, hh: f64 },
-    Circle { cx: f64, cy: f64, r: f64 },
+    Rect {
+        cx: f64,
+        cy: f64,
+        hw: f64,
+        hh: f64,
+    },
+    Circle {
+        cx: f64,
+        cy: f64,
+        r: f64,
+    },
     /// A corridor straightened into a hall: a thick segment from A to B.
-    StraightHall { ax: f64, ay: f64, bx: f64, by: f64, hw: f64 },
+    StraightHall {
+        ax: f64,
+        ay: f64,
+        bx: f64,
+        by: f64,
+        hw: f64,
+    },
     /// A corridor bent into a circular arc: an annulus band of half-width
     /// `hw` around radius `r`.
-    ArcHall { cx: f64, cy: f64, r: f64, hw: f64 },
+    ArcHall {
+        cx: f64,
+        cy: f64,
+        r: f64,
+        hw: f64,
+    },
     /// One pointy-top hex cell's own boundary — circumradius `s`, corners at
     /// `60k − 30°`. Carried by the cells of a narrowly-fused seam so those
     /// vertices are *splicable* (they have a perimeter) while still sitting
@@ -30,7 +50,11 @@ pub enum RuinShape {
     /// already, so `project` is the identity for it. That keeps the raw-hex neck
     /// lock by construction instead of by opting out of the wall splice, which
     /// is what previously broke the band merge across a fused seam.
-    HexCell { cx: f64, cy: f64, s: f64 },
+    HexCell {
+        cx: f64,
+        cy: f64,
+        s: f64,
+    },
 }
 
 /// The six corners of a pointy-top hex, in `wall_param` order (see
@@ -144,10 +168,18 @@ impl RuinShape {
                 hw: (hw - d).max(0.1),
                 hh: (hh - d).max(0.1),
             },
-            RuinShape::Circle { cx, cy, r } => RuinShape::Circle { cx, cy, r: (r - d).max(0.1) },
-            RuinShape::StraightHall { ax, ay, bx, by, hw } => {
-                RuinShape::StraightHall { ax, ay, bx, by, hw: (hw - d).max(0.1) }
-            }
+            RuinShape::Circle { cx, cy, r } => RuinShape::Circle {
+                cx,
+                cy,
+                r: (r - d).max(0.1),
+            },
+            RuinShape::StraightHall { ax, ay, bx, by, hw } => RuinShape::StraightHall {
+                ax,
+                ay,
+                bx,
+                by,
+                hw: (hw - d).max(0.1),
+            },
             // Inset: the apothem (√3/2·s) drops by `d`, so s' = s − 2d/√3.
             RuinShape::HexCell { cx, cy, s } => RuinShape::HexCell {
                 cx,
@@ -180,8 +212,12 @@ impl RuinShape {
             RuinShape::Rect { cx, cy, hw, hh } => {
                 let (x0, x1, y0, y1) = (cx - hw, cx + hw, cy - hh, cy + hh);
                 let (w, h) = (2.0 * hw, 2.0 * hh);
-                let (dt, dr, db, dl) =
-                    ((p.1 - y0).abs(), (x1 - p.0).abs(), (y1 - p.1).abs(), (p.0 - x0).abs());
+                let (dt, dr, db, dl) = (
+                    (p.1 - y0).abs(),
+                    (x1 - p.0).abs(),
+                    (y1 - p.1).abs(),
+                    (p.0 - x0).abs(),
+                );
                 let m = dt.min(dr).min(db).min(dl);
                 if m == dt {
                     (p.0 - x0).clamp(0.0, w)
@@ -262,7 +298,13 @@ impl RuinShape {
                 (p.0 - cx).abs() <= hw + m && (p.1 - cy).abs() <= hh + m
             }
             RuinShape::Circle { cx, cy, r } => (p.0 - cx).hypot(p.1 - cy) <= r + m,
-            RuinShape::StraightHall { ax, ay, bx, by, hw: _ } => {
+            RuinShape::StraightHall {
+                ax,
+                ay,
+                bx,
+                by,
+                hw: _,
+            } => {
                 let (_, q) = crate::geom::project_on_segment(p, (ax, ay), (bx, by));
                 (p.0 - q.0).hypot(p.1 - q.1) <= 0.87 * s
             }
@@ -273,7 +315,9 @@ impl RuinShape {
             RuinShape::HexCell { cx, cy, s: hs } => {
                 let (dx, dy) = ((p.0 - cx).abs(), (p.1 - cy).abs());
                 let ap = crate::grid::SQRT3 / 2.0 * hs + m;
-                dy <= hs + m && dx <= ap && crate::grid::SQRT3 * ap - crate::grid::SQRT3 * dx >= dy - hs - m
+                dy <= hs + m
+                    && dx <= ap
+                    && crate::grid::SQRT3 * ap - crate::grid::SQRT3 * dx >= dy - hs - m
             }
         }
     }

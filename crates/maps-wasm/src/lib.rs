@@ -77,7 +77,11 @@ pub fn generate(opts: JsValue) -> Result<JsValue, JsValue> {
         "hex" => GridStyle::Hex,
         "square" => GridStyle::Square,
         "none" => GridStyle::None,
-        other => return Err(err(format!("unknown grid style: {other} (hex|square|none)"))),
+        other => {
+            return Err(err(format!(
+                "unknown grid style: {other} (hex|square|none)"
+            )));
+        }
     };
     let tags = match &o.tags {
         None => None,

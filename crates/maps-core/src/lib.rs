@@ -21,11 +21,11 @@ pub mod water;
 
 use grid::HexGrid;
 use growth::{Areas, GrowthParams, grid_radius, grow_areas, resolve};
+use outline::{OutlineParams, Point, build_outline};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use rand_pcg::Pcg64;
-use outline::{OutlineParams, Point, build_outline};
 use tags::Tags;
 use topology::Topology;
 
@@ -325,14 +325,25 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // slots are geometric, and which of those are fusible). Classification,
     // growth, reshaping and doors all draw from the one shape stream —
     // determinism is per-seed, with no byte-compatibility to older output.
-    let (slot_kinds, slot_fusible) =
-        classify_slots(params.sizes.len(), ruins_level, dungeon_level, fuse_level, &mut rng);
+    let (slot_kinds, slot_fusible) = classify_slots(
+        params.sizes.len(),
+        ruins_level,
+        dungeon_level,
+        fuse_level,
+        &mut rng,
+    );
     let grid = HexGrid::hexagon(grid_radius(&params));
     // Staggered simultaneous growth: dungeon rooms grow as their geometry and
     // symmetric wings grow as lockstep sibling orbits (symmetry is chosen
     // inside, from the shape stream).
-    let mut areas =
-        grow_areas(&grid, &mut rng, &params, &slot_kinds, &slot_fusible, oparams.hex_size);
+    let mut areas = grow_areas(
+        &grid,
+        &mut rng,
+        &params,
+        &slot_kinds,
+        &slot_fusible,
+        oparams.hex_size,
+    );
     let topology = topology::build(&grid, &mut areas, &tags, oparams.hex_size, &mut rng);
     // Reshape the ruin areas to their rasterized geometry, so all downstream
     // layers (outline, water, stones, decor) see the real footprint and
@@ -361,8 +372,9 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // the door instead: the connector is dropped below if a mouth sits on it.
     // Removing this needs the connector wall itself to carry a doorway gap, which
     // `splice_necks` cannot express yet (one contiguous line per side).
-    let mouths =
-        doorway::mouths(&topology, &areas, oparams.hex_size, &|p| fusion.blocks_narrow(p));
+    let mouths = doorway::mouths(&topology, &areas, oparams.hex_size, &|p| {
+        fusion.blocks_narrow(p)
+    });
     let (plug_cells, clean_shapes) =
         doorway::apply_plugs(&mut ruin_map, &topology, &areas, oparams.hex_size);
 
@@ -408,10 +420,23 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         .flat_map(|(i, sh)| areas.cells[i].iter().map(move |&c| (c, sh)))
         .collect();
     let jambs = doorway::jambs(&mouths, &topology, &areas, oparams.hex_size);
+    let constraints = outline::Constraints {
+        ruin_cells: &ruin_map,
+        dungeon_cells: &dungeon_cells,
+        neck_cells: &neck_cells,
+        jambs: &jambs,
+    };
     let (mut outline, mut dungeon_walls) =
-        build_outline(&areas, &topology, &ruin_map, &dungeon_cells, &neck_cells, &jambs, oparams, &mut rng);
+        build_outline(&areas, &topology, constraints, oparams, &mut rng);
     fusion.apply(&mut outline, &mut dungeon_walls, &mut areas, &topology);
-    let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
+    let w = water::build_water(
+        &areas,
+        &topology,
+        oparams,
+        &tags,
+        opts.water_level,
+        &mut rng,
+    );
     let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
     let stones = decor::stones(&floor, &narrow, &w.cells, oparams.hex_size, &mut rng);
 
@@ -460,8 +485,12 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
             v
         })
         .collect();
-    let floor_pattern =
-        decor::floor_pattern(&ruin_area_cells, pattern_tag, oparams.hex_size, &mut decor_rng);
+    let floor_pattern = decor::floor_pattern(
+        &ruin_area_cells,
+        pattern_tag,
+        oparams.hex_size,
+        &mut decor_rng,
+    );
 
     // Snapshot the shapes before `areas` moves into the map.
     let ruin_shapes = areas.shapes().to_vec();

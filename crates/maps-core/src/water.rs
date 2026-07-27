@@ -6,7 +6,9 @@
 
 use crate::grid::Hex;
 use crate::growth::Areas;
-use crate::outline::{OutlineParams, Point, floor_and_narrow, smooth_loops, trace_loops};
+use crate::outline::{
+    Constraints, OutlineParams, Point, floor_and_narrow, smooth_loops, trace_loops,
+};
 use crate::tags::{Tags, WaterTag};
 use crate::topology::Topology;
 use rand::Rng;
@@ -73,7 +75,11 @@ pub fn build_water<R: Rng>(
         sorted[idx]
     };
 
-    let mut water: HashSet<Hex> = floor.iter().copied().filter(|h| elev(h) < waterline).collect();
+    let mut water: HashSet<Hex> = floor
+        .iter()
+        .copied()
+        .filter(|h| elev(h) < waterline)
+        .collect();
     drop_small_ponds(&mut water, 3);
     if water.is_empty() {
         return Water::default();
@@ -109,15 +115,16 @@ pub fn build_water<R: Rng>(
     };
     // Water is a natural element: no ruin projection, no dungeon splice —
     // its edges smooth organically even inside a dungeon room.
-    let no_ruins = std::collections::HashMap::new();
-    let no_dungeon = std::collections::HashMap::new();
-    let no_neck: HashSet<Hex> = HashSet::new();
-    let (mud_loops, _) =
-        smooth_loops(trace_loops(&mud), &HashSet::new(), &no_ruins, &no_dungeon, &no_neck, &[], &wparams, rng);
-    let (pools, _) =
-        smooth_loops(trace_loops(&water), &HashSet::new(), &no_ruins, &no_dungeon, &no_neck, &[], &wparams, rng);
-    let (deep_loops, _) =
-        smooth_loops(trace_loops(&deep), &HashSet::new(), &no_ruins, &no_dungeon, &no_neck, &[], &wparams, rng);
+    let (no_shapes, no_cells) = (std::collections::HashMap::new(), HashSet::new());
+    let organic = Constraints {
+        ruin_cells: &no_shapes,
+        dungeon_cells: &no_shapes,
+        neck_cells: &no_cells,
+        jambs: &[],
+    };
+    let (mud_loops, _) = smooth_loops(trace_loops(&mud), &HashSet::new(), organic, &wparams, rng);
+    let (pools, _) = smooth_loops(trace_loops(&water), &HashSet::new(), organic, &wparams, rng);
+    let (deep_loops, _) = smooth_loops(trace_loops(&deep), &HashSet::new(), organic, &wparams, rng);
 
     Water {
         cells: water,

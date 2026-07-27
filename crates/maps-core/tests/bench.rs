@@ -11,10 +11,11 @@ use std::time::Instant;
 fn stages() {
     use maps_core::grid::HexGrid;
     use maps_core::growth::{grid_radius, grow_areas, resolve};
-    use maps_core::outline::{OutlineParams, build_outline};
+    use maps_core::outline::{Constraints, OutlineParams, build_outline};
     use maps_core::{render, ruins, topology, water};
     use rand::SeedableRng;
     use rand_pcg::Pcg64;
+    use std::collections::{HashMap, HashSet};
 
     let tags = Tags::parse("large,burrow,wet,ruins,truchet").unwrap();
     let n = 60;
@@ -28,7 +29,14 @@ fn stages() {
         // Time the ruin path: classify every area geometric.
         let slot_kinds = vec![maps_core::AreaKind::Ruin; params.sizes.len()];
         let slot_fusible = vec![false; params.sizes.len()];
-        let mut areas = grow_areas(&grid, &mut rng, &params, &slot_kinds, &slot_fusible, oparams.hex_size);
+        let mut areas = grow_areas(
+            &grid,
+            &mut rng,
+            &params,
+            &slot_kinds,
+            &slot_fusible,
+            oparams.hex_size,
+        );
         acc[0] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();
@@ -41,8 +49,15 @@ fn stages() {
 
         let t = Instant::now();
         let ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
-        let (outline, _walls) =
-            build_outline(&areas, &topo, &ruin_map, &std::collections::HashMap::new(), &std::collections::HashSet::new(), &[], &oparams, &mut rng);
+        // Ruin projection only — no dungeon splice, necks or jambs in the bench.
+        let (no_shapes, no_cells) = (HashMap::new(), HashSet::new());
+        let constraints = Constraints {
+            ruin_cells: &ruin_map,
+            dungeon_cells: &no_shapes,
+            neck_cells: &no_cells,
+            jambs: &[],
+        };
+        let (outline, _walls) = build_outline(&areas, &topo, constraints, &oparams, &mut rng);
         acc[3] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();
@@ -55,13 +70,16 @@ fn stages() {
         acc[5] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();
-        let map = generate_with(seed, &GenOptions {
-            tags: Some(tags.clone()),
-            ruins_level: Some(0.9),
-            water_level: Some(0.4),
-            shape_seed: Some(1000 + seed),
-            ..GenOptions::default()
-        });
+        let map = generate_with(
+            seed,
+            &GenOptions {
+                tags: Some(tags.clone()),
+                ruins_level: Some(0.9),
+                water_level: Some(0.4),
+                shape_seed: Some(1000 + seed),
+                ..GenOptions::default()
+            },
+        );
         acc[6] += t.elapsed().as_secs_f64();
 
         let t = Instant::now();
@@ -85,7 +103,11 @@ fn timing() {
     for (label, tags, ruins) in [
         ("small organic", "small,chamber,organic,plain", None),
         ("large organic", "large,burrow,wet,organic,plain", None),
-        ("large ruins+truchet", "large,burrow,wet,ruins,truchet", Some(0.9)),
+        (
+            "large ruins+truchet",
+            "large,burrow,wet,ruins,truchet",
+            Some(0.9),
+        ),
         ("large hub coral", "large,hub,coral,wet,organic,plain", None),
     ] {
         let opts = |seed_offset: u64| GenOptions {

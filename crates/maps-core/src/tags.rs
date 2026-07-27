@@ -188,7 +188,6 @@ impl Tags {
             pattern,
         }
     }
-
 }
 
 /// Declares every tag family exactly once — field, public family name, and

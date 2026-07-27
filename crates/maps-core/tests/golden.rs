@@ -23,22 +23,118 @@ type Case = (
 );
 
 const CASES: &[Case] = &[
-    (1, "small,chamber,organic,plain", "cave", "hex", None, None, None),
-    (2, "medium,coral,wet,organic,plain", "cave", "hex", None, None, None),
-    (3, "large,hub,wet,organic,plain", "cave", "hex", Some(0.4), None, None),
-    (11, "large,burrow,tree,junction,dry,ruins,truchet", "cave", "none", None, Some(0.9), None),
-    (7, "medium,connected,wet,organic,plain", "forest", "hex", Some(0.3), None, None),
-    (19, "large,chamber,connected,ruins,mosaic", "forest", "hex", Some(0.3), Some(0.75), None),
-    (13, "large,cavities,sealed,organic,islamic", "cave", "square", Some(1.0), None, None),
-    (17, "large,chaotic,entrance,wet,organic,plain", "cave", "square", Some(0.05), None, None),
+    (
+        1,
+        "small,chamber,organic,plain",
+        "cave",
+        "hex",
+        None,
+        None,
+        None,
+    ),
+    (
+        2,
+        "medium,coral,wet,organic,plain",
+        "cave",
+        "hex",
+        None,
+        None,
+        None,
+    ),
+    (
+        3,
+        "large,hub,wet,organic,plain",
+        "cave",
+        "hex",
+        Some(0.4),
+        None,
+        None,
+    ),
+    (
+        11,
+        "large,burrow,tree,junction,dry,ruins,truchet",
+        "cave",
+        "none",
+        None,
+        Some(0.9),
+        None,
+    ),
+    (
+        7,
+        "medium,connected,wet,organic,plain",
+        "forest",
+        "hex",
+        Some(0.3),
+        None,
+        None,
+    ),
+    (
+        19,
+        "large,chamber,connected,ruins,mosaic",
+        "forest",
+        "hex",
+        Some(0.3),
+        Some(0.75),
+        None,
+    ),
+    (
+        13,
+        "large,cavities,sealed,organic,islamic",
+        "cave",
+        "square",
+        Some(1.0),
+        None,
+        None,
+    ),
+    (
+        17,
+        "large,chaotic,entrance,wet,organic,plain",
+        "cave",
+        "square",
+        Some(0.05),
+        None,
+        None,
+    ),
     (42, "", "cave", "hex", None, None, None),
     (99, "", "forest", "none", None, None, None),
-    (19, "large,chamber,connected,wet,ruins,islamic", "forest", "hex", Some(0.3), Some(0.85), None),
-    (9521512733245147772, "medium,hub,coral,tree,junction,dry,ruins,plain", "cave", "hex", None, Some(0.5), None),
+    (
+        19,
+        "large,chamber,connected,wet,ruins,islamic",
+        "forest",
+        "hex",
+        Some(0.3),
+        Some(0.85),
+        None,
+    ),
+    (
+        9521512733245147772,
+        "medium,hub,coral,tree,junction,dry,ruins,plain",
+        "cave",
+        "hex",
+        None,
+        Some(0.5),
+        None,
+    ),
     // Dungeon path: geometric areas split into clean, doorless-decor rooms.
     // Cave exercises the hatching/stipple skip; forest the canopy/masonry skip.
-    (11, "large,burrow,tree,junction,dry,ruins,dungeon,plain", "cave", "none", None, Some(1.0), Some(0.5)),
-    (19, "large,chamber,connected,ruins,dungeon,mosaic", "forest", "hex", Some(0.3), Some(0.9), Some(0.6)),
+    (
+        11,
+        "large,burrow,tree,junction,dry,ruins,dungeon,plain",
+        "cave",
+        "none",
+        None,
+        Some(1.0),
+        Some(0.5),
+    ),
+    (
+        19,
+        "large,chamber,connected,ruins,dungeon,mosaic",
+        "forest",
+        "hex",
+        Some(0.3),
+        Some(0.9),
+        Some(0.6),
+    ),
 ];
 
 /// Expected (svg, debug_svg) FNV-1a hashes, one pair per case above.
@@ -73,7 +169,11 @@ fn run(case: &Case) -> (u64, u64) {
     let map = generate_with(
         seed,
         &GenOptions {
-            mode: if mode == "forest" { Mode::Forest } else { Mode::Cave },
+            mode: if mode == "forest" {
+                Mode::Forest
+            } else {
+                Mode::Cave
+            },
             grid: match grid {
                 "square" => GridStyle::Square,
                 "none" => GridStyle::None,
@@ -86,7 +186,10 @@ fn run(case: &Case) -> (u64, u64) {
             ..GenOptions::default()
         },
     );
-    (fnv1a(svg(&map).as_bytes()), fnv1a(debug_svg(&map).as_bytes()))
+    (
+        fnv1a(svg(&map).as_bytes()),
+        fnv1a(debug_svg(&map).as_bytes()),
+    )
 }
 
 #[test]

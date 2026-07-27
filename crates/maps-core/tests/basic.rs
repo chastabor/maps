@@ -16,7 +16,11 @@ fn outline_loops_are_valid() {
         let map = generate(seed, None);
         assert!(!map.outline.is_empty(), "seed {seed}: no outline loops");
         for (i, lp) in map.outline.iter().enumerate() {
-            assert!(lp.len() >= 12, "seed {seed}: loop {i} has only {} points", lp.len());
+            assert!(
+                lp.len() >= 12,
+                "seed {seed}: loop {i} has only {} points",
+                lp.len()
+            );
             // Shoelace area must be non-degenerate.
             let mut area = 0.0;
             for j in 0..lp.len() {
@@ -106,19 +110,37 @@ fn floor_patterns_follow_tags() {
 
     let mosaic = make("large,chamber,ruins,mosaic");
     assert!(!mosaic.floor_pattern.is_empty());
-    assert!(mosaic.floor_pattern.iter().all(|e| matches!(e, PatternElem::Poly { .. })));
+    assert!(
+        mosaic
+            .floor_pattern
+            .iter()
+            .all(|e| matches!(e, PatternElem::Poly { .. }))
+    );
 
     let truchet = make("large,chamber,ruins,truchet");
     assert!(!truchet.floor_pattern.is_empty());
-    assert!(truchet.floor_pattern.iter().all(|e| matches!(e, PatternElem::Curve { .. })));
+    assert!(
+        truchet
+            .floor_pattern
+            .iter()
+            .all(|e| matches!(e, PatternElem::Curve { .. }))
+    );
 
     let islamic = make("large,chamber,ruins,islamic");
     assert!(!islamic.floor_pattern.is_empty());
-    assert!(islamic.floor_pattern.iter().all(|e| matches!(e, PatternElem::Elbow { .. })));
+    assert!(
+        islamic
+            .floor_pattern
+            .iter()
+            .all(|e| matches!(e, PatternElem::Elbow { .. }))
+    );
 
     // Same seed twice -> identical pattern; the pattern rides the decor
     // stream, so re-rolling decor changes it.
-    assert_eq!(truchet.floor_pattern, make("large,chamber,ruins,truchet").floor_pattern);
+    assert_eq!(
+        truchet.floor_pattern,
+        make("large,chamber,ruins,truchet").floor_pattern
+    );
     let redecor = generate_with(
         11,
         &GenOptions {
@@ -199,7 +221,11 @@ fn areas_meet_minimum_size() {
             if map.topology.is_corridor[i] {
                 assert!(!area.is_empty(), "seed {seed}: corridor {i} vanished");
             } else {
-                assert!(area.len() >= 4, "seed {seed}: area {i} has {} cells", area.len());
+                assert!(
+                    area.len() >= 4,
+                    "seed {seed}: area {i} has {} cells",
+                    area.len()
+                );
             }
         }
     }
@@ -223,10 +249,10 @@ fn doors_connect_all_areas() {
         for (i, cells) in map.areas.cells.iter().enumerate() {
             for &c in cells {
                 for nb in c.neighbors() {
-                    if let Some(j) = map.areas.owner_of(nb) {
-                        if j != i {
-                            adj[i].push(j);
-                        }
+                    if let Some(j) = map.areas.owner_of(nb)
+                        && j != i
+                    {
+                        adj[i].push(j);
                     }
                 }
             }
@@ -285,9 +311,16 @@ fn doors_touch_both_areas_after_corridors() {
 fn exit_tags_control_exit_count() {
     for seed in 0..15 {
         let sealed = generate(seed, Some(Tags::parse("sealed").unwrap()));
-        assert!(sealed.topology.exits.is_empty(), "seed {seed}: sealed map has exits");
+        assert!(
+            sealed.topology.exits.is_empty(),
+            "seed {seed}: sealed map has exits"
+        );
         let one = generate(seed, Some(Tags::parse("entrance").unwrap()));
-        assert_eq!(one.topology.exits.len(), 1, "seed {seed}: entrance map needs 1 exit");
+        assert_eq!(
+            one.topology.exits.len(),
+            1,
+            "seed {seed}: entrance map needs 1 exit"
+        );
     }
 }
 
@@ -307,7 +340,11 @@ fn corridor_areas_stay_connected() {
                     }
                 }
             }
-            assert_eq!(seen.len(), area.len(), "seed {seed}: area {i} is fragmented");
+            assert_eq!(
+                seen.len(),
+                area.len(),
+                "seed {seed}: area {i} is fragmented"
+            );
         }
     }
 }
@@ -323,7 +360,11 @@ fn dry_tag_means_no_water() {
 #[test]
 fn wet_tag_usually_floods() {
     let with_water = (0..12)
-        .filter(|&seed| !generate(seed, Some(Tags::parse("wet,large").unwrap())).water.is_empty())
+        .filter(|&seed| {
+            !generate(seed, Some(Tags::parse("wet,large").unwrap()))
+                .water
+                .is_empty()
+        })
         .count();
     assert!(with_water >= 8, "only {with_water}/12 wet maps have water");
 }
@@ -340,10 +381,16 @@ fn forest_mode_swaps_hatching_for_trees() {
             },
         );
         assert!(!forest.trees.is_empty(), "seed {seed}: forest has no trees");
-        assert!(forest.hatching.is_empty(), "seed {seed}: forest has hatching");
+        assert!(
+            forest.hatching.is_empty(),
+            "seed {seed}: forest has hatching"
+        );
         let cave = generate_with(seed, &GenOptions::default());
         assert!(cave.trees.is_empty(), "seed {seed}: cave has trees");
-        assert!(!cave.hatching.is_empty(), "seed {seed}: cave has no hatching");
+        assert!(
+            !cave.hatching.is_empty(),
+            "seed {seed}: cave has no hatching"
+        );
     }
 }
 
@@ -388,7 +435,10 @@ fn water_level_fills_from_the_lowest_basins() {
             high >= low,
             "seed {seed}: raising the level shrank the water ({low:.0} -> {high:.0})"
         );
-        assert!(at_level(seed, 0.0).is_empty(), "seed {seed}: level 0 not dry");
+        assert!(
+            at_level(seed, 0.0).is_empty(),
+            "seed {seed}: level 0 not dry"
+        );
         // Level 1 submerges the whole floor.
         let full = area(&at_level(seed, 1.0));
         assert!(full > 0.0, "seed {seed}: level 1 not flooded");
@@ -531,32 +581,60 @@ fn dungeon_level_splits_geometric_areas() {
         );
     }
     // dungeon_level 1.0 promotes every geometric slot; none stay Ruin.
-    let dungeon = full.areas.kinds().iter().filter(|k| **k == AreaKind::Dungeon).count();
+    let dungeon = full
+        .areas
+        .kinds()
+        .iter()
+        .filter(|k| **k == AreaKind::Dungeon)
+        .count();
     assert!(dungeon > 0, "level 1.0 should produce dungeon rooms");
     assert!(full.areas.kinds().iter().all(|k| *k != AreaKind::Ruin));
 
     // dungeon_level 0 and the `natural` tag leave nothing a dungeon.
-    assert!(at("large,chamber,ruins,dungeon", Some(0.0))
-        .areas
-        .kinds()
-        .iter()
-        .all(|k| *k != AreaKind::Dungeon));
-    assert!(at("large,chamber,ruins,natural", None)
-        .areas
-        .kinds()
-        .iter()
-        .all(|k| *k != AreaKind::Dungeon));
+    assert!(
+        at("large,chamber,ruins,dungeon", Some(0.0))
+            .areas
+            .kinds()
+            .iter()
+            .all(|k| *k != AreaKind::Dungeon)
+    );
+    assert!(
+        at("large,chamber,ruins,natural", None)
+            .areas
+            .kinds()
+            .iter()
+            .all(|k| *k != AreaKind::Dungeon)
+    );
 
     // A partial level splits the geometric slots into both kinds.
     let half = at("large,chamber,ruins,dungeon", Some(0.5));
-    let half_dungeon = half.areas.kinds().iter().filter(|k| **k == AreaKind::Dungeon).count();
-    let half_ruin = half.areas.kinds().iter().filter(|k| **k == AreaKind::Ruin).count();
-    assert!(half_dungeon > 0 && half_ruin > 0, "0.5 should split, got {half_dungeon} dungeon / {half_ruin} ruin");
+    let half_dungeon = half
+        .areas
+        .kinds()
+        .iter()
+        .filter(|k| **k == AreaKind::Dungeon)
+        .count();
+    let half_ruin = half
+        .areas
+        .kinds()
+        .iter()
+        .filter(|k| **k == AreaKind::Ruin)
+        .count();
+    assert!(
+        half_dungeon > 0 && half_ruin > 0,
+        "0.5 should split, got {half_dungeon} dungeon / {half_ruin} ruin"
+    );
 
     // Clean dungeon walls shed the ruin stipple: an all-dungeon cave has none,
     // while the same map left as ruins does.
-    assert!(full.dots.is_empty(), "all-dungeon cave should have no stipple");
-    assert!(!at("large,chamber,ruins,natural", None).dots.is_empty(), "ruin cave lost its stipple");
+    assert!(
+        full.dots.is_empty(),
+        "all-dungeon cave should have no stipple"
+    );
+    assert!(
+        !at("large,chamber,ruins,natural", None).dots.is_empty(),
+        "ruin cave lost its stipple"
+    );
 
     // The classification is deterministic per seed.
     let again = at("large,chamber,ruins,dungeon", Some(1.0));
@@ -577,7 +655,10 @@ fn water_bands_accompany_pools() {
                 ..GenOptions::default()
             },
         );
-        assert!(!map.water.is_empty(), "seed {seed}: level 0.6 left no water");
+        assert!(
+            !map.water.is_empty(),
+            "seed {seed}: level 0.6 left no water"
+        );
         // The mud band is a superset of the pools, so it must exist too.
         assert!(!map.mud.is_empty(), "seed {seed}: pools without mud fringe");
         if !map.deep_water.is_empty() {
@@ -593,7 +674,10 @@ fn water_bands_accompany_pools() {
         );
         assert!(dry.mud.is_empty() && dry.deep_water.is_empty());
     }
-    assert!(deep_seen >= 4, "deep water in only {deep_seen}/6 flooded maps");
+    assert!(
+        deep_seen >= 4,
+        "deep water in only {deep_seen}/6 flooded maps"
+    );
 }
 
 #[test]
@@ -613,4 +697,3 @@ fn parse_tags() {
     assert!(Tags::parse("bogus").is_err());
     assert_eq!(Tags::parse("").unwrap(), Tags::default());
 }
-

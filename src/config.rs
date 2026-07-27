@@ -2,8 +2,8 @@
 //! defaults match `maps-core`'s own.
 
 use maps_core::outline::OutlineParams;
-use maps_core::{GridStyle, Mode};
 use maps_core::tags::Tags;
+use maps_core::{GridStyle, Mode};
 use serde::Deserialize;
 use std::path::Path;
 

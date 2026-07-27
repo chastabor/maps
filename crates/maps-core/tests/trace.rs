@@ -20,9 +20,7 @@ fn no_self_intersecting_loops() {
     let map = generate_with(
         9521512733245147772,
         &GenOptions {
-            tags: Some(
-                Tags::parse("medium,chamber,coral,tree,junction,dry,ruins").unwrap(),
-            ),
+            tags: Some(Tags::parse("medium,chamber,coral,tree,junction,dry,ruins").unwrap()),
             ruins_level: Some(0.93),
             shape_seed: Some(9767082189707533793),
             decor_seed: Some(11680530627533803770),
@@ -117,7 +115,10 @@ fn trace_pinch() {
         // Pinch scan: boundary points close in space but not neighbours
         // along the boundary = opposite walls nearly touching. Checks both
         // within a loop and across loops (necks between a loop and a hole).
-        println!("  loops: {:?}", map.outline.iter().map(|l| l.len()).collect::<Vec<_>>());
+        println!(
+            "  loops: {:?}",
+            map.outline.iter().map(|l| l.len()).collect::<Vec<_>>()
+        );
         let mut worst: Vec<(f64, (f64, f64), usize, usize)> = Vec::new();
         for (li, lp) in map.outline.iter().enumerate() {
             let n = lp.len();
@@ -149,7 +150,10 @@ fn trace_pinch() {
         worst.dedup_by(|a, b| (a.1.0 - b.1.0).hypot(a.1.1 - b.1.1) < 15.0);
         println!("  necks (gap < 13px): {}", worst.len());
         for (d, p, la, lb) in worst.iter().take(10) {
-            println!("    gap {d:.2}px at ({:.0},{:.0}) loops {la}/{lb}", p.0, p.1);
+            println!(
+                "    gap {d:.2}px at ({:.0},{:.0}) loops {la}/{lb}",
+                p.0, p.1
+            );
         }
         // The organic baseline for this seed bottoms out around 7px (coral
         // corner-necks). Ruin projection must not squeeze walls below the

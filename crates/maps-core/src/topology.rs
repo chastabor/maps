@@ -40,7 +40,13 @@ pub struct Topology {
     pub merged_doors: Vec<(usize, usize, Hex)>,
 }
 
-pub fn build<R: Rng>(grid: &HexGrid, areas: &mut Areas, tags: &Tags, s: f64, rng: &mut R) -> Topology {
+pub fn build<R: Rng>(
+    grid: &HexGrid,
+    areas: &mut Areas,
+    tags: &Tags,
+    s: f64,
+    rng: &mut R,
+) -> Topology {
     // Fused rooms sharing an edge are one compound; door topology treats each
     // compound as a single node so it gets one door per external neighbour (not
     // one per member), and the seam between members gets none.
@@ -107,7 +113,11 @@ fn fuse_groups(areas: &Areas) -> Vec<usize> {
 /// on the north wall, one on the east) is not a pinched double door, and carving
 /// one opening across the corner folds the outline. A straight distance-2 pair
 /// shares exactly one neighbour; a bent one shares two and must stay separate.
-pub(crate) fn merged_pillar_pairs(areas: &Areas, doors: &[Door], s: f64) -> Vec<(usize, usize, Hex)> {
+pub(crate) fn merged_pillar_pairs(
+    areas: &Areas,
+    doors: &[Door],
+    s: f64,
+) -> Vec<(usize, usize, Hex)> {
     // Which of a rect's four edges a point sits outside (equality is all we
     // compare, so the discriminant value is arbitrary).
     let rect_wall = |cx: f64, cy: f64, hw: f64, hh: f64, p: (f64, f64)| -> u8 {
@@ -125,8 +135,12 @@ pub(crate) fn merged_pillar_pairs(areas: &Areas, doors: &[Door], s: f64) -> Vec<
             if doors[i].cell.distance(doors[j].cell) != 2 {
                 continue;
             }
-            let Some(room) = shared_dungeon_room(areas, &doors[i], &doors[j]) else { continue };
-            let Some(RuinShape::Rect { cx, cy, hw, hh }) = areas.shape(room) else { continue };
+            let Some(room) = shared_dungeon_room(areas, &doors[i], &doors[j]) else {
+                continue;
+            };
+            let Some(RuinShape::Rect { cx, cy, hw, hh }) = areas.shape(room) else {
+                continue;
+            };
             if rect_wall(cx, cy, hw, hh, doors[i].cell.center(s))
                 != rect_wall(cx, cy, hw, hh, doors[j].cell.center(s))
             {
@@ -138,31 +152,35 @@ pub(crate) fn merged_pillar_pairs(areas: &Areas, doors: &[Door], s: f64) -> Vec<
                 .neighbors()
                 .into_iter()
                 .filter(|n| doors[j].cell.neighbors().contains(n));
-            if let (Some(p), None) = (shared.next(), shared.next()) {
-                if areas.owner_of(p).is_none() {
-                    out.push((i, j, p));
-                }
+            if let (Some(p), None) = (shared.next(), shared.next())
+                && areas.owner_of(p).is_none()
+            {
+                out.push((i, j, p));
             }
         }
     }
     out
 }
 
+/// Door candidates grouped by the unordered pair of fusion groups they could join.
+/// Each candidate is `(the free cell, one bordering area, the other)`.
+type CandidatesByPair = BTreeMap<(usize, usize), Vec<(Hex, usize, usize)>>;
+
 /// Free cells adjacent to two or more areas, grouped by the unordered pair of
 /// their fusion **groups**. Same-group adjacencies are interior to a compound
 /// (the seam) and contribute nothing. Each candidate keeps the two real
 /// bordering areas so the chosen door attaches to an actual room, not a group.
-fn candidate_cells_by_pair(
-    grid: &HexGrid,
-    areas: &Areas,
-    group: &[usize],
-) -> BTreeMap<(usize, usize), Vec<(Hex, usize, usize)>> {
-    let mut by_pair: BTreeMap<(usize, usize), Vec<(Hex, usize, usize)>> = BTreeMap::new();
+fn candidate_cells_by_pair(grid: &HexGrid, areas: &Areas, group: &[usize]) -> CandidatesByPair {
+    let mut by_pair: CandidatesByPair = BTreeMap::new();
     for &h in grid.cells() {
         if areas.owner_of(h).is_some() {
             continue;
         }
-        let mut adj: Vec<usize> = h.neighbors().iter().filter_map(|n| areas.owner_of(*n)).collect();
+        let mut adj: Vec<usize> = h
+            .neighbors()
+            .iter()
+            .filter_map(|n| areas.owner_of(*n))
+            .collect();
         adj.sort_unstable();
         adj.dedup();
         for i in 0..adj.len() {
@@ -172,7 +190,10 @@ fn candidate_cells_by_pair(
                 if ga == gb {
                     continue;
                 }
-                by_pair.entry((ga.min(gb), ga.max(gb))).or_default().push((h, a, b));
+                by_pair
+                    .entry((ga.min(gb), ga.max(gb)))
+                    .or_default()
+                    .push((h, a, b));
             }
         }
     }
@@ -230,12 +251,7 @@ fn cull_edges<R: Rng>(
     }
 }
 
-fn place_exits<R: Rng>(
-    grid: &HexGrid,
-    areas: &Areas,
-    tags: &Tags,
-    rng: &mut R,
-) -> Vec<Exit> {
+fn place_exits<R: Rng>(grid: &HexGrid, areas: &Areas, tags: &Tags, rng: &mut R) -> Vec<Exit> {
     let want = match tags.exits {
         Some(ExitTag::Sealed) => 0,
         Some(ExitTag::Entrance) => 1,
@@ -304,13 +320,7 @@ fn place_exits<R: Rng>(
 /// Free in-grid neighbours of `cur` strictly further from the centre whose
 /// own neighbourhood touches no area other than `area` (so exit passages
 /// never merge with doors or other chambers).
-fn outward_steps(
-    grid: &HexGrid,
-    areas: &Areas,
-    area: usize,
-    cur: Hex,
-    stub: &[Hex],
-) -> Vec<Hex> {
+fn outward_steps(grid: &HexGrid, areas: &Areas, area: usize, cur: Hex, stub: &[Hex]) -> Vec<Hex> {
     let d0 = cur.distance(Hex::ORIGIN);
     cur.neighbors()
         .into_iter()

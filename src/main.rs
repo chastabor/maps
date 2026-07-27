@@ -183,9 +183,7 @@ fn main() {
         .or_else(|| config.output.clone())
         .unwrap_or_else(|| "cave.svg".to_string());
     let debug = debug.or(config.debug).unwrap_or(false);
-    let mode = mode
-        .or(config.mode.map(Mode::from))
-        .unwrap_or(Mode::Cave);
+    let mode = mode.or(config.mode.map(Mode::from)).unwrap_or(Mode::Cave);
     let grid = grid
         .or(config.grid.map(GridStyle::from))
         .unwrap_or(GridStyle::Hex);

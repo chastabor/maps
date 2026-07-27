@@ -114,7 +114,11 @@ pub fn mouths(
     }
     clusters
         .into_values()
-        .filter(|members| members.iter().any(|&i| dungeon(doors[i].a) || dungeon(doors[i].b)))
+        .filter(|members| {
+            members
+                .iter()
+                .any(|&i| dungeon(doors[i].a) || dungeon(doors[i].b))
+        })
         .filter_map(|members| mouth(members, doors, areas, s, blocked))
         .collect()
 }
@@ -128,7 +132,9 @@ fn mouth(
 ) -> Option<Mouth> {
     let dungeon = |i: usize| areas.kind(i) == AreaKind::Dungeon;
     let centers: Vec<Point> = members.iter().map(|&i| doors[i].cell.center(s)).collect();
-    let c0 = centers.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+    let c0 = centers
+        .iter()
+        .fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
     let c0 = (c0.0 / centers.len() as f64, c0.1 / centers.len() as f64);
     let mut rooms: Vec<usize> = members
         .iter()
@@ -185,7 +191,11 @@ fn mouth(
                         // Squarest wall wins; ties go to the lower room index.
                         let da = travel.map_or(0.0, |t| (t.0 * oa.0 + t.1 * oa.1).abs());
                         let db = travel.map_or(0.0, |t| (t.0 * ob.0 + t.1 * ob.1).abs());
-                        Some(if da >= db { flush(sa, (wa, oa, aa)) } else { flush(sb, (wb, ob, ab)) })
+                        Some(if da >= db {
+                            flush(sa, (wa, oa, aa))
+                        } else {
+                            flush(sb, (wb, ob, ab))
+                        })
                     }
                 }
                 (Some((sh, w)), None) | (None, Some((sh, w))) => Some(flush(sh, w)),
@@ -216,7 +226,9 @@ fn mouth(
             let u = passage_dir(&doors[members[0]], areas, s)?;
             let t = (-u.1, u.0);
             let axis = DOOR_AXES.into_iter().max_by(|a, b| {
-                (t.0 * a.0 + t.1 * a.1).abs().total_cmp(&(t.0 * b.0 + t.1 * b.1).abs())
+                (t.0 * a.0 + t.1 * a.1)
+                    .abs()
+                    .total_cmp(&(t.0 * b.0 + t.1 * b.1).abs())
             })?;
             Some((Anchor::Free, c0, (-axis.1, axis.0), axis, None))
         }
@@ -240,7 +252,15 @@ fn mouth(
     // there would breach the corridor instead of the room. Slide it along the
     // wall to the nearest clear placement.
     let center = slide_clear(anchor_shape, center, axis, out, opening / 2.0, blocked);
-    Some(Mouth { members, anchor, center, out, axis, shape: anchor_shape, opening })
+    Some(Mouth {
+        members,
+        anchor,
+        center,
+        out,
+        axis,
+        shape: anchor_shape,
+        opening,
+    })
 }
 
 /// Slide an opening along its wall until the whole span clears `blocked`,
@@ -298,12 +318,20 @@ pub(crate) fn clamp_opening(shape: RuinShape, p: Point, half: f64, out: Point) -
             if out.0.abs() >= out.1.abs() {
                 // Left/right edge: x pinned to the wall, slide along y.
                 let sx = if out.0 >= 0.0 { 1.0 } else { -1.0 };
-                let y = if hh <= half { cy } else { p.1.clamp(cy - hh + half, cy + hh - half) };
+                let y = if hh <= half {
+                    cy
+                } else {
+                    p.1.clamp(cy - hh + half, cy + hh - half)
+                };
                 (cx + sx * hw, y)
             } else {
                 // Top/bottom edge: y pinned to the wall, slide along x.
                 let sy = if out.1 >= 0.0 { 1.0 } else { -1.0 };
-                let x = if hw <= half { cx } else { p.0.clamp(cx - hw + half, cx + hw - half) };
+                let x = if hw <= half {
+                    cx
+                } else {
+                    p.0.clamp(cx - hw + half, cx + hw - half)
+                };
                 (x, cy + sy * hh)
             }
         }
@@ -397,19 +425,28 @@ pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Ve
                 let anchored_here = m.shape.is_none() || m.shape == Some(sh);
                 let p = if anchored_here { m.center } else { dc };
                 let out_r = wall_anchor(sh, p, None).map_or(m.out, |(_, o, _)| o);
-                out.push(Jamb { shape: sh, center: clamp_opening(sh, p, half, out_r), half });
+                out.push(Jamb {
+                    shape: sh,
+                    center: clamp_opening(sh, p, half, out_r),
+                    half,
+                });
             }
         }
     }
     for e in &topology.exits {
-        if areas.kind(e.area) == AreaKind::Dungeon && !e.stub.is_empty() {
-            if let Some(sh) = areas.shapes()[e.area] {
-                let half = HEX_APOTHEM * s;
-                let p = e.stub[0].center(s);
-                let out_e = wall_anchor(sh, p, None).map_or((0.0, 0.0), |(_, o, _)| o);
-                let center = clamp_opening(sh, p, half, out_e);
-                out.push(Jamb { shape: sh, center, half });
-            }
+        if areas.kind(e.area) == AreaKind::Dungeon
+            && !e.stub.is_empty()
+            && let Some(sh) = areas.shapes()[e.area]
+        {
+            let half = HEX_APOTHEM * s;
+            let p = e.stub[0].center(s);
+            let out_e = wall_anchor(sh, p, None).map_or((0.0, 0.0), |(_, o, _)| o);
+            let center = clamp_opening(sh, p, half, out_e);
+            out.push(Jamb {
+                shape: sh,
+                center,
+                half,
+            });
         }
     }
     out
@@ -510,10 +547,18 @@ fn wall_anchor(shape: RuinShape, p: Point, travel: Option<Point>) -> Option<(Poi
             Some(if through_flat {
                 // Through the top/bottom wall.
                 let sy = if dy >= 0.0 { 1.0 } else { -1.0 };
-                ((cx + dx.clamp(-hw, hw), cy + hh * sy), (0.0, sy), (1.0, 0.0))
+                (
+                    (cx + dx.clamp(-hw, hw), cy + hh * sy),
+                    (0.0, sy),
+                    (1.0, 0.0),
+                )
             } else {
                 let sx = if dx >= 0.0 { 1.0 } else { -1.0 };
-                ((cx + hw * sx, cy + dy.clamp(-hh, hh)), (sx, 0.0), (0.0, 1.0))
+                (
+                    (cx + hw * sx, cy + dy.clamp(-hh, hh)),
+                    (sx, 0.0),
+                    (0.0, 1.0),
+                )
             })
         }
         RuinShape::Circle { cx, cy, .. } => {

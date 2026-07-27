@@ -49,7 +49,9 @@ const GROWTH_BOOST: f64 = 1.5;
 fn placeable(grid: &HexGrid, owner: &CellMap<u32>, idx: u32, c: Hex) -> bool {
     grid.contains(c)
         && owner.get(c).is_none()
-        && c.neighbors().iter().all(|n| owner.get(*n).is_none_or(|o| o == idx))
+        && c.neighbors()
+            .iter()
+            .all(|n| owner.get(*n).is_none_or(|o| o == idx))
 }
 
 /// Whether area `idx` may claim **all** of `cells` this step, and — if the
@@ -117,7 +119,13 @@ enum Shape {
     Disk { c: (f64, f64), r: f64 },
     /// Rectangle expanding two rows / two columns at a time; extents are
     /// cell-centre bounds.
-    Rect { c: (f64, f64), x0: f64, x1: f64, y0: f64, y1: f64 },
+    Rect {
+        c: (f64, f64),
+        x0: f64,
+        x1: f64,
+        y0: f64,
+        y1: f64,
+    },
 }
 
 impl Shape {
@@ -167,13 +175,22 @@ impl Shape {
                 // from the boundary and stays a filled rectangle.
                 let mk = |is_h: bool,
                           pred: &dyn Fn((f64, f64)) -> bool,
-                          bx0: f64, bx1: f64, by0: f64, by1: f64,
+                          bx0: f64,
+                          bx1: f64,
+                          by0: f64,
+                          by1: f64,
                           next: Shape|
                  -> (bool, Vec<Hex>, Shape) {
-                    let strip: Vec<Hex> =
-                        grid.cells().iter().copied().filter(|&h| pred(h.center(s))).collect();
-                    let (r_lo, r_hi) =
-                        ((by0 / row).floor() as i32 - 1, (by1 / row).ceil() as i32 + 1);
+                    let strip: Vec<Hex> = grid
+                        .cells()
+                        .iter()
+                        .copied()
+                        .filter(|&h| pred(h.center(s)))
+                        .collect();
+                    let (r_lo, r_hi) = (
+                        (by0 / row).floor() as i32 - 1,
+                        (by1 / row).ceil() as i32 + 1,
+                    );
                     let mut ideal = 0usize;
                     for r in r_lo..=r_hi {
                         let q_lo = (bx0 / col - r as f64 / 2.0).floor() as i32 - 1;
@@ -184,7 +201,11 @@ impl Shape {
                             }
                         }
                     }
-                    let cells = if strip.len() == ideal { strip } else { Vec::new() };
+                    let cells = if strip.len() == ideal {
+                        strip
+                    } else {
+                        Vec::new()
+                    };
                     (is_h, cells, next)
                 };
                 let in_y = |y: f64| y >= y0 - eps && y <= y1 + eps;
@@ -195,14 +216,32 @@ impl Shape {
                     mk(
                         true,
                         &|p| p.0 > x1 + eps && p.0 <= x1 + h2 + eps && in_y(p.1),
-                        x1, x1 + h2, y0, y1,
-                        Shape::Rect { c, x0, x1: x1 + h2, y0, y1 },
+                        x1,
+                        x1 + h2,
+                        y0,
+                        y1,
+                        Shape::Rect {
+                            c,
+                            x0,
+                            x1: x1 + h2,
+                            y0,
+                            y1,
+                        },
                     ),
                     mk(
                         true,
                         &|p| p.0 < x0 - eps && p.0 >= x0 - h2 - eps && in_y(p.1),
-                        x0 - h2, x0, y0, y1,
-                        Shape::Rect { c, x0: x0 - h2, x1, y0, y1 },
+                        x0 - h2,
+                        x0,
+                        y0,
+                        y1,
+                        Shape::Rect {
+                            c,
+                            x0: x0 - h2,
+                            x1,
+                            y0,
+                            y1,
+                        },
                     ),
                     mk(
                         true,
@@ -211,21 +250,48 @@ impl Shape {
                                 && ((p.0 > x1 + eps && p.0 <= x1 + col + eps)
                                     || (p.0 < x0 - eps && p.0 >= x0 - col - eps))
                         },
-                        x0 - col, x1 + col, y0, y1,
-                        Shape::Rect { c, x0: x0 - col, x1: x1 + col, y0, y1 },
+                        x0 - col,
+                        x1 + col,
+                        y0,
+                        y1,
+                        Shape::Rect {
+                            c,
+                            x0: x0 - col,
+                            x1: x1 + col,
+                            y0,
+                            y1,
+                        },
                     ),
                     // Vertical: two rows up / down (never split — see above).
                     mk(
                         false,
                         &|p| p.1 > y1 + eps && p.1 <= y1 + v2 + eps && in_x(p.0),
-                        x0, x1, y1, y1 + v2,
-                        Shape::Rect { c, x0, x1, y0, y1: y1 + v2 },
+                        x0,
+                        x1,
+                        y1,
+                        y1 + v2,
+                        Shape::Rect {
+                            c,
+                            x0,
+                            x1,
+                            y0,
+                            y1: y1 + v2,
+                        },
                     ),
                     mk(
                         false,
                         &|p| p.1 < y0 - eps && p.1 >= y0 - v2 - eps && in_x(p.0),
-                        x0, x1, y0 - v2, y0,
-                        Shape::Rect { c, x0, x1, y0: y0 - v2, y1 },
+                        x0,
+                        x1,
+                        y0 - v2,
+                        y0,
+                        Shape::Rect {
+                            c,
+                            x0,
+                            x1,
+                            y0: y0 - v2,
+                            y1,
+                        },
                     ),
                 ]
             }
@@ -236,17 +302,15 @@ impl Shape {
     /// 50/50, then its placements uniformly, then the other axis as fallback
     /// (a disk's single ring is unaffected). The caller takes the first move
     /// whose cells it can actually claim.
-    fn ordered_moves(
-        &self,
-        grid: &HexGrid,
-        s: f64,
-        rng: &mut impl Rng,
-    ) -> Vec<(Vec<Hex>, Shape)> {
+    fn ordered_moves(&self, grid: &HexGrid, s: f64, rng: &mut impl Rng) -> Vec<(Vec<Hex>, Shape)> {
         let mut cands = self.candidates(grid, s);
         cands.shuffle(rng); // uniform placement within each axis
         let horiz_first = rng.random_bool(0.5);
         cands.sort_by_key(|&(is_h, ..)| is_h != horiz_first); // stable: chosen axis first
-        cands.into_iter().map(|(_, cells, next)| (cells, next)).collect()
+        cands
+            .into_iter()
+            .map(|(_, cells, next)| (cells, next))
+            .collect()
     }
 }
 
@@ -288,8 +352,18 @@ fn derive_shape(cells: &[Hex], is_rect: bool, s: f64) -> RuinShape {
             sy += p.1;
         }
         let c = (sx / cells.len() as f64, sy / cells.len() as f64);
-        let r = cells.iter().map(|h| { let p = h.center(s); (p.0 - c.0).hypot(p.1 - c.1) }).fold(0.0, f64::max);
-        RuinShape::Circle { cx: c.0, cy: c.1, r: r + pad }
+        let r = cells
+            .iter()
+            .map(|h| {
+                let p = h.center(s);
+                (p.0 - c.0).hypot(p.1 - c.1)
+            })
+            .fold(0.0, f64::max);
+        RuinShape::Circle {
+            cx: c.0,
+            cy: c.1,
+            r: r + pad,
+        }
     }
 }
 
@@ -302,7 +376,10 @@ fn derive_shape(cells: &[Hex], is_rect: bool, s: f64) -> RuinShape {
 /// blocked. The cells are not yet owned; the caller commits them.
 fn flower_footprint(grid: &HexGrid, owner: &CellMap<u32>, idx: u32, seed: Hex) -> Option<Vec<Hex>> {
     let cells = flower_cells(seed);
-    cells.iter().all(|&h| placeable(grid, owner, idx, h)).then_some(cells)
+    cells
+        .iter()
+        .all(|&h| placeable(grid, owner, idx, h))
+        .then_some(cells)
 }
 
 /// The seven cells of the flower footprint centred on `seed` (seed + its six
@@ -322,7 +399,13 @@ fn footprint_shape(seed: Hex, s: f64, is_rect: bool) -> Shape {
     if is_rect {
         let hw = SQRT3 * s; // W..E span of the flower centres
         let hh = 1.5 * s; // N..S span
-        Shape::Rect { c, x0: c.0 - hw, x1: c.0 + hw, y0: c.1 - hh, y1: c.1 + hh }
+        Shape::Rect {
+            c,
+            x0: c.0 - hw,
+            x1: c.0 + hw,
+            y0: c.1 - hh,
+            y1: c.1 + hh,
+        }
     } else {
         Shape::Disk { c, r: SQRT3 * s }
     }
@@ -374,7 +457,9 @@ pub fn resolve<R: Rng>(tags: &Tags, rng: &mut R) -> GrowthParams {
         }
         Some(LayoutTag::Chamber) => {
             let base = rng.random_range(11..=14) as i64;
-            (0..count).map(|_| (base + rng.random_range(-2..=2)).max(5) as usize).collect()
+            (0..count)
+                .map(|_| (base + rng.random_range(-2..=2)).max(5) as usize)
+                .collect()
         }
         Some(LayoutTag::Burrow) => (0..count)
             .map(|_| {
@@ -384,11 +469,17 @@ pub fn resolve<R: Rng>(tags: &Tags, rng: &mut R) -> GrowthParams {
             .collect(),
         None => {
             let base = rng.random_range(10..=20) as i64;
-            (0..count).map(|_| (base + rng.random_range(-6..=6)).max(5) as usize).collect()
+            (0..count)
+                .map(|_| (base + rng.random_range(-6..=6)).max(5) as usize)
+                .collect()
         }
     };
 
-    GrowthParams { sizes, gamma, chaotic }
+    GrowthParams {
+        sizes,
+        gamma,
+        chaotic,
+    }
 }
 
 /// Board radius sized so the areas have room to grow plus buffer gaps.
@@ -497,7 +588,9 @@ impl Areas {
 
 /// How one area advances each round.
 enum Grow {
-    Organic { frontier: BTreeSet<Hex> },
+    Organic {
+        frontier: BTreeSet<Hex>,
+    },
     /// An independent dungeon room.
     Shaped(Shape),
     /// A member of a sibling orbit — advanced by the orbit, not itself.
@@ -574,11 +667,21 @@ pub fn grow_areas<R: Rng>(
 
     // Symmetry plan + orbit centre (near the board centre, where wings fit).
     let plan = symmetry::choose(rng);
-    let n_dungeon = slot_kinds.iter().filter(|&&k| k == AreaKind::Dungeon).count();
+    let n_dungeon = slot_kinds
+        .iter()
+        .filter(|&&k| k == AreaKind::Dungeon)
+        .count();
     let n_orbits = plan.as_ref().map_or(0, |p| p.generators.min(n_dungeon));
     let centre = {
-        let cands: Vec<Hex> = grid.cells().iter().copied().filter(|&h| h.distance(Hex::ORIGIN) <= grid.radius / 3).collect();
-        cands[rng.random_range(0..cands.len().max(1)).min(cands.len().saturating_sub(1))]
+        let cands: Vec<Hex> = grid
+            .cells()
+            .iter()
+            .copied()
+            .filter(|&h| h.distance(Hex::ORIGIN) <= grid.radius / 3)
+            .collect();
+        cands[rng
+            .random_range(0..cands.len().max(1))
+            .min(cands.len().saturating_sub(1))]
     };
 
     // Seeds are placed in three drops spread across four overlapping corner
@@ -665,12 +768,32 @@ pub fn grow_areas<R: Rng>(
             // singles fill space — they need the cleanest room.
             if let Some(plan) = plan.as_ref() {
                 orbit_pending.retain(|&target| {
-                    !seed_orbit(grid, &mut owner, &mut builds, &mut orbits, plan, centre, target, hex_size, rng)
+                    !seed_orbit(
+                        grid,
+                        &mut owner,
+                        &mut builds,
+                        &mut orbits,
+                        plan,
+                        centre,
+                        target,
+                        hex_size,
+                        rng,
+                    )
                 });
             }
             let section = &sections[next_drop];
             for &(kind, target, fusible) in &drops[next_drop] {
-                seed_single(grid, &mut owner, &mut builds, kind, target, fusible, section, hex_size, rng);
+                seed_single(
+                    grid,
+                    &mut owner,
+                    &mut builds,
+                    kind,
+                    target,
+                    fusible,
+                    section,
+                    hex_size,
+                    rng,
+                );
             }
             next_drop += 1;
             seed_gap = rng.random_range(1..=3);
@@ -688,7 +811,17 @@ pub fn grow_areas<R: Rng>(
         let mut any_active = false;
         for i in 0..builds.len() {
             if builds[i].active {
-                advance_single(grid, &mut owner, &mut builds, &mut partner, &meta, i, params, hex_size, rng);
+                advance_single(
+                    grid,
+                    &mut owner,
+                    &mut builds,
+                    &mut partner,
+                    &meta,
+                    i,
+                    params,
+                    hex_size,
+                    rng,
+                );
                 any_active |= builds[i].active;
             }
         }
@@ -759,7 +892,13 @@ fn claim_join_floor(
         // Nothing is claimed yet, so no cell is corridor floor to exclude.
         shapes.push(build_shape(b, hex_size, &HashSet::new()));
     }
-    let provisional = Areas { cells, kinds, shapes, owner: pown, join: HashSet::new() };
+    let provisional = Areas {
+        cells,
+        kinds,
+        shapes,
+        owner: pown,
+        join: HashSet::new(),
+    };
 
     let meta: Vec<(AreaKind, bool)> = builds.iter().map(|b| (b.kind, b.fusible)).collect();
     let mut join = HashSet::new();
@@ -783,10 +922,11 @@ fn claim_join_floor(
                 // that room's wall band then runs through. `claim_batch` alone is
                 // too permissive here; it would happily take the cell and fuse the
                 // corridor's room to the stranger.
-                None if c
-                    .neighbors()
-                    .iter()
-                    .any(|&nb| owner.get(nb).is_some_and(|o| o as usize != a && o as usize != b)) =>
+                None if c.neighbors().iter().any(|&nb| {
+                    owner
+                        .get(nb)
+                        .is_some_and(|o| o as usize != a && o as usize != b)
+                }) =>
                 {
                     false
                 }
@@ -842,7 +982,11 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
         if areas.owner_of(h).is_some() {
             continue;
         }
-        let mut adj: Vec<usize> = h.neighbors().iter().filter_map(|n| areas.owner_of(*n)).collect();
+        let mut adj: Vec<usize> = h
+            .neighbors()
+            .iter()
+            .filter_map(|n| areas.owner_of(*n))
+            .collect();
         adj.sort_unstable();
         adj.dedup();
         for w in adj.windows(2) {
@@ -880,7 +1024,13 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
         kinds.push(areas.kinds[i]);
         shapes.push(areas.shapes[i]);
     }
-    Areas { cells, kinds, shapes, owner, join: areas.join }
+    Areas {
+        cells,
+        kinds,
+        shapes,
+        owner,
+        join: areas.join,
+    }
 }
 
 /// Seed one independent area within `section` (or anywhere clean if the
@@ -906,13 +1056,23 @@ fn seed_single<R: Rng>(
     if matches!(kind, AreaKind::Dungeon | AreaKind::Ruin) {
         let is_rect = rng.random_bool(0.5);
         for _ in 0..8 {
-            let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else { break };
+            let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else {
+                break;
+            };
             if let Some(cells) = flower_footprint(grid, owner, idx, seed) {
                 for &c in &cells {
                     owner.insert(c, idx);
                 }
                 let shape = footprint_shape(seed, hex_size, is_rect);
-                builds.push(Build { cells, kind, target, active: true, grow: Grow::Shaped(shape), is_rect, fusible });
+                builds.push(Build {
+                    cells,
+                    kind,
+                    target,
+                    active: true,
+                    grow: Grow::Shaped(shape),
+                    is_rect,
+                    fusible,
+                });
                 return;
             }
         }
@@ -923,17 +1083,25 @@ fn seed_single<R: Rng>(
             return;
         }
     }
-    let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else { return };
+    let Some(seed) = pick_seed(grid, owner, idx, section, hex_size, rng) else {
+        return;
+    };
     owner.insert(seed, idx);
     // A ruin reaching here couldn't take a shaped footprint: seed it organic.
     // Organic areas never fuse, so drop the fusible flag along with the kind.
-    let (kind, fusible) = if kind == AreaKind::Ruin { (AreaKind::Organic, false) } else { (kind, fusible) };
+    let (kind, fusible) = if kind == AreaKind::Ruin {
+        (AreaKind::Organic, false)
+    } else {
+        (kind, fusible)
+    };
     builds.push(Build {
         cells: vec![seed],
         kind,
         target,
         active: true,
-        grow: Grow::Organic { frontier: BTreeSet::new() },
+        grow: Grow::Organic {
+            frontier: BTreeSet::new(),
+        },
         is_rect: false,
         fusible,
     });
@@ -1007,7 +1175,9 @@ fn advance_single<R: Rng>(
                 // chosen cell needn't re-run the eligibility scan.
                 let cand: Vec<(Hex, Option<u32>)> = frontier
                     .into_iter()
-                    .filter_map(|h| claim_batch(grid, owner, meta, partner, i, &[h]).map(|ft| (h, ft)))
+                    .filter_map(|h| {
+                        claim_batch(grid, owner, meta, partner, i, &[h]).map(|ft| (h, ft))
+                    })
                     .collect();
                 if cand.is_empty() {
                     // Seed the frontier from the current boundary once, else stop.
@@ -1020,7 +1190,8 @@ fn advance_single<R: Rng>(
                                 }
                             }
                         }
-                        if matches!(&builds[i].grow, Grow::Organic { frontier } if frontier.is_empty()) {
+                        if matches!(&builds[i].grow, Grow::Organic { frontier } if frontier.is_empty())
+                        {
                             builds[i].active = false;
                             return;
                         }
@@ -1032,7 +1203,11 @@ fn advance_single<R: Rng>(
                 let weights: Vec<f64> = cand
                     .iter()
                     .map(|&(h, _)| {
-                        let c = h.neighbors().iter().filter(|n| owner.get(**n) == Some(i as u32)).count();
+                        let c = h
+                            .neighbors()
+                            .iter()
+                            .filter(|n| owner.get(**n) == Some(i as u32))
+                            .count();
                         if params.chaotic {
                             if c == 2 { 8.0 } else { 1.0 }
                         } else {
@@ -1110,7 +1285,12 @@ fn advance_orbit<R: Rng>(
         // Each member's new cells = the generator's, transformed.
         let mut per_member: Vec<Vec<Hex>> = Vec::with_capacity(orbits[o].members.len());
         for &xf in &orbits[o].xforms {
-            per_member.push(gen_cells.iter().map(|&c| xf.cell(orbits[o].centre, c)).collect());
+            per_member.push(
+                gen_cells
+                    .iter()
+                    .map(|&c| xf.cell(orbits[o].centre, c))
+                    .collect(),
+            );
         }
         // Validate: every cell placeable for its member, and no two new cells
         // from different members coincide or touch (keeps the sibling gap).
@@ -1211,10 +1391,11 @@ fn seed_orbit<R: Rng>(
         if uniq.len() != all.len() {
             continue;
         }
-        let placeable_ok = per_member
-            .iter()
-            .enumerate()
-            .all(|(k, cells)| cells.iter().all(|&c| placeable(grid, owner, base + k as u32, c)));
+        let placeable_ok = per_member.iter().enumerate().all(|(k, cells)| {
+            cells
+                .iter()
+                .all(|&c| placeable(grid, owner, base + k as u32, c))
+        });
         if !placeable_ok {
             continue;
         }
@@ -1257,7 +1438,14 @@ fn seed_orbit<R: Rng>(
             });
             members.push(idx);
         }
-        orbits.push(Orbit { centre, xforms: plan.xforms.clone(), members, shape, target, active: true });
+        orbits.push(Orbit {
+            centre,
+            xforms: plan.xforms.clone(),
+            members,
+            shape,
+            target,
+            active: true,
+        });
         return true;
     }
     false
@@ -1275,7 +1463,12 @@ fn seed_orbit<R: Rng>(
 /// has `is_rect=false` but is kind Organic, so it takes no shape.)
 fn build_shape(b: &Build, hex_size: f64, join: &HashSet<Hex>) -> Option<RuinShape> {
     matches!(b.kind, AreaKind::Dungeon | AreaKind::Ruin).then(|| {
-        let room: Vec<Hex> = b.cells.iter().copied().filter(|c| !join.contains(c)).collect();
+        let room: Vec<Hex> = b
+            .cells
+            .iter()
+            .copied()
+            .filter(|c| !join.contains(c))
+            .collect();
         derive_shape(&room, b.is_rect, hex_size)
     })
 }
@@ -1300,7 +1493,13 @@ fn finalize(grid: &HexGrid, builds: Vec<Build>, hex_size: f64, join: HashSet<Hex
         kinds.push(b.kind);
         shapes.push(shape);
     }
-    Areas { cells, kinds, shapes, owner, join }
+    Areas {
+        cells,
+        kinds,
+        shapes,
+        owner,
+        join,
+    }
 }
 
 pub(crate) fn weighted_index<R: Rng>(rng: &mut R, weights: &[f64]) -> usize {

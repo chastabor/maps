@@ -35,6 +35,23 @@ pub enum RuinShape {
         by: f64,
         hw: f64,
     },
+    /// A fusion corridor: two independent side walls, so a **trapezoid** rather than
+    /// a box.
+    ///
+    /// Each wall runs from one room's border to the other's, and a curved border meets
+    /// the two walls at different points along the corridor axis — so the walls are
+    /// generally unequal in length and not parallel. A [`StraightHall`](Self::StraightHall)
+    /// can only be as long as their average, which leaves the longer wall's end sticking
+    /// out of its own footprint and the shorter one overshooting into a room.
+    ///
+    /// Both walls are stored **near-end first**: `.0` is the end on the room nearer along
+    /// the corridor axis, `.1` the end on the farther room. Like a hall, the two caps are
+    /// open mouths, not wall — the wall locus is the two side segments only, which is why
+    /// [`perimeter`](Self::perimeter) is `None` here too.
+    Trapezoid {
+        wall0: (Point, Point),
+        wall1: (Point, Point),
+    },
     /// A corridor bent into a circular arc: an annulus band of half-width
     /// `hw` around radius `r`.
     ArcHall {
@@ -55,6 +72,67 @@ pub enum RuinShape {
         cy: f64,
         s: f64,
     },
+}
+
+/// Whether `p` is inside the quad the two walls bound, within `slop`.
+///
+/// The quad is `wall0.0 → wall0.1 → wall1.1 → wall1.0` — along one wall, across the far
+/// cap, back along the other, across the near cap. It is convex (two non-crossing
+/// segments joined end to end), so `p` is inside iff it is on the same side of all four
+/// edges; the reference side is taken from the first edge rather than assumed, since
+/// which wall is which side of the axis varies.
+fn trapezoid_contains(wall0: (Point, Point), wall1: (Point, Point), p: Point, slop: f64) -> bool {
+    let quad = [wall0.0, wall0.1, wall1.1, wall1.0];
+    let mut sign = 0.0f64;
+    for k in 0..4 {
+        let (a, b) = (quad[k], quad[(k + 1) % 4]);
+        let e = (b.0 - a.0, b.1 - a.1);
+        let len = e.0.hypot(e.1);
+        if len < 1e-9 {
+            continue;
+        }
+        // Perpendicular distance, signed: scaling by `len` keeps `slop` in px.
+        let side = ((p.0 - a.0) * e.1 - (p.1 - a.1) * e.0) / len;
+        if sign == 0.0 && side.abs() > 1e-12 {
+            sign = side.signum();
+        }
+        if sign != 0.0 && side * sign < -slop {
+            return false;
+        }
+    }
+    true
+}
+
+/// The narrowest perpendicular gap between two walls, measured at all four endpoints.
+/// Non-parallel walls have no single width, and the minimum is what an inset must respect.
+fn wall_separation(wall0: (Point, Point), wall1: (Point, Point)) -> f64 {
+    let gap = |p: Point, w: (Point, Point)| {
+        let (_, q) = crate::geom::project_on_segment(p, w.0, w.1);
+        (p.0 - q.0).hypot(p.1 - q.1)
+    };
+    gap(wall0.0, wall1)
+        .min(gap(wall0.1, wall1))
+        .min(gap(wall1.0, wall0))
+        .min(gap(wall1.1, wall0))
+}
+
+/// `wall` moved `d` toward `toward`, along `wall`'s own normal.
+fn offset_wall(wall: (Point, Point), toward: (Point, Point), d: f64) -> (Point, Point) {
+    let e = (wall.1.0 - wall.0.0, wall.1.1 - wall.0.1);
+    let len = e.0.hypot(e.1).max(1e-9);
+    let n = (-e.1 / len, e.0 / len);
+    // Point the normal at the other wall's midpoint.
+    let mid_other = (
+        (toward.0.0 + toward.1.0) / 2.0,
+        (toward.0.1 + toward.1.1) / 2.0,
+    );
+    let toward_other = (mid_other.0 - wall.0.0) * n.0 + (mid_other.1 - wall.0.1) * n.1;
+    let sgn = if toward_other >= 0.0 { 1.0 } else { -1.0 };
+    let (dx, dy) = (n.0 * d * sgn, n.1 * d * sgn);
+    (
+        (wall.0.0 + dx, wall.0.1 + dy),
+        (wall.1.0 + dx, wall.1.1 + dy),
+    )
 }
 
 /// The six corners of a pointy-top hex, in `wall_param` order (see
@@ -114,6 +192,16 @@ impl RuinShape {
                 let d = dx.hypot(dy).max(1e-9);
                 (q.0 + dx / d * hw, q.1 + dy / d * hw)
             }
+            // The wall locus is the two side segments, so project onto the nearer one.
+            RuinShape::Trapezoid { wall0, wall1 } => {
+                let (_, q0) = crate::geom::project_on_segment(p, wall0.0, wall0.1);
+                let (_, q1) = crate::geom::project_on_segment(p, wall1.0, wall1.1);
+                let (d0, d1) = (
+                    (p.0 - q0.0).hypot(p.1 - q0.1),
+                    (p.0 - q1.0).hypot(p.1 - q1.1),
+                );
+                if d0 <= d1 { q0 } else { q1 }
+            }
             RuinShape::ArcHall { cx, cy, r, hw } => {
                 let (dx, dy) = (p.0 - cx, p.1 - cy);
                 let d = dx.hypot(dy).max(1e-9);
@@ -145,6 +233,7 @@ impl RuinShape {
                 let (_, q) = crate::geom::project_on_segment(p, (ax, ay), (bx, by));
                 (p.0 - q.0).hypot(p.1 - q.1) <= hw + 1e-6
             }
+            RuinShape::Trapezoid { wall0, wall1 } => trapezoid_contains(wall0, wall1, p, 1e-6),
             RuinShape::ArcHall { cx, cy, r, hw } => {
                 ((p.0 - cx).hypot(p.1 - cy) - r).abs() <= hw + 1e-6
             }
@@ -216,6 +305,23 @@ impl RuinShape {
                 by,
                 hw: (hw - d).max(0.1),
             },
+            // Each wall moves `d` toward the other along its OWN normal, so the inner
+            // faces stay parallel to their own wall rather than to a shared centreline.
+            // Non-parallel walls therefore give non-parallel inner faces, which is what
+            // keeps the band flush on both sides of a wedge-shaped corridor.
+            //
+            // Clamped so the two never cross: the band is drawn 0.6 of a cell thick while
+            // the narrowest accepted corridor is one cell wide, so an unclamped inset
+            // would turn the trapezoid inside out. `StraightHall` leans on its
+            // `max(0.1)` for the same reason.
+            RuinShape::Trapezoid { wall0, wall1 } => {
+                let room = wall_separation(wall0, wall1) / 2.0 - 0.1;
+                let d = d.min(room.max(0.0));
+                RuinShape::Trapezoid {
+                    wall0: offset_wall(wall0, wall1, d),
+                    wall1: offset_wall(wall1, wall0, d),
+                }
+            }
             // Inset: the apothem (√3/2·s) drops by `d`, so s' = s − 2d/√3.
             RuinShape::HexCell { cx, cy, s } => RuinShape::HexCell {
                 cx,
@@ -349,6 +455,7 @@ impl RuinShape {
                 let (_, q) = crate::geom::project_on_segment(p, (ax, ay), (bx, by));
                 (p.0 - q.0).hypot(p.1 - q.1) <= 0.87 * s
             }
+            RuinShape::Trapezoid { wall0, wall1 } => trapezoid_contains(wall0, wall1, p, 0.87 * s),
             RuinShape::ArcHall { cx, cy, r, hw: _ } => {
                 ((p.0 - cx).hypot(p.1 - cy) - r).abs() <= 0.87 * s
             }
@@ -414,7 +521,7 @@ const EROSION_FRAC: f64 = 0.18;
 /// a neighbour. The derived [`RuinShape`] is left in place: intact walls still
 /// project onto it while the bites read organic.
 fn erode<R: Rng>(areas: &mut Areas, topology: &Topology, i: usize, rng: &mut R) {
-    let n0 = areas.cells[i].len();
+    let n0 = areas.floor_cells(i).count();
     if n0 <= crate::growth::MIN_AREA {
         return;
     }
@@ -425,7 +532,7 @@ fn erode<R: Rng>(areas: &mut Areas, topology: &Topology, i: usize, rng: &mut R) 
     // erosion would pick it first and dissolve the fusion the corridor exists to carry.
     // This is how a fused pair used to lose a side; `fuse::Fusion::release_orphans` is
     // the backstop for what this now prevents.
-    anchors.extend(areas.cells[i].iter().copied().filter(|&c| areas.is_join(c)));
+    anchors.extend(areas.floor_cells(i).filter(|&c| areas.is_join(c)));
     for e in &topology.exits {
         if e.area == i {
             anchors.insert(e.attach);
@@ -433,7 +540,7 @@ fn erode<R: Rng>(areas: &mut Areas, topology: &Topology, i: usize, rng: &mut R) 
     }
     for d in &topology.doors {
         if d.a == i || d.b == i {
-            for &c in &areas.cells[i] {
+            for c in areas.floor_cells(i) {
                 if c.neighbors().contains(&d.cell) {
                     anchors.insert(c);
                 }
@@ -442,7 +549,7 @@ fn erode<R: Rng>(areas: &mut Areas, topology: &Topology, i: usize, rng: &mut R) 
     }
 
     let target = ((n0 as f64) * EROSION_FRAC).round() as usize;
-    let mut remaining: Vec<Hex> = areas.cells[i].clone();
+    let mut remaining: Vec<Hex> = areas.floor_cells(i).collect();
     let mut removed = 0;
     while removed < target && remaining.len() > crate::growth::MIN_AREA {
         let set: HashSet<Hex> = remaining.iter().copied().collect();
@@ -490,7 +597,7 @@ pub fn ruin_cell_map(areas: &Areas, hex_size: f64) -> std::collections::HashMap<
     let mut map = std::collections::HashMap::new();
     for (i, shape) in shapes.iter().enumerate() {
         let Some(shape) = shape else { continue };
-        for &c in &areas.cells[i] {
+        for c in areas.floor_cells(i) {
             let seam = c.neighbors().iter().any(|n| match areas.owner_of(*n) {
                 // Borders a different area.
                 Some(o) => o != i,

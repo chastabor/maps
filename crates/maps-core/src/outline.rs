@@ -130,8 +130,8 @@ impl Default for OutlineParams {
 pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology) -> (HashSet<Hex>, HashSet<Hex>) {
     let mut floor: HashSet<Hex> = HashSet::new();
     let mut narrow: HashSet<Hex> = HashSet::new();
-    for (i, area) in areas.cells.iter().enumerate() {
-        for &c in area {
+    for i in 0..areas.count() {
+        for c in areas.floor_cells(i) {
             floor.insert(c);
             if topology.is_corridor[i] {
                 narrow.insert(c);
@@ -313,7 +313,11 @@ pub(crate) fn smooth_loops<R: Rng>(
                         RuinShape::Rect { .. }
                         | RuinShape::Circle { .. }
                         | RuinShape::HexCell { .. } => 1.0,
-                        RuinShape::StraightHall { .. } | RuinShape::ArcHall { .. } => {
+                        // A connector's trapezoid belongs with the halls: same soft
+                        // displacement, since it is a corridor wall, not a room perimeter.
+                        RuinShape::StraightHall { .. }
+                        | RuinShape::Trapezoid { .. }
+                        | RuinShape::ArcHall { .. } => {
                             let d = (proj.0 - p.0).hypot(proj.1 - p.1);
                             ((1.5 * size - d) / size).clamp(0.0, 1.0)
                         }

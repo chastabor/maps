@@ -34,8 +34,10 @@
 //!   pre-existing false-positive rate (see the taxonomy's NEXT STEP section — the set
 //!   is identical with fusion off, so it is a dungeon-splice problem). Churn in this
 //!   number is triaged by eyeballing the seeds that changed, not by asserting it.
-//! - `conn` — wall runs carrying a connector. More is better; the count is by run, so
-//!   a connector contributes more than one.
+//! - `conn` — wall runs carrying a connector. A wide axis corridor is tagged `Trapezoid`
+//!   (its two walls are unequal, so it is not a box); the narrow angle neck is still a
+//!   `StraightHall`. Both count. More is better, and the count is by run, so one connector
+//!   contributes more than one.
 
 use maps_core::render::{debug_svg, svg};
 use maps_core::ruins::RuinShape;
@@ -184,8 +186,12 @@ fn sweep() {
                 .dungeon_walls
                 .iter()
                 .filter(|r| {
-                    r.iter()
-                        .any(|&(_, sh)| matches!(sh, RuinShape::StraightHall { .. }))
+                    r.iter().any(|&(_, sh)| {
+                        matches!(
+                            sh,
+                            RuinShape::Trapezoid { .. } | RuinShape::StraightHall { .. }
+                        )
+                    })
                 })
                 .count();
         }

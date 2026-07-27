@@ -49,7 +49,7 @@ fn fused_necks(areas: &Areas) -> std::collections::HashSet<grid::Hex> {
         if !is_d(a) {
             continue;
         }
-        for &h in &areas.cells[a] {
+        for h in areas.floor_cells(a) {
             for nb in h.neighbors() {
                 if let Some(b) = areas.owner_of(nb).filter(|&b| b != a && is_d(b)) {
                     let e = seam.entry((a.min(b), a.max(b))).or_default();
@@ -153,12 +153,48 @@ impl Neck {
         self.kind == NeckKind::AxisCorridor
     }
 
+    /// The connector's axis as `(near end, far end)` — the centreline between its two
+    /// walls. Both hall shapes reduce to it: a `StraightHall` *is* its centreline, and a
+    /// `Trapezoid`'s is the segment joining its two caps' midpoints.
+    fn axis(&self) -> Option<(Point, Point)> {
+        match self.hall {
+            ruins::RuinShape::StraightHall { ax, ay, bx, by, .. } => Some(((ax, ay), (bx, by))),
+            ruins::RuinShape::Trapezoid { wall0, wall1 } => {
+                let mid = |x: Point, y: Point| ((x.0 + y.0) / 2.0, (x.1 + y.1) / 2.0);
+                Some((mid(wall0.0, wall1.0), mid(wall0.1, wall1.1)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Half the distance across the connector, measured perpendicular to its **walls**.
+    ///
+    /// Not in the axis frame: the two walls are parallel (each sits at a constant offset
+    /// along the corridor normal) but unequal in length, so the axis joining the two caps'
+    /// midpoints is *tilted* relative to them. Measuring the separation in that tilted
+    /// frame would foreshorten it by the tilt and hand back a corridor narrower than the
+    /// one the clamp chose.
+    fn half_width(&self) -> Option<f64> {
+        match self.hall {
+            ruins::RuinShape::StraightHall { hw, .. } => Some(hw),
+            ruins::RuinShape::Trapezoid { wall0, wall1 } => {
+                let e = (wall0.1.0 - wall0.0.0, wall0.1.1 - wall0.0.1);
+                let len = e.0.hypot(e.1);
+                if len < 1e-9 {
+                    return None;
+                }
+                // Distance from wall1's near end to wall0's infinite line.
+                let v = (wall1.0.0 - wall0.0.0, wall1.0.1 - wall0.0.1);
+                Some(((v.0 * e.1 - v.1 * e.0) / len).abs() / 2.0)
+            }
+            _ => None,
+        }
+    }
+
     /// The hall's frame, shared by everything that has to agree on where the
     /// connector sits.
     fn frame(&self) -> Option<Frame> {
-        let ruins::RuinShape::StraightHall { ax, ay, bx, by, .. } = self.hall else {
-            return None;
-        };
+        let ((ax, ay), (bx, by)) = self.axis()?;
         let d = (bx - ax, by - ay);
         let l = d.0.hypot(d.1).max(1e-9);
         Some(Frame {
@@ -182,7 +218,7 @@ impl Neck {
         {
             return true;
         }
-        let ruins::RuinShape::StraightHall { hw, .. } = self.hall else {
+        let Some(hw) = self.half_width() else {
             return false;
         };
         let Some(f) = self.frame() else { return false };
@@ -193,15 +229,27 @@ impl Neck {
         if !self.is_corridor() {
             return t >= -FOOTPRINT_SLOP && t <= f.len + FOOTPRINT_SLOP;
         }
-        // The two walls are generally UNEQUAL — each runs until it meets a border,
-        // and a border curves — so the hall, a straight box between their midpoints,
-        // is only as long as their *average* and does not contain them: the longer
-        // wall's far end sticks out past it, outline vertices there escape the
-        // splice, and the inserted wall then crosses them. Bound the span by
-        // interpolating between the walls' own endpoints instead — the convex hull
-        // of the two wall segments — so the footprint always holds both walls whole.
-        // (The narrow angle neck keeps the hall box: its `lines` are not ordered
-        // near-end-first, so this interpolation would not mean anything there.)
+        let (near, far) = self.span_at(&f, pp);
+        t >= near.min(far) - FOOTPRINT_SLOP && t <= near.max(far) + FOOTPRINT_SLOP
+    }
+
+    /// How far the connector reaches along its axis at cross-offset `pp`, as
+    /// `(near end, far end)` in frame coordinates.
+    ///
+    /// The two walls are generally UNEQUAL — each runs until it meets a border, and a
+    /// border curves — so the reach varies across the corridor. Interpolating between the
+    /// walls' own endpoints gives the convex hull of the two wall segments, i.e. the
+    /// trapezoid itself. A straight box between their midpoints would only be as long as
+    /// their *average*: the longer wall's far end would stick out past it, outline
+    /// vertices there would escape the splice, and the inserted wall would cross them.
+    ///
+    /// Shared by [`blocks`](Self::blocks) (which vertices the splice replaces) and
+    /// [`claim_offset`] (which cells growth claims). Those two must agree — a claimed cell
+    /// missing from the footprint keeps its vertices, and they are then floor past a wall.
+    ///
+    /// (The narrow angle neck's `lines` are not ordered near-end-first, so the
+    /// interpolation is meaningless there; it keeps its hall box — see `blocks`.)
+    fn span_at(&self, f: &Frame, pp: f64) -> (f64, f64) {
         let (n0, f0) = (f.local(self.lines[0].0), f.local(self.lines[0].1));
         let (n1, f1) = (f.local(self.lines[1].0), f.local(self.lines[1].1));
         let span = n1.1 - n0.1;
@@ -210,9 +258,7 @@ impl Neck {
         } else {
             ((pp - n0.1) / span).clamp(0.0, 1.0)
         };
-        let near = n0.0 + (n1.0 - n0.0) * w;
-        let far = f0.0 + (f1.0 - f0.0) * w;
-        t >= near.min(far) - FOOTPRINT_SLOP && t <= near.max(far) + FOOTPRINT_SLOP
+        (n0.0 + (n1.0 - n0.0) * w, f0.0 + (f1.0 - f0.0) * w)
     }
 
     /// Where a doorway cuts `line`, as the jamb edge nearest `from`: the door cell's
@@ -368,10 +414,7 @@ fn rows_cols(
         std::collections::HashSet::new(),
         std::collections::HashSet::new(),
     );
-    for &h in &areas.cells[i] {
-        if areas.join().contains(&h) {
-            continue;
-        }
+    for h in areas.room_cells(i) {
         if interior_only
             && !h
                 .neighbors()
@@ -436,7 +479,7 @@ fn fuse_pairs(areas: &Areas) -> Vec<(usize, usize, FuseClass)> {
         if areas.shape(a).is_none() {
             continue;
         }
-        for &h in &areas.cells[a] {
+        for h in areas.floor_cells(a) {
             for nb in h.neighbors() {
                 if let Some(b) = areas
                     .owner_of(nb)
@@ -706,15 +749,14 @@ fn axis_necks(
             let (Some(top), Some(bot)) = (wall(u_lo), wall(u_hi)) else {
                 continue;
             };
-            // Hall: near-border midpoint → far-border midpoint, half-width the span.
-            let mid = |x: Point, y: Point| ((x.0 + y.0) / 2.0, (x.1 + y.1) / 2.0);
-            let (near, far) = (mid(top.0, bot.0), mid(top.1, bot.1));
-            let hall = ruins::RuinShape::StraightHall {
-                ax: near.0,
-                ay: near.1,
-                bx: far.0,
-                by: far.1,
-                hw: (u_hi - u_lo) / 2.0,
+            // The connector IS its two walls, so carry them: each runs from the near
+            // room's border to the far room's, and a curved border meets the two at
+            // different points, so they are generally unequal. A rectangle between their
+            // midpoints was only as long as their average — the longer wall's end fell
+            // outside its own footprint, and the shorter one reached into a room.
+            let hall = ruins::RuinShape::Trapezoid {
+                wall0: top,
+                wall1: bot,
             };
             necks.push(Neck {
                 pair: (a, b),
@@ -791,14 +833,13 @@ fn circle_rect_necks(areas: &Areas, pairs: &[(usize, usize, FuseClass)], s: f64)
         if ((ccx - rcx) / rhw).abs() < ((ccy - rcy) / rhh).abs() {
             continue;
         }
-        let Some(conn) = areas.cells[a]
-            .iter()
+        let Some(conn) = areas
+            .floor_cells(a)
             .filter(|h| {
                 h.neighbors()
                     .iter()
                     .any(|nb| areas.owner_of(*nb) == Some(b))
             })
-            .copied()
             .min_by(|p, q| {
                 (p.center(s).0 - near_x)
                     .abs()
@@ -1216,18 +1257,21 @@ fn plan_necks(areas: &Areas, s: f64) -> (Vec<Neck>, Vec<(usize, usize, FuseClass
 /// it is the expensive half of the test — recomputing it cost a second `Frame::local` per
 /// grid cell per corridor.
 fn claim_offset(neck: &Neck, p: Point) -> Option<f64> {
-    let (Some(f), ruins::RuinShape::StraightHall { hw, .. }) = (neck.frame(), neck.hall) else {
-        return None;
-    };
-    span_offset(&f, hw, p)
+    let (f, hw) = (neck.frame()?, neck.half_width()?);
+    span_offset(neck, &f, hw, p)
 }
 
-/// [`claim_offset`] with the frame already in hand — the form the per-cell loop wants,
-/// since rebuilding a `Frame` is a `hypot` and four divides.
-fn span_offset(f: &Frame, hw: f64, p: Point) -> Option<f64> {
+/// [`claim_offset`] with the frame and half-width already in hand — the form the per-cell
+/// loop wants, since rebuilding a `Frame` is a `hypot` and four divides.
+fn span_offset(neck: &Neck, f: &Frame, hw: f64, p: Point) -> Option<f64> {
     let (t, pp) = f.local(p);
-    let inside = t >= -FOOTPRINT_SLOP && t <= f.len + FOOTPRINT_SLOP && pp.abs() < hw - 1e-6;
-    inside.then_some(pp)
+    if pp.abs() >= hw - 1e-6 {
+        return None;
+    }
+    // The along-bounds follow the trapezoid (see `Neck::span_at`), so a cell past the
+    // corridor's *average* length still counts where the wall beside it actually reaches.
+    let (near, far) = neck.span_at(f, pp);
+    (t >= near.min(far) - FOOTPRINT_SLOP && t <= near.max(far) + FOOTPRINT_SLOP).then_some(pp)
 }
 
 /// One side of one corridor, as the lattice **lines** running along it, ordered
@@ -1276,7 +1320,7 @@ pub(crate) fn corridor_floor(areas: &Areas, grid: &HexGrid, s: f64) -> Vec<Corri
         let (Some(sa), Some(sb)) = (areas.shape(a), areas.shape(b)) else {
             continue;
         };
-        let (Some(f), ruins::RuinShape::StraightHall { hw, .. }) = (neck.frame(), neck.hall) else {
+        let (Some(f), Some(hw)) = (neck.frame(), neck.half_width()) else {
             continue;
         };
         // A corridor covers a handful of cells out of the whole grid (measured: 0.4%), so
@@ -1299,7 +1343,7 @@ pub(crate) fn corridor_floor(areas: &Areas, grid: &HexGrid, s: f64) -> Vec<Corri
             // outside it, and that is the common case rather than a fluke: the
             // clamp bounds are the rooms' own hex-aligned borders, which land on
             // cell centres.
-            let Some(pp) = span_offset(&f, hw, p) else {
+            let Some(pp) = span_offset(&neck, &f, hw, p) else {
                 continue;
             };
             let owner = if sa.wall_dist(p) <= sb.wall_dist(p) {

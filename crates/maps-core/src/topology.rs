@@ -87,8 +87,8 @@ pub(crate) fn shared_dungeon_room(areas: &Areas, a: &Door, b: &Door) -> Option<u
 fn fuse_groups(areas: &Areas) -> Vec<usize> {
     let n = areas.count();
     let mut parent: Vec<usize> = (0..n).collect();
-    for (i, cells) in areas.cells.iter().enumerate() {
-        for c in cells {
+    for i in 0..areas.count() {
+        for c in areas.floor_cells(i) {
             for nb in c.neighbors() {
                 if let Some(o) = areas.owner_of(nb).filter(|&o| o != i) {
                     let (ri, ro) = (find(&mut parent, i), find(&mut parent, o));
@@ -271,8 +271,8 @@ fn place_exits<R: Rng>(grid: &HexGrid, areas: &Areas, tags: &Tags, rng: &mut R) 
     // Candidate attach cells: area cells with a free outward neighbour,
     // weighted by squared distance from the centre so exits hug the rim.
     let mut cand: Vec<(usize, Hex)> = Vec::new();
-    for (i, area) in areas.cells.iter().enumerate() {
-        for &h in area {
+    for i in 0..areas.count() {
+        for h in areas.floor_cells(i) {
             if !outward_steps(grid, areas, i, h, &[]).is_empty() {
                 cand.push((i, h));
             }
@@ -359,7 +359,7 @@ fn shrink_corridors<R: Rng>(
     // Fusion-corridor floor is the join to a partner, not part of this area's own shape:
     // shrinking it away would unfuse the pair with no door to replace the seam.
     for (i, keep) in keep_cells.iter_mut().enumerate() {
-        keep.extend(areas.cells[i].iter().copied().filter(|&c| areas.is_join(c)));
+        keep.extend(areas.floor_cells(i).filter(|&c| areas.is_join(c)));
     }
 
     let burrow = tags.layout == Some(LayoutTag::Burrow);
@@ -380,8 +380,12 @@ fn shrink_corridors<R: Rng>(
         if !rng.random_bool(p.min(0.85)) {
             continue;
         }
-        let removed = shrink(&areas.cells[i], &door_cells[i], &keep_cells[i], rng);
-        areas.remove_from_area(i, &removed);
+        let floor: Vec<Hex> = areas.floor_cells(i).collect();
+        let removed = shrink(&floor, &door_cells[i], &keep_cells[i], rng);
+        // Marked, not removed: the cells stay in the area's footprint as a record of where
+        // it was, and only ownership is released — so they read as rock, and another area
+        // may claim them. See `plans/immutable-growth.md`.
+        areas.mark_eroded(i, &removed);
         is_corridor[i] = true;
     }
     is_corridor

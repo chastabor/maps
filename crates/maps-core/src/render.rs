@@ -394,8 +394,8 @@ fn grid_layer(map: &CaveMap, style: &Style, bounds: (f64, f64, f64, f64)) -> Str
             // One floor set up front: probing it is O(1) per cell, where
             // scanning doors/exit stubs per cell was O(cells x topology).
             let mut floor: HashSet<Hex> = HashSet::new();
-            for area in &map.areas.cells {
-                floor.extend(area.iter().copied());
+            for i in 0..map.areas.count() {
+                floor.extend(map.areas.floor_cells(i));
             }
             floor.extend(map.topology.doors.iter().map(|d| d.cell));
             for e in &map.topology.exits {
@@ -694,10 +694,11 @@ fn area_label_layer(map: &CaveMap) -> String {
         );
     };
     for i in 0..map.areas.count() {
-        let cells = &map.areas.cells[i];
+        let cells: Vec<Hex> = map.areas.floor_cells(i).collect();
         if cells.is_empty() {
             continue;
         }
+        let cells = &cells;
         let (mut cx, mut cy) = (0.0, 0.0);
         for &c in cells {
             let (x, y) = c.center(HEX_SIZE);
@@ -714,7 +715,7 @@ fn area_label_layer(map: &CaveMap) -> String {
             cx / n,
             cy / n,
             &format!("{}{kind}", i + 1),
-            &area_hash(&map.areas.cells[i]),
+            &area_hash(cells),
             &mut s,
         );
     }
@@ -989,13 +990,14 @@ pub fn debug_svg(map: &CaveMap) -> String {
     }
     s.push_str("</g>");
 
-    for (i, area) in map.areas.cells.iter().enumerate() {
+    for i in 0..map.areas.count() {
+        let area: Vec<Hex> = map.areas.floor_cells(i).collect();
         let color = PALETTE[i % PALETTE.len()];
         let _ = write!(
             s,
             r##"<g fill="{color}" fill-opacity="0.85" stroke="none">"##
         );
-        for &h in area {
+        for &h in &area {
             let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(h));
         }
         s.push_str("</g>");
@@ -1004,11 +1006,11 @@ pub fn debug_svg(map: &CaveMap) -> String {
     // Dungeon areas: outline their cells in cyan so the ruin/dungeon split is
     // visible over the per-area fills.
     s.push_str(r##"<g fill="none" stroke="#31d2f2" stroke-width="1.4">"##);
-    for (i, area) in map.areas.cells.iter().enumerate() {
+    for i in 0..map.areas.count() {
         if !map.is_dungeon(i) {
             continue;
         }
-        for &h in area {
+        for h in map.areas.floor_cells(i) {
             let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(h));
         }
     }

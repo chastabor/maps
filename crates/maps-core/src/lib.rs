@@ -419,7 +419,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     let dungeon_cells: std::collections::HashMap<grid::Hex, ruins::RuinShape> = (0..areas.count())
         .filter(|&i| areas.kind(i) == AreaKind::Dungeon)
         .filter_map(|i| areas.shapes()[i].map(|sh| (i, sh)))
-        .flat_map(|(i, sh)| areas.cells[i].iter().map(move |&c| (c, sh)))
+        .flat_map(|(i, sh)| areas.floor_cells(i).map(move |c| (c, sh)))
         .collect();
     let jambs = doorway::jambs(&mouths, &topology, &areas, oparams.hex_size);
     let constraints = outline::Constraints {
@@ -482,7 +482,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     let ruin_area_cells: Vec<Vec<grid::Hex>> = (0..areas.count())
         .filter(|&i| areas.kind(i) != AreaKind::Organic)
         .map(|i| {
-            let mut v = areas.cells[i].clone();
+            let mut v: Vec<grid::Hex> = areas.floor_cells(i).collect();
             v.sort_unstable();
             v
         })

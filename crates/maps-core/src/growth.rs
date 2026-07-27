@@ -501,10 +501,25 @@ pub fn grid_radius(params: &GrowthParams) -> i32 {
 /// architectural state and `shapes[i]` its geometric wall (dungeon rooms get
 /// theirs at growth, ruins at reshaping) — all kept aligned by construction.
 pub struct Areas {
-    /// Every cell each area owns, **including** its fusion-corridor floor. Anything
-    /// geometric about the *room* wants [`room_cells`](Areas::room_cells) instead — see
-    /// that method for why.
+    /// Every cell each area has **ever** owned — its footprint, which never shrinks.
+    ///
+    /// This is a record, not the floor. Two additive subtractions sit beside it, and almost
+    /// every reader wants one of them rather than this:
+    ///
+    /// ```text
+    /// cells[i]  − eroded  = floor_cells(i)   what is floor now
+    ///           − join    = room_cells(i)    what is the ROOM (no corridor floor)
+    /// ```
+    ///
+    /// Reach for this only when you genuinely mean "everywhere this area has been" — a
+    /// stable identity for it, say. See `plans/immutable-growth.md`.
     pub cells: Vec<Vec<Hex>>,
+    /// Cells given back to rock after growth finished — see [`mark_eroded`](Areas::mark_eroded).
+    ///
+    /// Additive, so growth's own output is never rewritten: the cell stays in `cells` as a
+    /// record of where the area was, and only `owner` lets go of it. That is what leaves it
+    /// free for another area to claim.
+    eroded: HashSet<Hex>,
     kinds: Vec<AreaKind>,
     shapes: Vec<Option<RuinShape>>,
     owner: CellMap<u32>,
@@ -526,6 +541,41 @@ impl Areas {
         self.cells.len()
     }
 
+    /// Cells of area `i` that are floor **now**: its footprint less whatever was eroded.
+    ///
+    /// What almost every consumer means by "this area's cells". [`cells`](Self::cells) is
+    /// the historical footprint and includes ground that is rock again.
+    pub fn floor_cells(&self, i: usize) -> impl Iterator<Item = Hex> + '_ {
+        self.cells[i]
+            .iter()
+            .copied()
+            .filter(|c| !self.eroded.contains(c))
+    }
+
+    /// Whether `c` has been eroded back to rock.
+    pub fn is_eroded(&self, c: Hex) -> bool {
+        self.eroded.contains(&c)
+    }
+
+    /// Give cells of `area` back to rock, keeping them in its footprint as a record.
+    ///
+    /// The additive counterpart of removal: `owner` lets go — so the cell is free for any
+    /// area to claim, and reads no longer see it as floor — while `cells` keeps it, so what
+    /// the area once covered is still knowable. Corridor shrinking and (later) ruin erosion
+    /// both work this way, and nothing downstream has to undo it.
+    pub fn mark_eroded(&mut self, area: usize, cells: &[Hex]) {
+        debug_assert!(
+            cells
+                .iter()
+                .all(|c| self.owner.get(*c) == Some(area as u32))
+        );
+        for &c in cells {
+            self.owner.remove(c);
+            self.join.remove(&c);
+            self.eroded.insert(c);
+        }
+    }
+
     /// The fusion-corridor floor growth claimed — see the field.
     pub fn join(&self) -> &HashSet<Hex> {
         &self.join
@@ -540,10 +590,7 @@ impl Areas {
     /// for when you mean all the floor an area owns (tracing the outline, rendering,
     /// ownership bookkeeping).
     pub fn room_cells(&self, i: usize) -> impl Iterator<Item = Hex> + '_ {
-        self.cells[i]
-            .iter()
-            .copied()
-            .filter(|c| !self.join.contains(c))
+        self.floor_cells(i).filter(|c| !self.join.contains(c))
     }
 
     /// Whether `c` is fusion-corridor floor rather than part of any room.
@@ -937,6 +984,7 @@ fn claim_join_floor(
         shapes.push(build_shape(b, hex_size, &unclaimed));
     }
     let provisional = Areas {
+        eroded: HashSet::new(),
         cells,
         kinds,
         shapes,
@@ -1038,7 +1086,7 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
     let mut comp_cells: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     for i in 0..n {
         let r = find(&mut root, i);
-        *comp_cells.entry(r).or_default() += areas.cells[i].len();
+        *comp_cells.entry(r).or_default() += areas.floor_cells(i).count();
     }
     let Some((&best, _)) = comp_cells.iter().max_by_key(|&(_, &v)| v) else {
         return areas;
@@ -1057,9 +1105,10 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
             continue;
         }
         let idx = cells.len() as u32;
-        for &c in &areas.cells[i] {
+        for &c in areas.cells[i].iter().filter(|c| !areas.eroded.contains(c)) {
             owner.insert(c, idx);
         }
+        // The footprint carries over whole; only floor is re-owned above.
         cells.push(areas.cells[i].clone());
         kinds.push(areas.kinds[i]);
         shapes.push(areas.shapes[i]);
@@ -1071,6 +1120,7 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
         .filter(|c| owner.get(*c).is_some())
         .collect();
     Areas {
+        eroded: areas.eroded,
         cells,
         kinds,
         shapes,
@@ -1540,6 +1590,7 @@ fn finalize(grid: &HexGrid, builds: Vec<Build>, hex_size: f64, join: HashSet<Hex
         shapes.push(shape);
     }
     Areas {
+        eroded: HashSet::new(),
         cells,
         kinds,
         shapes,

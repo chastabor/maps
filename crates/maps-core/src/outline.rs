@@ -15,7 +15,7 @@ use crate::topology::Topology;
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 
-pub type Point = (f64, f64);
+pub use crate::geom::Point;
 
 /// Quantize a coordinate to an exact tenth of a pixel. All geometry stored
 /// on `CaveMap` goes through this (or `quantize2` for radii), so the SVG

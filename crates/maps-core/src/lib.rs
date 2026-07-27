@@ -4,6 +4,7 @@
 //! natively and from wasm.
 
 pub mod decor;
+pub mod geom;
 pub mod doorway;
 pub mod grid;
 pub mod growth;
@@ -249,6 +250,27 @@ struct Neck {
     cell: f64,
 }
 
+/// A connector's own coordinate frame: the origin at the hall's near end, its
+/// length along the axis, and the unit axis and normal. Everything that reasons
+/// about a connector works in these coordinates rather than in world x/y.
+struct Frame {
+    o: Point,
+    len: f64,
+    dir: Point,
+    nrm: Point,
+}
+
+impl Frame {
+    /// `p` in frame coordinates: `(along the axis from the origin, across it)`.
+    /// The sign of the second component is which side of the centreline `p` is on.
+    fn local(&self, p: Point) -> (f64, f64) {
+        (
+            (p.0 - self.o.0) * self.dir.0 + (p.1 - self.o.1) * self.dir.1,
+            (p.0 - self.o.0) * self.nrm.0 + (p.1 - self.o.1) * self.nrm.1,
+        )
+    }
+}
+
 impl Neck {
     /// Whether this is the wide axis corridor. Its wall endpoints are tagged with
     /// the room shape they land on (blended), it participates in the outline
@@ -258,13 +280,13 @@ impl Neck {
         self.kind == NeckKind::AxisCorridor
     }
 
-    /// The hall's frame — `(origin, length, unit axis, unit normal)` — shared by
-    /// everything that has to agree on where the connector sits.
-    fn frame(&self) -> Option<(Point, f64, Point, Point)> {
+    /// The hall's frame, shared by everything that has to agree on where the
+    /// connector sits.
+    fn frame(&self) -> Option<Frame> {
         let ruins::RuinShape::StraightHall { ax, ay, bx, by, .. } = self.hall else { return None };
         let d = (bx - ax, by - ay);
         let l = d.0.hypot(d.1).max(1e-9);
-        Some(((ax, ay), l, (d.0 / l, d.1 / l), (-d.1 / l, d.0 / l)))
+        Some(Frame { o: (ax, ay), len: l, dir: (d.0 / l, d.1 / l), nrm: (-d.1 / l, d.0 / l) })
     }
 
     /// Whether `p` lies on one of the wall lines this connector inserts — the
@@ -275,10 +297,8 @@ impl Neck {
     /// new side walls are actually wall there.
     fn on_new_wall(&self, p: Point, tol: f64) -> bool {
         self.lines.iter().any(|&(a, b)| {
-            let d = (b.0 - a.0, b.1 - a.1);
-            let l2 = (d.0 * d.0 + d.1 * d.1).max(1e-9);
-            let t = (((p.0 - a.0) * d.0 + (p.1 - a.1) * d.1) / l2).clamp(0.0, 1.0);
-            (p.0 - (a.0 + d.0 * t)).hypot(p.1 - (a.1 + d.1 * t)) <= tol
+            let (_, q) = geom::project_on_segment(p, a, b);
+            (p.0 - q.0).hypot(p.1 - q.1) <= tol
         })
     }
 
@@ -292,14 +312,13 @@ impl Neck {
             return true;
         }
         let ruins::RuinShape::StraightHall { hw, .. } = self.hall else { return false };
-        let Some((a, len, dir, nrm)) = self.frame() else { return false };
-        let pp = (p.0 - a.0) * nrm.0 + (p.1 - a.1) * nrm.1;
+        let Some(f) = self.frame() else { return false };
+        let (t, pp) = f.local(p);
         if pp.abs() > hw + FOOTPRINT_SLOP {
             return false;
         }
-        let t = (p.0 - a.0) * dir.0 + (p.1 - a.1) * dir.1;
         if !self.is_corridor() {
-            return t >= -FOOTPRINT_SLOP && t <= len + FOOTPRINT_SLOP;
+            return t >= -FOOTPRINT_SLOP && t <= f.len + FOOTPRINT_SLOP;
         }
         // The two walls are generally UNEQUAL — each runs until it meets a border,
         // and a border curves — so the hall, a straight box between their midpoints,
@@ -310,11 +329,8 @@ impl Neck {
         // of the two wall segments — so the footprint always holds both walls whole.
         // (The narrow angle neck keeps the hall box: its `lines` are not ordered
         // near-end-first, so this interpolation would not mean anything there.)
-        let proj = |p: Point| {
-            ((p.0 - a.0) * dir.0 + (p.1 - a.1) * dir.1, (p.0 - a.0) * nrm.0 + (p.1 - a.1) * nrm.1)
-        };
-        let (n0, f0) = (proj(self.lines[0].0), proj(self.lines[0].1));
-        let (n1, f1) = (proj(self.lines[1].0), proj(self.lines[1].1));
+        let (n0, f0) = (f.local(self.lines[0].0), f.local(self.lines[0].1));
+        let (n1, f1) = (f.local(self.lines[1].0), f.local(self.lines[1].1));
         let span = n1.1 - n0.1;
         let w = if span.abs() < 1e-9 { 0.5 } else { ((pp - n0.1) / span).clamp(0.0, 1.0) };
         let near = n0.0 + (n1.0 - n0.0) * w;
@@ -376,8 +392,6 @@ impl Neck {
     fn wall_stretch(&self, line: (Point, Point), prev: Point, next: Point) -> ((Point, bool), (Point, bool)) {
         let d = (line.1 .0 - line.0 .0, line.1 .1 - line.0 .1);
         let len = d.0.hypot(d.1).max(1e-9);
-        let l2 = len * len;
-        let at = |s: f64| (line.0 .0 + d.0 * s, line.0 .1 + d.1 * s);
         // A neighbour within HALF A CELL of a wall end is that end: the clip must
         // only ever SPLIT a wall, never shorten it away from a room, and a smoothed
         // corner vertex by the corridor mouth sits a jitter's width inside. Half a
@@ -385,16 +399,17 @@ impl Neck {
         // doorway further in.
         let tol = (self.cell / 2.0 / len).min(0.5);
         let param = |p: Point| {
-            let s = (((p.0 - line.0 .0) * d.0 + (p.1 - line.0 .1) * d.1) / l2).clamp(0.0, 1.0);
-            if s < tol {
+            let (t, _) = geom::project_on_segment(p, line.0, line.1);
+            if t < tol {
                 0.0
-            } else if s > 1.0 - tol {
+            } else if t > 1.0 - tol {
                 1.0
             } else {
-                s
+                t
             }
         };
         let (s0, s1) = (param(prev), param(next));
+        let at = |t: f64| geom::lerp(line.0, line.1, t);
         ((at(s0), s0 == 0.0 || s0 == 1.0), (at(s1), s1 == 0.0 || s1 == 1.0))
     }
 }
@@ -870,10 +885,10 @@ impl Neck {
         run_end: &dyn Fn((Point, Point), Point) -> Point,
         emit: &mut dyn FnMut(SpliceStep),
     ) -> bool {
-        let Some((a, _len, _dir, nrm)) = self.frame() else { return false };
+        let Some(f) = self.frame() else { return false };
         // Signed perpendicular offset from the hall centreline: which side a
         // vertex (or a wall line's midpoint) lies on.
-        let pp = |p: Point| (p.0 - a.0) * nrm.0 + (p.1 - a.1) * nrm.1;
+        let pp = |p: Point| f.local(p).1;
         let side0 = pp((
             (self.lines[0].0 .0 + self.lines[0].1 .0) / 2.0,
             (self.lines[0].0 .1 + self.lines[0].1 .1) / 2.0,
@@ -1209,8 +1224,7 @@ fn claim_corridor_floor(
             continue;
         }
         let (Some(sa), Some(sb)) = (areas.shape(a), areas.shape(b)) else { continue };
-        let (Some((o, len, dir, nrm)), ruins::RuinShape::StraightHall { hw, .. }) =
-            (neck.frame(), neck.hall)
+        let (Some(f), ruins::RuinShape::StraightHall { hw, .. }) = (neck.frame(), neck.hall)
         else {
             continue;
         };
@@ -1230,9 +1244,8 @@ fn claim_corridor_floor(
             // cell centres. Claiming one wedges a hex-locked cell across the very
             // line the wall has to follow, which cost four seeds their connector
             // when measured.
-            let t = (p.0 - o.0) * dir.0 + (p.1 - o.1) * dir.1;
-            let pp = (p.0 - o.0) * nrm.0 + (p.1 - o.1) * nrm.1;
-            if t < -FOOTPRINT_SLOP || t > len + FOOTPRINT_SLOP || pp.abs() >= hw - 1e-6 {
+            let (t, pp) = f.local(p);
+            if t < -FOOTPRINT_SLOP || t > f.len + FOOTPRINT_SLOP || pp.abs() >= hw - 1e-6 {
                 continue;
             }
             lines.entry((pp * 64.0).round() as i64).or_default().push(c);
@@ -1329,14 +1342,13 @@ fn release_unused_claims(
 ) {
     for neck in necks {
         let Some(cells) = claimed.get(&neck.pair) else { continue };
-        let (Some((o, _len, _dir, nrm)), ruins::RuinShape::StraightHall { hw, .. }) =
-            (neck.frame(), neck.hall)
+        let (Some(f), ruins::RuinShape::StraightHall { hw, .. }) = (neck.frame(), neck.hall)
         else {
             continue;
         };
         for &c in cells {
             let p = c.center(s);
-            let pp = (p.0 - o.0) * nrm.0 + (p.1 - o.1) * nrm.1;
+            let pp = f.local(p).1;
             if let Some(i) = areas.owner_of(c).filter(|_| pp.abs() >= hw) {
                 areas.remove_from_area(i, &[c]);
             }

@@ -190,9 +190,78 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
         r##"<mask id="rock" maskUnits="userSpaceOnUse" x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}"><rect x="{vxd}" y="{vyd}" width="{vwd}" height="{vhd}" fill="white"/><use xlink:href="#fp" href="#fp" fill="black" fill-rule="nonzero"/></mask>"##
     );
 
-    // Border trees sit behind the floor fill: the clearing covers their
-    // inner halves, leaving a jagged canopy ring around the edge. Deepest
-    // band first so nearer (lighter) canopies overlap the darker ones.
+    s.push_str(&tree_ring_layer(map, style));
+
+    // Floor fill only; the border stroke is drawn later, above the water,
+    // so pools sit underneath the wall line and never thin it.
+    let _ = write!(
+        s,
+        r##"<use xlink:href="#fp" href="#fp" fill="{}" fill-rule="nonzero"/>"##,
+        style.floor
+    );
+
+    s.push_str(&floor_pattern_layer(map, style));
+
+    s.push_str(&water_layer(map, style));
+
+    s.push_str(&grid_layer(map, style, (min_x, min_y, max_x, max_y)));
+
+    s.push_str(&stones_layer(map, style));
+
+    // Dungeon doors, drawn BENEATH the rock wall (hatching, stipple, shadow,
+    // dungeon-wall band and the outline border all layer over it) so the door
+    // sits recessed in the opening — the wall overlaps its edges and the jamb
+    // caps merge into the wall line, instead of the glyph floating on the rock.
+    // A hex-aligned bar across the doorway with a dark cap at each end.
+    s.push_str(&door_layer(map, style));
+
+    s.push_str(&hatching_layer(map, style));
+
+    s.push_str(&dots_layer(map, style));
+
+    // The border's drop shadow: the border geometry itself, stroked,
+    // translucent, offset down-right, and clipped to the floor — it falls
+    // only on room contents (grid, water, tilework), never on the rock-side
+    // decoration, so the outside patterns stay clean and the border reads
+    // as floating above the rooms.
+    let _ = write!(
+        s,
+        r##"<g clip-path="url(#floor)"><use xlink:href="#fp" href="#fp" transform="translate(1.5 2)" fill="none" stroke="{}" stroke-width="4.5" stroke-linejoin="round" stroke-opacity="0.7"/></g>"##,
+        style.shadow
+    );
+
+    s.push_str(&masonry_layer(map, style));
+
+    s.push_str(&wall_band_layer(map, style));
+
+    // The wall border: cell-level unions guarantee simple loops with no
+    // interior segments, so a plain full-weight stroke on top is correct.
+    let _ = write!(
+        s,
+        r##"<use xlink:href="#fp" href="#fp" fill="none" stroke="{}" stroke-width="2.4" stroke-linejoin="round"/>"##,
+        style.line
+    );
+
+    let _ = write!(
+        s,
+        r##"<text x="{}" y="{}" fill="{}" font-family="Georgia, serif" font-size="22" font-style="italic">{}</text>"##,
+        D1(vx + 16.0),
+        D1(vy + 34.0),
+        style.title,
+        map.title,
+    );
+    if labels {
+        s.push_str(&area_label_layer(map));
+    }
+    s.push_str("</svg>");
+    s
+}
+
+/// Border trees sit behind the floor fill: the clearing covers their
+/// inner halves, leaving a jagged canopy ring around the edge. Deepest
+/// band first so nearer (lighter) canopies overlap the darker ones.
+fn tree_ring_layer(map: &CaveMap, style: &Style) -> String {
+    let mut s = String::new();
     if !map.trees.is_empty() {
         for band in (0..style.tree_shades.len()).rev() {
             let _ = write!(
@@ -211,17 +280,13 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
             s.push_str("</g>");
         }
     }
+    s
+}
 
-    // Floor fill only; the border stroke is drawn later, above the water,
-    // so pools sit underneath the wall line and never thin it.
-    let _ = write!(
-        s,
-        r##"<use xlink:href="#fp" href="#fp" fill="{}" fill-rule="nonzero"/>"##,
-        style.floor
-    );
-
-    // Ruin floor tile pattern, directly on the floor so water floods over
-    // it and the grid overlay stays legible above.
+/// Ruin floor tile pattern, directly on the floor so water floods over
+/// it and the grid overlay stays legible above.
+fn floor_pattern_layer(map: &CaveMap, style: &Style) -> String {
+    let mut s = String::new();
     if !map.floor_pattern.is_empty() {
         use crate::decor::PatternElem;
         let _ = write!(s, r##"<g clip-path="url(#floor)">"##);
@@ -271,12 +336,16 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
         }
         s.push_str("</g>");
     }
+    s
+}
 
-    // Waterline layers, lowest first: mud fringe under the pools, then the
-    // pools, then the deep-water band inside them.
-    // The waterline fills are translucent so ruin floor patterns show
-    // through the shallows; deep water is markedly less transparent, and
-    // the stacking (mud under pool under deep) compounds toward opaque.
+/// Waterline layers, lowest first: mud fringe under the pools, then the
+/// pools, then the deep-water band inside them.
+/// The waterline fills are translucent so ruin floor patterns show
+/// through the shallows; deep water is markedly less transparent, and
+/// the stacking (mud under pool under deep) compounds toward opaque.
+fn water_layer(map: &CaveMap, style: &Style) -> String {
+    let mut s = String::new();
     if !map.mud.is_empty() {
         let mud_path = outline_path(&map.mud);
         let _ = write!(
@@ -301,8 +370,13 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
             style.deep
         );
     }
+    s
+}
 
-    // Grid overlay above the water, visible across the whole floor.
+/// Grid overlay above the water, visible across the whole floor.
+fn grid_layer(map: &CaveMap, style: &Style, bounds: (f64, f64, f64, f64)) -> String {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let mut s = String::new();
     match map.grid_style {
         GridStyle::Hex => {
             // One floor set up front: probing it is O(1) per cell, where
@@ -358,7 +432,12 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
         }
         GridStyle::None => {}
     }
+    s
+}
 
+/// Scattered floor stones.
+fn stones_layer(map: &CaveMap, style: &Style) -> String {
+    let mut s = String::new();
     if !map.stones.is_empty() {
         let _ = write!(
             s,
@@ -371,16 +450,13 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
         }
         s.push_str("</g>");
     }
+    s
+}
 
-    // Dungeon doors, drawn BENEATH the rock wall (hatching, stipple, shadow,
-    // dungeon-wall band and the outline border all layer over it) so the door
-    // sits recessed in the opening — the wall overlaps its edges and the jamb
-    // caps merge into the wall line, instead of the glyph floating on the rock.
-    // A hex-aligned bar across the doorway with a dark cap at each end.
-    s.push_str(&door_layer(map, style));
-
-    // Each fan is an opaque object: its background-filled hull blanks out
-    // whatever earlier fans it overlaps before its own strokes go down.
+/// Each fan is an opaque object: its background-filled hull blanks out
+/// whatever earlier fans it overlaps before its own strokes go down.
+fn hatching_layer(map: &CaveMap, style: &Style) -> String {
+    let mut s = String::new();
     if !map.hatching.is_empty() {
         let _ = write!(
             s,
@@ -406,9 +482,13 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
         }
         s.push_str("</g>");
     }
+    s
+}
 
-    // Faded stipple dots along ruin walls (cave mode), same layer slot as
-    // the fans they replace.
+/// Faded stipple dots along ruin walls (cave mode), same layer slot as
+/// the fans they replace.
+fn dots_layer(map: &CaveMap, style: &Style) -> String {
+    let mut s = String::new();
     if !map.dots.is_empty() {
         let _ = write!(s, r##"<g mask="url(#rock)" fill="{}">"##, style.hatch);
         for &((x, y), r, a) in &map.dots {
@@ -423,21 +503,14 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
         }
         s.push_str("</g>");
     }
+    s
+}
 
-    // The border's drop shadow: the border geometry itself, stroked,
-    // translucent, offset down-right, and clipped to the floor — it falls
-    // only on room contents (grid, water, tilework), never on the rock-side
-    // decoration, so the outside patterns stay clean and the border reads
-    // as floating above the rooms.
-    let _ = write!(
-        s,
-        r##"<g clip-path="url(#floor)"><use xlink:href="#fp" href="#fp" transform="translate(1.5 2)" fill="none" stroke="{}" stroke-width="4.5" stroke-linejoin="round" stroke-opacity="0.7"/></g>"##,
-        style.shadow
-    );
-
-    // Masonry tiles along ruin walls (forest mode), under the wall line so
-    // their inner edge seats cleanly against it; masked to rock so a block
-    // can never land inside a clearing.
+/// Masonry tiles along ruin walls (forest mode), under the wall line so
+/// their inner edge seats cleanly against it; masked to rock so a block
+/// can never land inside a clearing.
+fn masonry_layer(map: &CaveMap, style: &Style) -> String {
+    let mut s = String::new();
     if !map.tiles.is_empty() {
         let _ = write!(
             s,
@@ -450,17 +523,21 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
         }
         s.push_str("</g>");
     }
+    s
+}
 
-    // Dungeon wall: a HOLLOW wall drawn as two thin lines, each the weight of
-    // the organic border. The outer face is the traced boundary (stroked by
-    // the border pass below); here we add the INNER face — each run offset one
-    // band-width into its room. The gap between the two lines stays floor, so
-    // the wall reads as a clean double line at organic thickness (no abrupt
-    // thick→thin step where it meets a weathered wall) and the decor pass can
-    // later fill the hollow with any masonry/pattern. Exactly the runs the
-    // outline traced — never a full shape perimeter, which would stroke across
-    // an overlapping neighbour's floor. Gaps between runs (doorway and exit
-    // openings) stay unstroked.
+/// Dungeon wall: a HOLLOW wall drawn as two thin lines, each the weight of
+/// the organic border. The outer face is the traced boundary (stroked by
+/// the border pass below); here we add the INNER face — each run offset one
+/// band-width into its room. The gap between the two lines stays floor, so
+/// the wall reads as a clean double line at organic thickness (no abrupt
+/// thick→thin step where it meets a weathered wall) and the decor pass can
+/// later fill the hollow with any masonry/pattern. Exactly the runs the
+/// outline traced — never a full shape perimeter, which would stroke across
+/// an overlapping neighbour's floor. Gaps between runs (doorway and exit
+/// openings) stay unstroked.
+fn wall_band_layer(map: &CaveMap, style: &Style) -> String {
+    let mut s = String::new();
     if !map.dungeon_walls.is_empty() {
         let w = DUNGEON_WALL_W * HEX_SIZE;
         let mut wall_d = String::new(); // hollow-wall outline (capsule per run)
@@ -546,27 +623,6 @@ pub fn svg_opts(map: &CaveMap, labels: bool) -> String {
             style.line
         );
     }
-
-    // The wall border: cell-level unions guarantee simple loops with no
-    // interior segments, so a plain full-weight stroke on top is correct.
-    let _ = write!(
-        s,
-        r##"<use xlink:href="#fp" href="#fp" fill="none" stroke="{}" stroke-width="2.4" stroke-linejoin="round"/>"##,
-        style.line
-    );
-
-    let _ = write!(
-        s,
-        r##"<text x="{}" y="{}" fill="{}" font-family="Georgia, serif" font-size="22" font-style="italic">{}</text>"##,
-        D1(vx + 16.0),
-        D1(vy + 34.0),
-        style.title,
-        map.title,
-    );
-    if labels {
-        s.push_str(&area_label_layer(map));
-    }
-    s.push_str("</svg>");
     s
 }
 

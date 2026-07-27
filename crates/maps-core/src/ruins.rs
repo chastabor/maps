@@ -48,10 +48,7 @@ fn hex_edge_nearest(cx: f64, cy: f64, s: f64, p: Point) -> (usize, f64, Point) {
     let mut best = (f64::MAX, 0, 0.0, p);
     for k in 0..6 {
         let (a, b) = (c[k], c[(k + 1) % 6]);
-        let d = (b.0 - a.0, b.1 - a.1);
-        let l2 = (d.0 * d.0 + d.1 * d.1).max(1e-9);
-        let t = (((p.0 - a.0) * d.0 + (p.1 - a.1) * d.1) / l2).clamp(0.0, 1.0);
-        let q = (a.0 + d.0 * t, a.1 + d.1 * t);
+        let (t, q) = crate::geom::project_on_segment(p, a, b);
         let dist = (p.0 - q.0).hypot(p.1 - q.1);
         if dist < best.0 {
             best = (dist, k, t, q);
@@ -88,10 +85,7 @@ impl RuinShape {
                 }
             }
             RuinShape::StraightHall { ax, ay, bx, by, hw } => {
-                let (abx, aby) = (bx - ax, by - ay);
-                let len2 = (abx * abx + aby * aby).max(1e-9);
-                let t = (((p.0 - ax) * abx + (p.1 - ay) * aby) / len2).clamp(0.0, 1.0);
-                let q = (ax + abx * t, ay + aby * t);
+                let (_, q) = crate::geom::project_on_segment(p, (ax, ay), (bx, by));
                 let (dx, dy) = (p.0 - q.0, p.1 - q.1);
                 let d = dx.hypot(dy).max(1e-9);
                 (q.0 + dx / d * hw, q.1 + dy / d * hw)
@@ -269,10 +263,8 @@ impl RuinShape {
             }
             RuinShape::Circle { cx, cy, r } => (p.0 - cx).hypot(p.1 - cy) <= r + m,
             RuinShape::StraightHall { ax, ay, bx, by, hw: _ } => {
-                let (abx, aby) = (bx - ax, by - ay);
-                let len2 = (abx * abx + aby * aby).max(1e-9);
-                let t = (((p.0 - ax) * abx + (p.1 - ay) * aby) / len2).clamp(0.0, 1.0);
-                (p.0 - (ax + abx * t)).hypot(p.1 - (ay + aby * t)) <= 0.87 * s
+                let (_, q) = crate::geom::project_on_segment(p, (ax, ay), (bx, by));
+                (p.0 - q.0).hypot(p.1 - q.1) <= 0.87 * s
             }
             RuinShape::ArcHall { cx, cy, r, hw: _ } => {
                 ((p.0 - cx).hypot(p.1 - cy) - r).abs() <= 0.87 * s

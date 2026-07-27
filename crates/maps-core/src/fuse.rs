@@ -1542,6 +1542,14 @@ impl Fusion {
     /// [`commit_join_floor`] handles, this needs no acceptance-ladder outcome, so it runs
     /// early enough that `build_outline` never traces the lobe and the cell set and the
     /// drawn boundary cannot disagree.
+    ///
+    /// A **backstop**, not the first line of defence: the two causes that *can* be
+    /// prevented are, by `ruins::erode` and `topology::shrink_corridors` both treating
+    /// corridor floor as a cell that must survive. What is left is an area dropped
+    /// outright (`finalize`'s `MIN_AREA`, `keep_largest_component`) or a pair member
+    /// demoted to no shape at all, which cannot be exempted without weakening the
+    /// spans-the-map guarantee. Measured after the anchors: 4 maps over 200 seeds at tag
+    /// defaults, none dense.
     pub(crate) fn release_orphans(&self, areas: &mut Areas) {
         for &c in &self.orphans {
             if let Some(i) = areas.owner_of(c) {

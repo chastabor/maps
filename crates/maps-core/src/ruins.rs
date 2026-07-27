@@ -382,7 +382,13 @@ pub fn build<R: Rng>(areas: &mut Areas, topology: &Topology, hex_size: f64, rng:
         if topology.is_corridor[i] {
             // A shrunk ruin's grown rect/circle no longer describes its cells:
             // refit a hall, or demote to organic (dropping the stale shape).
-            match fit_hall(&areas.cells[i], hex_size, rng) {
+            // The ROOM's cells: `fit_hall` runs the hall through the farthest pair of
+            // cell centres, so a corridor cell reaching toward a partner would stretch it
+            // past the cells it is meant to describe. (No measured map does this today —
+            // a shrunk ruin that is also fused has not come up over 200 seeds — so this
+            // states the intent rather than fixing an observed defect.)
+            let room: Vec<Hex> = areas.room_cells(i).collect();
+            match fit_hall(&room, hex_size, rng) {
                 Some(hall) => areas.set_shape(i, Some(hall)),
                 None => {
                     areas.set_kind(i, AreaKind::Organic);
@@ -414,6 +420,12 @@ fn erode<R: Rng>(areas: &mut Areas, topology: &Topology, i: usize, rng: &mut R) 
     }
     // Cells that must survive so every door/exit still reaches this area.
     let mut anchors: HashSet<Hex> = HashSet::new();
+    // Fusion-corridor floor is one of them. It is not this room's wall — it is the join
+    // to a partner, and it is always a boundary cell (that is what a protrusion is), so
+    // erosion would pick it first and dissolve the fusion the corridor exists to carry.
+    // This is how a fused pair used to lose a side; `fuse::Fusion::release_orphans` is
+    // the backstop for what this now prevents.
+    anchors.extend(areas.cells[i].iter().copied().filter(|&c| areas.is_join(c)));
     for e in &topology.exits {
         if e.area == i {
             anchors.insert(e.attach);

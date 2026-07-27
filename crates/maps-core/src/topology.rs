@@ -356,6 +356,11 @@ fn shrink_corridors<R: Rng>(
     for e in exits {
         keep_cells[e.area].push(e.attach);
     }
+    // Fusion-corridor floor is the join to a partner, not part of this area's own shape:
+    // shrinking it away would unfuse the pair with no door to replace the seam.
+    for (i, keep) in keep_cells.iter_mut().enumerate() {
+        keep.extend(areas.cells[i].iter().copied().filter(|&c| areas.is_join(c)));
+    }
 
     let burrow = tags.layout == Some(LayoutTag::Burrow);
     let hub = tags.layout == Some(LayoutTag::Hub);

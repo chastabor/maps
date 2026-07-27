@@ -501,6 +501,9 @@ pub fn grid_radius(params: &GrowthParams) -> i32 {
 /// architectural state and `shapes[i]` its geometric wall (dungeon rooms get
 /// theirs at growth, ruins at reshaping) — all kept aligned by construction.
 pub struct Areas {
+    /// Every cell each area owns, **including** its fusion-corridor floor. Anything
+    /// geometric about the *room* wants [`room_cells`](Areas::room_cells) instead — see
+    /// that method for why.
     pub cells: Vec<Vec<Hex>>,
     kinds: Vec<AreaKind>,
     shapes: Vec<Option<RuinShape>>,
@@ -526,6 +529,26 @@ impl Areas {
     /// The fusion-corridor floor growth claimed — see the field.
     pub fn join(&self) -> &HashSet<Hex> {
         &self.join
+    }
+
+    /// Cells of area `i` that are part of its **room** — all of its floor except the
+    /// fusion-corridor floor (see [`join`](Self::join)).
+    ///
+    /// This is what nearly every *geometric* consumer means. A corridor cell lies outside
+    /// the room's own wall, so fitting a shape over it, eroding it as though it were wall,
+    /// or measuring the room by it all give the wrong answer — [`cells`](Self::cells) is
+    /// for when you mean all the floor an area owns (tracing the outline, rendering,
+    /// ownership bookkeeping).
+    pub fn room_cells(&self, i: usize) -> impl Iterator<Item = Hex> + '_ {
+        self.cells[i]
+            .iter()
+            .copied()
+            .filter(|c| !self.join.contains(c))
+    }
+
+    /// Whether `c` is fusion-corridor floor rather than part of any room.
+    pub fn is_join(&self, c: Hex) -> bool {
+        self.join.contains(&c)
     }
 
     pub fn owner_of(&self, h: Hex) -> Option<usize> {

@@ -128,6 +128,40 @@ impl RuinShape {
 }
 
 impl RuinShape {
+    /// Whether `p` lies within the space this shape walls in — inside the perimeter
+    /// for a room, between the side walls for a hall, inside the hexagon for a cell.
+    ///
+    /// Distinct from [`wall_dist`](Self::wall_dist), which is unsigned and so cannot
+    /// tell inside from out. Used to answer "is this floor enclosed by anything?".
+    pub fn contains(&self, p: Point) -> bool {
+        match *self {
+            RuinShape::Rect { cx, cy, hw, hh } => {
+                (p.0 - cx).abs() <= hw + 1e-6 && (p.1 - cy).abs() <= hh + 1e-6
+            }
+            RuinShape::Circle { cx, cy, r } => (p.0 - cx).hypot(p.1 - cy) <= r + 1e-6,
+            RuinShape::StraightHall { ax, ay, bx, by, hw } => {
+                let (_, q) = crate::geom::project_on_segment(p, (ax, ay), (bx, by));
+                (p.0 - q.0).hypot(p.1 - q.1) <= hw + 1e-6
+            }
+            RuinShape::ArcHall { cx, cy, r, hw } => {
+                ((p.0 - cx).hypot(p.1 - cy) - r).abs() <= hw + 1e-6
+            }
+            // A pointy-top hex contains `p` iff `p` is within the apothem of the
+            // centre on all three edge normals (0° and ±60°).
+            RuinShape::HexCell { cx, cy, s } => {
+                let (dx, dy) = (p.0 - cx, p.1 - cy);
+                let a = crate::grid::HEX_APOTHEM * s + 1e-6;
+                [
+                    (1.0, 0.0),
+                    (0.5, crate::grid::HEX_APOTHEM),
+                    (-0.5, crate::grid::HEX_APOTHEM),
+                ]
+                .iter()
+                .all(|&(nx, ny)| (dx * nx + dy * ny).abs() <= a)
+            }
+        }
+    }
+
     /// Distance from a pixel point to the shape's wall locus (the perimeter
     /// for rooms, the two side walls for halls). Used to classify wall decor
     /// samples geometrically — a cell lookup misses e.g. a rectangle's

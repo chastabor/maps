@@ -19,8 +19,9 @@
 //! **What is asserted** (these fail the test):
 //! - `w6` — no dungeon wall-band segment runs more than 6px inside a room's interior.
 //!   The hard bar. Holds for every configuration at both level settings.
-//! - `fo` — a configuration with no connectors (`conn == 0`) must leak no corridor
-//!   floor, since it has no corridors to leak. Structural, so it is enforced.
+//! - `fo` — **no** corridor floor is left outside every wall, in any configuration.
+//!   `fuse::commit_join_floor` rolls back exactly the cells this counts, so a non-zero
+//!   value means that gate missed a case.
 //!
 //! **What is only printed** — compare against the table in
 //! `plans/fuse-case-taxonomy.md` → CURRENT STATE, which records the current values:
@@ -35,11 +36,6 @@
 //!   number is triaged by eyeballing the seeds that changed, not by asserting it.
 //! - `conn` — wall runs carrying a connector. More is better; the count is by run, so
 //!   a connector contributes more than one.
-//! - `fo` for a configuration that *does* have connectors. Known small defect: a few
-//!   corridor cells survive `release_unused_claims` outside every wall — at 200 seeds,
-//!   4 maps at tag defaults (seeds 41, 127, 138, 152) and 1 dense (seed 24). Tracked in
-//!   the taxonomy backlog; the bar is zero, so this is printed with its seeds rather
-//!   than asserted at its current value.
 
 use maps_core::render::{debug_svg, svg};
 use maps_core::ruins::RuinShape;
@@ -238,11 +234,11 @@ fn sweep() {
             "{tag_str}: wall band runs >{DEPTH_REPORT}px inside a room on {} seed(s): {deep:?}",
             deep.len()
         );
-        // A configuration with no connectors has no corridors, so it has no corridor
-        // floor to leak — zero is structural here, unlike for a fusing configuration.
         assert!(
-            conn > 0 || leaks.is_empty(),
-            "{tag_str}: no connectors, yet corridor floor was left outside every wall: {leaks:?}"
+            leaks.is_empty(),
+            "{tag_str}: corridor floor left outside every wall on {} seed(s): {leaks:?} \
+             — `fuse::commit_join_floor` should have rolled these back",
+            leaks.len()
         );
     }
 }

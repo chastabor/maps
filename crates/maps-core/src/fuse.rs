@@ -1302,42 +1302,53 @@ pub(crate) fn corridor_floor(areas: &Areas, grid: &HexGrid, s: f64) -> Vec<Corri
     out
 }
 
-/// Hand back the corridor floor the accepted connector turned out not to cover.
+/// Commit or roll back growth's corridor floor, now that the ladder has settled which
+/// connectors are real: a join cell stays exactly when some wall encloses it.
 ///
-/// Growth claims for the **full** clamp, but the ladder may still
-/// settle on a narrower rung, and then the outermost claimed cells lie beyond that
-/// rung's walls — floor outside a wall (96 cells over the measured sweep, by up to
-/// one hex). The floor *outline* is already right either way, since the connector's
-/// footprint covers every cell it claimed whichever rung it ends on, so those
-/// vertices are spliced away regardless. What is left is the cell set, which water,
-/// stones and the floor pattern still read — so release the strays once the splice
-/// has settled which corridor is real, and before any of those run.
+/// **One gate, one condition.** Growth cannot decide this — whether a corridor gets a
+/// wall depends on the acceptance ladder, which needs the traced outline — so the floor
+/// is laid first (`topology` and `ruins` both have to see a corridor as floor) and
+/// confirmed here, at the first point the answer exists. This is the commit step of that
+/// transaction, and everything downstream that reads the cell set (water, stones, the
+/// floor pattern) runs after it.
 ///
-/// Only the flanks are released. A claimed cell may also overhang the corridor's
-/// *ends*, but those sit against the rooms' own borders, where floor belongs; and
-/// dropping one would punch a hole in the corridor mouth.
+/// Three ways a claimed cell ends up enclosed by nothing, all handled by the one test:
 ///
-/// A pair with no accepted connector keeps everything it claimed: there the claimed
-/// cells *are* the join, carrying the hex-aligned neck the ladder was protecting.
-fn release_unused_claims(
-    areas: &mut Areas,
-    necks: &[Neck],
-    claimed: &std::collections::BTreeMap<(usize, usize), Vec<grid::Hex>>,
-    s: f64,
-) {
-    for neck in necks {
-        let Some(cells) = claimed.get(&neck.pair) else {
-            continue;
-        };
-        let (Some(f), ruins::RuinShape::StraightHall { hw, .. }) = (neck.frame(), neck.hall) else {
-            continue;
-        };
-        for &c in cells {
+/// 1. **Flank overhang.** Growth claims for the full clamp, but the ladder may settle on
+///    a narrower rung, leaving the outermost cells beyond that rung's side walls (96
+///    cells over the measured sweep, by up to one hex).
+/// 2. **Rejected connector.** No rung was accepted, so fusion draws the pair no wall at
+///    all, and whatever the rooms did not grow over is a lobe hanging outside both.
+/// 3. **Orphan.** The pair stopped being a pair *after* the claim: `ruins::build` erodes
+///    ruin boundaries, and `finalize` / `keep_largest_component` can drop an area
+///    outright, so a partner's cells may be gone by the time fusion runs. Then no
+///    candidate exists and nothing claims the cell. `plans/growth-time-fusion.md` flagged
+///    this as an **observed but unenforced** invariant; this enforces the consequence
+///    instead — floor no wall encloses goes back to rock.
+///
+/// The floor *outline* is already right in every case, since a connector's footprint
+/// covers every cell it claimed whichever rung it ends on, so those vertices are spliced
+/// away regardless. What is left to fix is the cell set.
+///
+/// A corridor **mouth** survives: the hall's containment test clamps to the segment, so a
+/// cell overhanging an end still counts as inside if it is within the half-width of the
+/// end cap — and one sitting against a room's border is inside that room. Dropping those
+/// would punch a hole in the mouth.
+fn commit_join_floor(areas: &mut Areas, necks: &[Neck], s: f64) {
+    let rooms: Vec<ruins::RuinShape> = (0..areas.count()).filter_map(|i| areas.shape(i)).collect();
+    let rolled_back: Vec<grid::Hex> = areas
+        .join()
+        .iter()
+        .copied()
+        .filter(|c| areas.owner_of(*c).is_some())
+        .filter(|c| {
             let p = c.center(s);
-            let pp = f.local(p).1;
-            if let Some(i) = areas.owner_of(c).filter(|_| pp.abs() >= hw) {
-                areas.remove_from_area(i, &[c]);
-            }
+            !necks.iter().any(|n| n.hall.contains(p)) && !rooms.iter().any(|sh| sh.contains(p))
+        })
+        .collect();
+    for c in rolled_back {
+        if let Some(i) = areas.owner_of(c) {
+            areas.remove_from_area(i, &[c]);
         }
     }
 }
@@ -1414,7 +1425,6 @@ pub(crate) struct Fusion {
     /// and feeding those back into `fuse_class` would let a corridor reclassify
     /// its own pair.
     barriers: Vec<(ruins::RuinShape, ruins::RuinShape)>,
-    claimed: std::collections::BTreeMap<(usize, usize), Vec<grid::Hex>>,
     cell: f64,
 }
 
@@ -1432,8 +1442,8 @@ pub(crate) fn plan(areas: &Areas, s: f64) -> (Fusion, std::collections::HashSet<
     let barriers = class_both_pairs(areas, &pairs);
     // Growth already claimed the corridor floor (`growth::claim_join_floor`); recover
     // which cells serve which pair from the geometry, so each candidate knows the
-    // footprint it must cover. Cell-keyed rather than pair-keyed because `finalize`
-    // and `keep_largest_component` re-index areas.
+    // footprint it must cover. Local to this function — the footprints are what the
+    // rest of the pipeline needs, and they live on each `Neck`.
     let mut claimed: std::collections::BTreeMap<(usize, usize), Vec<grid::Hex>> =
         std::collections::BTreeMap::new();
     let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
@@ -1477,7 +1487,6 @@ pub(crate) fn plan(areas: &Areas, s: f64) -> (Fusion, std::collections::HashSet<
         Fusion {
             necks,
             barriers,
-            claimed,
             cell: s,
         },
         join_cells,
@@ -1498,9 +1507,8 @@ impl Fusion {
     }
 
     /// Splice the accepted connectors into both layers that draw a wall, crop the
-    /// class-D barrier residue, and release claimed floor the accepted walls do
-    /// not enclose (before water, stones and the floor pattern read the cell set).
-    ///
+    /// class-D barrier residue, and commit growth's join floor — keeping only what a
+    /// wall encloses, before water, stones and the floor pattern read the cell set.
     pub(crate) fn apply(
         self,
         outline: &mut [Vec<Point>],
@@ -1520,6 +1528,6 @@ impl Fusion {
             .collect();
         splice_necks(walls, &necks, &door_cells);
         crop_internal_barriers(walls, &self.barriers);
-        release_unused_claims(areas, &necks, &self.claimed, s);
+        commit_join_floor(areas, &necks, s);
     }
 }

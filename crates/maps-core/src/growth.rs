@@ -7,6 +7,12 @@
 //! round and stopping together), so a wing is always exactly symmetric and
 //! self-sizing. Every area keeps a one-cell rock gap from every other, so the
 //! gaps become doorways.
+//!
+//! A **fused** pair is the exception: it closes that gap instead, so it gets no
+//! doorway and needs a corridor. That corridor's floor is claimed here too, as the
+//! last thing [`grow_areas`] does — see [`claim_join_floor`]. Floor ownership is
+//! growth's business start to finish, so every later stage sees a corridor as
+//! ordinary floor; `fuse` only draws the walls.
 
 use crate::AreaKind;
 use crate::grid::{CellMap, Hex, HexGrid};
@@ -15,7 +21,7 @@ use crate::symmetry::{self, Xform};
 use crate::tags::{LayoutTag, ShapeTag, SizeTag, Tags};
 use rand::Rng;
 use rand::seq::SliceRandom;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 const SQRT3: f64 = crate::grid::SQRT3;
 /// How far a **circular** dungeon room's drawn wall sits outside its outermost
@@ -408,11 +414,25 @@ pub struct Areas {
     kinds: Vec<AreaKind>,
     shapes: Vec<Option<RuinShape>>,
     owner: CellMap<u32>,
+    /// Cells growth claimed as fusion-corridor floor (see [`claim_join_floor`]).
+    /// They belong to a room's cell set like any other floor, but the outline must
+    /// lock them on their own hex corners rather than project them onto that room's
+    /// wall — they lie outside its geometry, and projecting would undo the fill.
+    ///
+    /// Keyed by cell, not by pair, deliberately: `finalize` and
+    /// `keep_largest_component` both re-index areas, and a cell set survives that
+    /// untouched. Which pair a cell serves is recovered geometrically by `fuse`.
+    join: HashSet<Hex>,
 }
 
 impl Areas {
     pub fn count(&self) -> usize {
         self.cells.len()
+    }
+
+    /// The fusion-corridor floor growth claimed — see the field.
+    pub fn join(&self) -> &HashSet<Hex> {
+        &self.join
     }
 
     pub fn owner_of(&self, h: Hex) -> Option<usize> {
@@ -687,11 +707,117 @@ pub fn grow_areas<R: Rng>(
         }
     }
 
-    let areas = finalize(grid, builds, hex_size);
+    // Fusion corridors claim their floor here, as the last act of growth: rooms are
+    // final, so the corridors are planned against the geometry the walls will use,
+    // and every later stage (doors, outline, water, decor) sees corridor floor as
+    // ordinary floor.
+    let join = claim_join_floor(grid, &mut owner, &mut builds, &mut partner, hex_size);
+    let areas = finalize(grid, builds, hex_size, join);
     // Staggered growth can occasionally leave an area whose only gap-neighbour
     // was an under-sized area that got dropped, orphaning it. Keep only the
     // largest connected component so the door graph always spans the map.
     keep_largest_component(grid, areas)
+}
+
+/// Claim the floor a fusion corridor needs — the last thing growth does.
+///
+/// Rooms have finished growing, so their wall shapes are settled: `derive_shape` on
+/// the live cells gives exactly what [`finalize`] will record, so the corridor is
+/// planned against the geometry the walls will finally use. `fuse` says *where* a
+/// corridor wants floor; the decision of whether it may have it is **growth's**. It
+/// is growth's own [`claim_batch`] — the rock gap relaxed for a fused pair, plus
+/// fuse-once, no longer mirrored by hand in a post-growth pass — tightened by one
+/// rule a corridor needs and ordinary growth does not: see the neighbour check
+/// below.
+///
+/// Doing it here also removes a reservation the old pass needed: `topology` picks
+/// door cells from *unowned* cells, and it runs later, so it now simply never
+/// considers corridor floor.
+///
+/// A line is taken only if it can be completed all the way across — half a line
+/// leaves a ragged frontier mid-corridor for the outline to weave around, which is
+/// what the walls then cross. Each side stops at its first incomplete line.
+fn claim_join_floor(
+    grid: &HexGrid,
+    owner: &mut CellMap<u32>,
+    builds: &mut [Build],
+    partner: &mut [Option<u32>],
+    hex_size: f64,
+) -> HashSet<Hex> {
+    // Provisional areas at BUILD indices (no `MIN_AREA` filter, no component drop),
+    // so a claim can be written straight back into `builds` by the same index.
+    let mut cells: Vec<Vec<Hex>> = Vec::with_capacity(builds.len());
+    let mut kinds = Vec::with_capacity(builds.len());
+    let mut shapes = Vec::with_capacity(builds.len());
+    let mut pown: CellMap<u32> = CellMap::new(grid.radius);
+    for (i, b) in builds.iter().enumerate() {
+        for &c in &b.cells {
+            pown.insert(c, i as u32);
+        }
+        cells.push(b.cells.clone());
+        kinds.push(b.kind);
+        // Nothing is claimed yet, so no cell is corridor floor to exclude.
+        shapes.push(build_shape(b, hex_size, &HashSet::new()));
+    }
+    let provisional = Areas { cells, kinds, shapes, owner: pown, join: HashSet::new() };
+
+    let meta: Vec<(AreaKind, bool)> = builds.iter().map(|b| (b.kind, b.fusible)).collect();
+    let mut join = HashSet::new();
+    for side in crate::fuse::corridor_floor(&provisional, grid, hex_size) {
+        let (a, b) = side.pair;
+        for line in side.lines {
+            // Claim the line one cell at a time against the live state — each cell
+            // sees what the ones before it did — and undo the whole line if any cell
+            // refuses. Testing the cells first and committing afterwards would let a
+            // line pass the test and then commit only partway, since claiming an
+            // early cell can fix `want`'s partner and so bar a later one.
+            let restore = partner.to_vec();
+            let mut added: Vec<(Hex, usize)> = Vec::new();
+            let complete = line.iter().all(|&(c, want)| match owner.get(c) {
+                // Already this pair's floor: the line passes through it untouched.
+                Some(o) => o as usize == a || o as usize == b,
+                // Corridor floor answers to growth's rule *and* to one more of its
+                // own: every owned neighbour must be one of this pair's two rooms.
+                // A corridor cell lies outside both rooms' geometry, so a third
+                // room touching it gets floor laid against its wall — which is what
+                // that room's wall band then runs through. `claim_batch` alone is
+                // too permissive here; it would happily take the cell and fuse the
+                // corridor's room to the stranger.
+                None if c
+                    .neighbors()
+                    .iter()
+                    .any(|&nb| owner.get(nb).is_some_and(|o| o as usize != a && o as usize != b)) =>
+                {
+                    false
+                }
+                None => match claim_batch(grid, owner, &meta, partner, want, &[c]) {
+                    Some(fused_to) => {
+                        owner.insert(c, want as u32);
+                        builds[want].cells.push(c);
+                        added.push((c, want));
+                        if let Some(o) = fused_to {
+                            partner[want] = Some(o);
+                            partner[o as usize] = Some(want as u32);
+                        }
+                        true
+                    }
+                    None => false,
+                },
+            });
+            if !complete {
+                // Reverse order, so each area's own pushes come off its tail in turn.
+                for (c, want) in added.into_iter().rev() {
+                    owner.remove(c);
+                    debug_assert_eq!(builds[want].cells.last(), Some(&c));
+                    builds[want].cells.pop();
+                }
+                partner.copy_from_slice(&restore);
+                break;
+            }
+            join.extend(added.into_iter().map(|(c, _)| c));
+        }
+    }
+    join
 }
 
 /// Union-find root lookup with path halving, over a parent-index slice.
@@ -754,7 +880,7 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
         kinds.push(areas.kinds[i]);
         shapes.push(areas.shapes[i]);
     }
-    Areas { cells, kinds, shapes, owner }
+    Areas { cells, kinds, shapes, owner, join: areas.join }
 }
 
 /// Seed one independent area within `section` (or anywhere clean if the
@@ -1137,9 +1263,26 @@ fn seed_orbit<R: Rng>(
     false
 }
 
+/// Area `b`'s geometric wall shape, or `None` if it has none.
+///
+/// Corridor floor (`join`) is excluded from the fit: it is the room's floor but not
+/// part of its ROOM, and fitting the shape over it would push the wall out past the
+/// room to enclose the corridor — into whatever lies alongside. The wall a corridor
+/// needs is the connector's own, which `fuse` splices in later.
+///
+/// Dungeon and ruin rooms both grew from a flower into their exact geometry, so both
+/// derive a hex-aligned shape the same way. (A ruin that fell back to organic growth
+/// has `is_rect=false` but is kind Organic, so it takes no shape.)
+fn build_shape(b: &Build, hex_size: f64, join: &HashSet<Hex>) -> Option<RuinShape> {
+    matches!(b.kind, AreaKind::Dungeon | AreaKind::Ruin).then(|| {
+        let room: Vec<Hex> = b.cells.iter().copied().filter(|c| !join.contains(c)).collect();
+        derive_shape(&room, b.is_rect, hex_size)
+    })
+}
+
 /// Drop under-sized areas, re-index, derive dungeon wall shapes, and build the
 /// final `Areas`.
-fn finalize(grid: &HexGrid, builds: Vec<Build>, hex_size: f64) -> Areas {
+fn finalize(grid: &HexGrid, builds: Vec<Build>, hex_size: f64, join: HashSet<Hex>) -> Areas {
     let mut cells: Vec<Vec<Hex>> = Vec::new();
     let mut kinds: Vec<AreaKind> = Vec::new();
     let mut shapes: Vec<Option<RuinShape>> = Vec::new();
@@ -1152,17 +1295,12 @@ fn finalize(grid: &HexGrid, builds: Vec<Build>, hex_size: f64) -> Areas {
         for &c in &b.cells {
             owner.insert(c, idx);
         }
-        // Dungeon and ruin rooms both grew from a flower into their exact
-        // geometry, so both derive a hex-aligned wall shape the same way. (A
-        // ruin that fell back to organic growth has is_rect=false but is kind
-        // Organic, so it takes no shape here.)
-        let shape = matches!(b.kind, AreaKind::Dungeon | AreaKind::Ruin)
-            .then(|| derive_shape(&b.cells, b.is_rect, hex_size));
+        let shape = build_shape(&b, hex_size, &join);
         cells.push(b.cells);
         kinds.push(b.kind);
         shapes.push(shape);
     }
-    Areas { cells, kinds, shapes, owner }
+    Areas { cells, kinds, shapes, owner, join }
 }
 
 pub(crate) fn weighted_index<R: Rng>(rng: &mut R, weights: &[f64]) -> usize {

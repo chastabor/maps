@@ -340,12 +340,13 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // demoted back to organic inside; dungeon rooms grew as their geometry.
     ruins::build(&mut areas, &topology, oparams.hex_size, &mut rng);
 
-    // Fusion connectors are derived HERE, before any door geometry, so mouths are
-    // laid out on the post-fusion wall rather than on a barrier the splice later
-    // replaces; `areas` is final after `ruins::build`, so this sees the same input
-    // it would later. Accepting a connector needs the traced outline, so that half
-    // waits until after `build_outline` — see `fuse::Fusion`.
-    let (fusion, neck_cells) = fuse::plan(&mut areas, &grid, &topology, oparams.hex_size);
+    // Fusion connector GEOMETRY is derived here, before any door geometry, so mouths
+    // are laid out on the post-fusion wall rather than on a barrier the splice later
+    // replaces. The corridor *floor* is already in place — `grow_areas` claimed it, so
+    // doors, water and decor have been seeing it as ordinary floor all along. Nothing
+    // here mutates `areas`; accepting a connector needs the traced outline, so the
+    // splice waits until after `build_outline` (see `fuse::Fusion`).
+    let (fusion, neck_cells) = fuse::plan(&areas, oparams.hex_size);
     let mut ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
 
     // Doorway mouths onto dungeon rooms: flush openings cut into the exact
@@ -409,7 +410,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     let jambs = doorway::jambs(&mouths, &topology, &areas, oparams.hex_size);
     let (mut outline, mut dungeon_walls) =
         build_outline(&areas, &topology, &ruin_map, &dungeon_cells, &neck_cells, &jambs, oparams, &mut rng);
-    fusion.apply(&mut outline, &mut dungeon_walls, &mut areas, &topology, &mouths);
+    fusion.apply(&mut outline, &mut dungeon_walls, &mut areas, &topology);
     let w = water::build_water(&areas, &topology, oparams, &tags, opts.water_level, &mut rng);
     let (floor, narrow) = outline::floor_and_narrow(&areas, &topology);
     let stones = decor::stones(&floor, &narrow, &w.cells, oparams.hex_size, &mut rng);

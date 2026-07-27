@@ -16,8 +16,9 @@
 //!    ([`splice_necks`]) — through the one shared traversal, so the two can never
 //!    disagree about where a corridor is.
 //!
-//! Along the way [`claim_corridor_floor`] gives a corridor floor to stand on and
-//! [`release_unused_claims`] hands back what the accepted walls do not enclose.
+//! A corridor needs floor to stand on, which it gets during **growth**: [`corridor_floor`]
+//! says where, `growth::claim_join_floor` decides what may be taken, and
+//! [`release_unused_claims`] hands back what the accepted walls turn out not to enclose.
 //!
 //! The design record, including the measurements behind the constants and the
 //! approaches that were tried and rejected, is in `plans/fuse-case-taxonomy.md`.
@@ -68,9 +69,9 @@ fn fused_necks(areas: &Areas) -> std::collections::HashSet<grid::Hex> {
 
 /// Slop around a connector's footprint, in px: how far past its exact geometry
 /// [`Neck::blocks`] still claims a vertex, and how far past the corridor span
-/// [`claim_corridor_floor`] still admits a cell. The two must agree — the claimed
-/// cells' vertices have to fall inside the footprint that replaces them, or floor
-/// pokes past a wall.
+/// [`in_claim_span`] still admits a cell. The two must agree — the claimed cells'
+/// vertices have to fall inside the footprint that replaces them, or floor pokes
+/// past a wall.
 const FOOTPRINT_SLOP: f64 = 2.0;
 
 /// Which construction produced a [`Neck`] — see plans/fuse-case-taxonomy.md.
@@ -104,8 +105,8 @@ struct Neck {
     lines: [(Point, Point); 2],
     hall: ruins::RuinShape,
     kind: NeckKind,
-    /// The floor cells [`claim_corridor_floor`] claimed for this pair, as
-    /// `(cell centre, circumradius)` — empty until it runs.
+    /// The corridor floor growth claimed for this pair (see [`corridor_floor`]), as
+    /// `(cell centre, circumradius)`.
     ///
     /// The splice replaces every outline/wall vertex inside the connector's
     /// footprint, and the hex lattice does not line up with the clamp: a claimed
@@ -158,19 +159,6 @@ impl Neck {
         let d = (bx - ax, by - ay);
         let l = d.0.hypot(d.1).max(1e-9);
         Some(Frame { o: (ax, ay), len: l, dir: (d.0 / l, d.1 / l), nrm: (-d.1 / l, d.0 / l) })
-    }
-
-    /// Whether `p` lies on one of the wall lines this connector inserts — the
-    /// stretch a door must not be cut into, since the splice overwrites it.
-    ///
-    /// Deliberately much tighter than [`blocks`](Self::blocks): a wide corridor's
-    /// hall box spans the *whole* opening between the two rooms, but only the two
-    /// new side walls are actually wall there.
-    fn on_new_wall(&self, p: Point, tol: f64) -> bool {
-        self.lines.iter().any(|&(a, b)| {
-            let (_, q) = geom::project_on_segment(p, a, b);
-            (p.0 - q.0).hypot(p.1 - q.1) <= tol
-        })
     }
 
     /// Whether `p` falls inside the footprint this connector replaces — which
@@ -330,8 +318,13 @@ fn border_along(
     }
 }
 
-/// Rows and vertical columns occupied by an area's cells. `interior_only` keeps
-/// just the cells no wall cuts (all six neighbours in the same area).
+/// Rows and vertical columns occupied by an area's **room** cells. `interior_only`
+/// keeps just the cells no wall cuts (all six neighbours in the same area).
+///
+/// Corridor floor is skipped, so classification sees the room as it grew. It is the
+/// room's floor but not part of its ROOM: a corridor stretches an area's rows and
+/// columns towards its partner, and counting those would let a pair's own corridor
+/// reclassify the pair that produced it (`fuse::plan` runs after growth claimed it).
 ///
 /// Row key is `r` (constant `r` is constant `y`: a row of adjacent cells). The
 /// column key is `2q + r`, NOT `q` — with `x = √3·s·(q + r/2)` a constant `q`
@@ -344,6 +337,9 @@ fn rows_cols(
 ) -> (std::collections::HashSet<i32>, std::collections::HashSet<i32>) {
     let (mut rows, mut cols) = (std::collections::HashSet::new(), std::collections::HashSet::new());
     for &h in &areas.cells[i] {
+        if areas.join().contains(&h) {
+            continue;
+        }
         if interior_only && !h.neighbors().iter().all(|nb| areas.owner_of(*nb) == Some(i)) {
             continue;
         }
@@ -392,9 +388,10 @@ fn fuse_class(areas: &Areas, a: usize, b: usize) -> FuseClass {
 /// then runs once per pair instead of once per pair per consumer. Pairs come out
 /// sorted (`a < b`, ascending), the order the old per-consumer scans used.
 ///
-/// Must be computed on the PRE-claim cells: `claim_corridor_floor` adds cells,
-/// and feeding those back into `fuse_class` would let a corridor reclassify its
-/// own pair.
+/// The classification is on the PRE-claim room: `rows_cols` skips corridor floor, so
+/// a pair's own corridor cannot reclassify the pair that produced it. The adjacency
+/// sweep needs no such care — a fused pair already touched before its corridor
+/// existed, and corridor floor may not touch a third area at all.
 fn fuse_pairs(areas: &Areas) -> Vec<(usize, usize, FuseClass)> {
     let mut touching: std::collections::BTreeSet<(usize, usize)> = std::collections::BTreeSet::new();
     for a in 0..areas.count() {
@@ -1038,73 +1035,97 @@ fn splice_outline_necks(outline: &mut [Vec<Point>], necks: Vec<Neck>) -> Vec<Nec
     kept
 }
 
-/// Claim the unowned floor a fused pair's corridor spans, and return the cells
-/// claimed, per pair.
+/// Every connector candidate for every fused pair, widest-first per pair.
 ///
-/// A connector redraws walls and the floor *outline* but never claims cells. On a
-/// wide fusion that is invisible — the floor already spans the contact — and on a
-/// narrow one it is the whole problem: a pair touching across a single hex face has
-/// one hex of floor under a corridor several hexes long, so the corridor's walls run
-/// through solid rock and cross the real floor boundary. The acceptance ladder then
-/// degrades the corridor to a stub (the repro pair took the 0.36 rung, 25 units of a
-/// 70-unit clamp). Filling the span first is what lets the full clamp stand.
+/// One classification pass feeds all four axis families plus the angle neck. Called
+/// twice per map — once by growth, to find where a corridor wants floor, and once
+/// after the outline to draw the walls — because the areas it reads are identical
+/// by then and re-deriving is cheaper than carrying the necks across the pipeline.
+fn plan_necks(areas: &Areas, s: f64) -> Vec<Neck> {
+    // The two hex diagonals: corridor axis ∓30°, normal 60°/120°. Which one a
+    // pair uses is chosen per pair inside `axis_necks` (the mirror rule).
+    const AP: f64 = grid::HEX_APOTHEM;
+    const DIAGONALS: [(Point, Point); 2] = [((AP, -0.5), (0.5, AP)), ((AP, 0.5), (-0.5, AP))];
+    const LEVEL: [(Point, Point); 1] = [((1.0, 0.0), (0.0, 1.0))];
+    const UPRIGHT: [(Point, Point); 1] = [((0.0, 1.0), (1.0, 0.0))];
+    // Class A gets both axis-aligned axes and picks per pair: these corner pairs
+    // are geometrically near-stacked (overlapping on one axis with a small gap on
+    // the other), so the axis clamp already lands the walls right and the "L" is
+    // just the junction with each room's own edge, which the outline traces anyway.
+    const BOTH_AXES: [(Point, Point); 2] = [((1.0, 0.0), (0.0, 1.0)), ((0.0, 1.0), (1.0, 0.0))];
+
+    let pairs = fuse_pairs(areas);
+    let mut necks = axis_necks(areas, &pairs, FuseClass::Horiz, &LEVEL, s);
+    necks.extend(axis_necks(areas, &pairs, FuseClass::Vert, &UPRIGHT, s));
+    // Class D pairs whose shapes do NOT overlap: a diagonal corridor across the gap.
+    necks.extend(axis_necks(areas, &pairs, FuseClass::Both, &DIAGONALS, s));
+    necks.extend(axis_necks(areas, &pairs, FuseClass::Angle, &BOTH_AXES, s));
+    necks.extend(circle_rect_necks(areas, &pairs, s));
+    necks
+}
+
+/// Whether `p` lies in the span a corridor claims floor for: between the two rooms'
+/// borders along the axis, and STRICTLY between the two walls across it.
 ///
-/// The safety rule is [`growth::placeable`]'s one-cell rock gap relaxed exactly as
-/// fusion relaxes it, and no further: a cell joins only if every neighbour is unowned
-/// or owned by **this pair**. A cell abutting a third area would close that area's
-/// rock gap with no door — the unintended-passage bug — and hand one of the pair a
-/// second partner, breaking growth's fuse-once rule. Door, merged-pillar and
-/// exit-stub cells stay unowned: they are floor already, and `topology` was fixed
-/// before this runs, so it cannot react to losing one.
+/// The one definition, shared by `corridor_floor` (which asks growth for those cells)
+/// and `plan` (which recovers them afterwards to build each candidate's footprint).
+/// They must agree exactly: a claimed cell missing from the footprint keeps its
+/// vertices through the splice, and they are then floor poking past a wall.
+fn in_claim_span(neck: &Neck, p: Point) -> bool {
+    let (Some(f), ruins::RuinShape::StraightHall { hw, .. }) = (neck.frame(), neck.hall) else {
+        return false;
+    };
+    let (t, pp) = f.local(p);
+    t >= -FOOTPRINT_SLOP && t <= f.len + FOOTPRINT_SLOP && pp.abs() < hw - 1e-6
+}
+
+/// One side of one corridor, as the lattice **lines** running along it, ordered
+/// outward from the centreline: `growth` walks them in order and stops at the first
+/// it cannot complete.
 ///
-/// Filling proceeds a **line at a time, outward from the centreline**, stopping on
-/// each side at the first line it cannot complete — see the walk below for why a half
-/// line is worse than none. Only the *widest* candidate per pair claims (candidates
-/// are widest-first), and only the wide corridors: the narrow hex-aligned angle
-/// neck already runs along cells that are floor.
+/// Cells sharing an offset across the corridor share a line, whatever the axis, so
+/// one grouping serves level, upright and diagonal alike (a level corridor's lines
+/// are hex rows; an upright corridor's are the true vertical columns, whose cells
+/// sit two apart — see `rows_cols`). Each cell carries which of the pair should own
+/// it: floor beside the circle belongs to the circle's room.
+pub(crate) struct CorridorSide {
+    pub(crate) pair: (usize, usize),
+    pub(crate) lines: Vec<Vec<(grid::Hex, usize)>>,
+}
+
+/// Where every fused pair's corridor wants floor, as lines to walk outward.
 ///
-/// The claimed cells must be tagged with the **join's own hex boundary** rather
-/// than either room's shape: a claimed cell lies outside both rooms' geometry, so
-/// `splice_dungeon_runs` would project it back onto a room wall and silently undo
-/// the fill. Returned per pair, which is also what [`release_unused_claims`] needs
-/// afterwards.
-fn claim_corridor_floor(
-    areas: &mut Areas,
-    grid: &HexGrid,
-    topology: &Topology,
-    necks: &mut [Neck],
-    s: f64,
-) -> std::collections::BTreeMap<(usize, usize), Vec<grid::Hex>> {
-    use std::collections::{BTreeMap, HashSet};
-    // Floor owned by the door/exit machinery rather than by an area.
-    let mut reserved: HashSet<grid::Hex> = topology.doors.iter().map(|d| d.cell).collect();
-    reserved.extend(topology.merged_doors.iter().map(|&(_, _, p)| p));
-    for e in &topology.exits {
-        reserved.extend(e.stub.iter().copied());
-    }
-    // Claims accumulate here first, so the neighbour rule sees earlier claims (a
-    // cell one pair took is a third area to the next pair) before `areas` is
-    // touched. `BTreeMap` keeps the applied order independent of hashing.
-    let mut pending: BTreeMap<grid::Hex, usize> = BTreeMap::new();
-    // Cells claimed per pair, so every candidate of that pair can be told about
-    // them — the ladder may settle on a narrower rung than the one that claimed.
-    let mut per_pair: BTreeMap<(usize, usize), Vec<grid::Hex>> = BTreeMap::new();
-    for neck in necks.iter() {
+/// WHY a corridor needs floor at all: a connector redraws walls and the floor
+/// *outline* but claims no cells of its own. On a wide fusion that is invisible — the
+/// floor already spans the contact — and on a narrow one it is the whole problem: a
+/// pair touching across a single hex face has one hex of floor under a corridor
+/// several hexes long, so the corridor's walls run through solid rock and cross the
+/// real floor boundary. The acceptance ladder then degrades the corridor to a stub
+/// (the repro pair took the 0.36 rung, 25 units of a 70-unit clamp). Filling the span
+/// is what lets the full clamp stand.
+///
+/// This function is geometry only — it says nothing about whether a cell may be
+/// taken. That is [`growth::claim_join_floor`](crate::growth)'s call, which is why
+/// the safety rule lives there and in one place; this function used to claim the
+/// cells itself and mirror that rule by hand.
+///
+/// Only the wide corridors ask: the narrow hex-aligned angle neck already runs
+/// along cells that are floor. The widest candidate per pair asks (candidates are
+/// widest-first), because the floor has to cover the widest wall the ladder might
+/// accept.
+pub(crate) fn corridor_floor(areas: &Areas, grid: &HexGrid, s: f64) -> Vec<CorridorSide> {
+    use std::collections::BTreeMap;
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    for neck in plan_necks(areas, s) {
         let (a, b) = neck.pair;
-        if !neck.is_corridor() || per_pair.contains_key(&(a, b)) {
+        if !neck.is_corridor() || !seen.insert((a, b)) {
             continue;
         }
         let (Some(sa), Some(sb)) = (areas.shape(a), areas.shape(b)) else { continue };
-        let (Some(f), ruins::RuinShape::StraightHall { hw, .. }) = (neck.frame(), neck.hall)
-        else {
-            continue;
-        };
-        // Every cell the corridor covers, grouped into the lattice **lines** that
-        // run along it: cells sharing an offset across the corridor share a line,
-        // whatever the axis, so one grouping serves level, upright and diagonal
-        // alike (a level corridor's lines are hex rows; an upright corridor's are
-        // the true vertical columns, whose cells sit two apart — see `rows_cols`).
-        let mut lines: BTreeMap<i64, Vec<grid::Hex>> = BTreeMap::new();
+        let Some(f) = neck.frame() else { continue };
+        // Group the cells the corridor covers into lines by their offset across it.
+        let mut lines: BTreeMap<i64, Vec<(grid::Hex, usize)>> = BTreeMap::new();
         for &c in grid.cells() {
             let p = c.center(s);
             // Between the two rooms' borders along the axis — the ends are the
@@ -1112,85 +1133,32 @@ fn claim_corridor_floor(
             // between the two walls across it. A cell centred *on* a wall is half
             // outside it, and that is the common case rather than a fluke: the
             // clamp bounds are the rooms' own hex-aligned borders, which land on
-            // cell centres. Claiming one wedges a hex-locked cell across the very
-            // line the wall has to follow, which cost four seeds their connector
-            // when measured.
-            let (t, pp) = f.local(p);
-            if t < -FOOTPRINT_SLOP || t > f.len + FOOTPRINT_SLOP || pp.abs() >= hw - 1e-6 {
+            // cell centres.
+            if !in_claim_span(&neck, p) {
                 continue;
             }
-            lines.entry((pp * 64.0).round() as i64).or_default().push(c);
+            let pp = f.local(p).1;
+            let owner = if sa.wall_dist(p) <= sb.wall_dist(p) { a } else { b };
+            lines.entry((pp * 64.0).round() as i64).or_default().push((c, owner));
         }
-        // Work OUTWARD from the centreline, one line at a time, and stop each side
-        // at the first line that cannot be completed. A line only counts if it ends
-        // up floor of this pair all the way across — already theirs, claimable now,
-        // or door/exit floor. Half a line is worse than none: it leaves a ragged
-        // frontier mid-corridor for the outline to weave around, which is what the
-        // walls then cross. Whole lines widen the passage evenly from the seam out.
+        // Split into the two sides and order each outward from the centreline.
         let keys: Vec<i64> = lines.keys().copied().collect();
         let split = keys.partition_point(|&k| k < 0);
-        let outward = [keys[split..].to_vec(), keys[..split].iter().rev().copied().collect()];
-        let mut got: Vec<grid::Hex> = Vec::new();
-        for side in outward {
-            for k in side {
-                let mut take: Vec<grid::Hex> = Vec::new();
-                let complete = lines[&k].iter().all(|&c| {
-                    match areas.owner_of(c).or_else(|| pending.get(&c).copied()) {
-                        Some(o) => o == a || o == b,
-                        // Door, pillar and exit cells are floor already; leave them
-                        // unowned (topology was fixed before this runs and cannot
-                        // react to losing one) but let the line pass.
-                        None if reserved.contains(&c) => true,
-                        None => {
-                            let owner_of = |h: grid::Hex| {
-                                areas.owner_of(h).or_else(|| pending.get(&h).copied())
-                            };
-                            let safe = c
-                                .neighbors()
-                                .iter()
-                                .all(|&nb| owner_of(nb).is_none_or(|o| o == a || o == b));
-                            if safe {
-                                take.push(c);
-                            }
-                            safe
-                        }
-                    }
-                });
-                if !complete {
-                    break;
-                }
-                for c in take {
-                    // Floor beside the circle belongs to the circle's room:
-                    // whichever border it sits nearer takes it.
-                    let p = c.center(s);
-                    pending.insert(c, if sa.wall_dist(p) <= sb.wall_dist(p) { a } else { b });
-                    got.push(c);
-                }
+        for side in [keys[split..].to_vec(), keys[..split].iter().rev().copied().collect::<Vec<_>>()]
+        {
+            let ls: Vec<Vec<(grid::Hex, usize)>> =
+                side.into_iter().map(|k| lines[&k].clone()).collect();
+            if !ls.is_empty() {
+                out.push(CorridorSide { pair: (a, b), lines: ls });
             }
         }
-        per_pair.insert((a, b), got);
     }
-    for neck in necks.iter_mut() {
-        if let Some(cells) = per_pair.get(&neck.pair) {
-            neck.claimed = cells.iter().map(|c| c.center(s)).collect();
-        }
-    }
-    let mut by_area: BTreeMap<usize, Vec<grid::Hex>> = BTreeMap::new();
-    for (&c, &i) in &pending {
-        by_area.entry(i).or_default().push(c);
-    }
-    for (i, add) in by_area {
-        let mut cells = areas.cells[i].clone();
-        cells.extend(add);
-        areas.replace_area(i, cells);
-    }
-    per_pair.retain(|_, cells| !cells.is_empty());
-    per_pair
+    out
 }
 
 /// Hand back the corridor floor the accepted connector turned out not to cover.
 ///
-/// [`claim_corridor_floor`] claims for the **full** clamp, but the ladder may still
+/// Growth claims for the **full** clamp, but the ladder may still
 /// settle on a narrower rung, and then the outermost claimed cells lie beyond that
 /// rung's walls — floor outside a wall (96 cells over the measured sweep, by up to
 /// one hex). The floor *outline* is already right either way, since the connector's
@@ -1311,37 +1279,47 @@ pub(crate) struct Fusion {
 /// — the narrow seams' and the claimed corridor floor's. Both belong to the join
 /// rather than to either room, so projecting them onto a room wall would pinch the
 /// seam shut or undo the fill.
-pub(crate) fn plan(
-    areas: &mut Areas,
-    grid: &HexGrid,
-    topology: &Topology,
-    s: f64,
-) -> (Fusion, std::collections::HashSet<grid::Hex>) {
-    // The two hex diagonals: corridor axis ∓30°, normal 60°/120°. Which one a
-    // pair uses is chosen per pair inside `axis_necks` (the mirror rule).
-    const AP: f64 = grid::HEX_APOTHEM;
-    const DIAGONALS: [(Point, Point); 2] = [((AP, -0.5), (0.5, AP)), ((AP, 0.5), (-0.5, AP))];
-    const LEVEL: [(Point, Point); 1] = [((1.0, 0.0), (0.0, 1.0))];
-    const UPRIGHT: [(Point, Point); 1] = [((0.0, 1.0), (1.0, 0.0))];
-    // Class A gets both axis-aligned axes and picks per pair: these corner pairs
-    // are geometrically near-stacked (overlapping on one axis with a small gap on
-    // the other), so the axis clamp already lands the walls right and the "L" is
-    // just the junction with each room's own edge, which the outline traces anyway.
-    const BOTH_AXES: [(Point, Point); 2] = [((1.0, 0.0), (0.0, 1.0)), ((0.0, 1.0), (1.0, 0.0))];
-
-    // Classify ONCE (pre-claim cells); every builder and the barrier list share it.
+pub(crate) fn plan(areas: &Areas, s: f64) -> (Fusion, std::collections::HashSet<grid::Hex>) {
+    let mut necks = plan_necks(areas, s);
     let pairs = fuse_pairs(areas);
-    let mut necks = axis_necks(areas, &pairs, FuseClass::Horiz, &LEVEL, s);
-    necks.extend(axis_necks(areas, &pairs, FuseClass::Vert, &UPRIGHT, s));
-    // Class D pairs whose shapes do NOT overlap: a diagonal corridor across the gap.
-    necks.extend(axis_necks(areas, &pairs, FuseClass::Both, &DIAGONALS, s));
-    necks.extend(axis_necks(areas, &pairs, FuseClass::Angle, &BOTH_AXES, s));
-    necks.extend(circle_rect_necks(areas, &pairs, s));
 
-    let mut join_cells = fused_necks(areas);
     let barriers = class_both_pairs(areas, &pairs);
-    let claimed = claim_corridor_floor(areas, grid, topology, &mut necks, s);
-    join_cells.extend(claimed.values().flatten().copied());
+    // Growth already claimed the corridor floor (`growth::claim_join_floor`); recover
+    // which cells serve which pair from the geometry, so each candidate knows the
+    // footprint it must cover. Cell-keyed rather than pair-keyed because `finalize`
+    // and `keep_largest_component` re-index areas.
+    let mut claimed: std::collections::BTreeMap<(usize, usize), Vec<grid::Hex>> =
+        std::collections::BTreeMap::new();
+    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    for n in &necks {
+        if !n.is_corridor() || !seen.insert(n.pair) {
+            continue;
+        }
+        let mine: Vec<grid::Hex> = areas
+            .join()
+            .iter()
+            .copied()
+            .filter(|c| in_claim_span(n, c.center(s)))
+            .collect();
+        if !mine.is_empty() {
+            claimed.insert(n.pair, mine);
+        }
+    }
+    for neck in necks.iter_mut() {
+        if let Some(cells) = claimed.get(&neck.pair) {
+            neck.claimed = cells.iter().map(|c| c.center(s)).collect();
+        }
+    }
+    // The outline must lock join floor on its own hex corners, not project it onto a
+    // room's wall: it lies outside that room's geometry, and projecting undoes the fill.
+    if std::env::var_os("MAPS_JOIN_PROBE").is_some() {
+        let lost = areas.join().iter().filter(|&&c| areas.owner_of(c).is_none()).count();
+        if lost > 0 {
+            eprintln!("PROBE join cells lost between growth and fuse: {lost} of {}", areas.join().len());
+        }
+    }
+    let mut join_cells = fused_necks(areas);
+    join_cells.extend(areas.join().iter().copied());
     (Fusion { necks, barriers, claimed, cell: s }, join_cells)
 }
 
@@ -1349,8 +1327,8 @@ impl Fusion {
     /// Whether a point sits on a NARROW connector — the only ones a door may be
     /// nudged aside for. A wide corridor spans a whole flank, and moving a door
     /// for one can fold the traced outline at the jamb however small the move, so
-    /// those yield to the door instead (dropped in [`apply`](Self::apply) if a
-    /// mouth sits on one).
+    /// a corridor lets the door stay where it is and breaks its own wall for the
+    /// doorway instead — see [`Neck::jamb_edge`].
     pub(crate) fn blocks_narrow(&self, p: Point) -> bool {
         self.necks.iter().filter(|n| !n.is_corridor()).any(|n| n.blocks(p))
     }
@@ -1359,35 +1337,15 @@ impl Fusion {
     /// class-D barrier residue, and release claimed floor the accepted walls do
     /// not enclose (before water, stones and the floor pattern read the cell set).
     ///
-    /// A wide connector first yields to any door already cut where its wall would
-    /// go — the fusion falls back to the band merge for that pair rather than
-    /// erasing a doorway.
     pub(crate) fn apply(
         self,
         outline: &mut [Vec<Point>],
         walls: &mut [Vec<(Point, ruins::RuinShape)>],
         areas: &mut Areas,
         topology: &Topology,
-        mouths: &[crate::doorway::Mouth],
     ) {
         let s = self.cell;
-        let kept: Vec<Neck> = self
-            .necks
-            .into_iter()
-            .filter(|n| {
-                !n.is_corridor()
-                    || !mouths.iter().any(|mo| {
-                        let h = mo.opening / 2.0;
-                        [-1.0, 0.0, 1.0].iter().any(|f| {
-                            n.on_new_wall(
-                                (mo.center.0 + mo.axis.0 * h * f, mo.center.1 + mo.axis.1 * h * f),
-                                s / 2.0,
-                            )
-                        })
-                    })
-            })
-            .collect();
-        let necks = splice_outline_necks(outline, kept);
+        let necks = splice_outline_necks(outline, self.necks);
         // Door cells (and the pillar a merged pair swallows) locate the doorway
         // gaps a connector's wall has to break for — see `Neck::jamb_edge`.
         let door_cells: Vec<Point> = topology

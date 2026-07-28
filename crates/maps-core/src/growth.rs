@@ -524,8 +524,8 @@ pub struct Areas {
     shapes: Vec<Option<RuinShape>>,
     owner: CellMap<u32>,
     /// The fusion-corridor floor (see `claim_join_floor`) — cells that ARE corridor
-    /// floor, not cells that once were: `remove_from_area` and `keep_largest_component`
-    /// both prune it, so a reader needs no ownership filter.
+    /// floor, not cells that once were: `mark_eroded`, `remove_from_area` and
+    /// `keep_largest_component` all prune it, so a reader needs no ownership filter.
     /// They belong to a room's cell set like any other floor, but the outline must
     /// lock them on their own hex corners rather than project them onto that room's
     /// wall — they lie outside its geometry, and projecting would undo the fill.
@@ -632,37 +632,18 @@ impl Areas {
         self.shapes[i] = shape;
     }
 
-    /// Swap out an area's entire cell set (ruins reshaping). The new cells
-    /// must be free or already owned by this area.
-    pub fn replace_area(&mut self, i: usize, new_cells: Vec<Hex>) {
-        for c in &self.cells[i] {
-            self.owner.remove(*c);
-        }
-        for &c in &new_cells {
-            debug_assert!(self.owner.get(c).is_none_or(|o| o as usize == i));
-            self.owner.insert(c, i as u32);
-        }
-        self.cells[i] = new_cells;
-        // Reshaping can drop a cell the corridor claimed — this is how a fused pair loses
-        // a side (see `fuse::Fusion::release_orphans`). Keep `join` to owned cells only.
-        self.prune_join();
-    }
-
-    /// Free the given cells of `area` (used by corridor shrinking).
+    /// Take the given cells out of `area` entirely — footprint included.
+    ///
+    /// Unlike [`mark_eroded`](Self::mark_eroded) this leaves no record, so it is for cells
+    /// that should never have been the area's in the first place: `fuse` rolling back
+    /// corridor floor no wall ended up enclosing. Ground the area really held and lost
+    /// belongs in `eroded`.
     pub fn remove_from_area(&mut self, area: usize, remove: &[Hex]) {
         for &c in remove {
             self.owner.remove(c);
             self.join.remove(&c);
         }
         self.cells[area].retain(|c| !remove.contains(c));
-    }
-
-    /// Drop any corridor floor that is no longer owned, so [`join`](Self::join) keeps
-    /// meaning "is corridor floor" rather than "was once claimed" and its readers need no
-    /// ownership filter of their own.
-    fn prune_join(&mut self) {
-        let owner = &self.owner;
-        self.join.retain(|c| owner.get(*c).is_some());
     }
 }
 

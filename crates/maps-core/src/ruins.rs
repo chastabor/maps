@@ -517,9 +517,9 @@ const EROSION_FRAC: f64 = 0.18;
 /// leaving organic bites in the otherwise-clean wall. Never removes a cell that
 /// would disconnect the area, drop it below [`crate::growth::MIN_AREA`], or is
 /// needed to keep one of its doors/exits reachable. Freed cells become rock, so
-/// the footprint only shrinks — erosion can never re-introduce an overlap with
-/// a neighbour. The derived [`RuinShape`] is left in place: intact walls still
-/// project onto it while the bites read organic.
+/// the bites can never re-introduce an overlap with a neighbour — the cells are given
+/// back to rock, not handed to anyone. The derived [`RuinShape`] is left in place: intact
+/// walls still project onto it while the bites read organic.
 fn erode<R: Rng>(areas: &mut Areas, topology: &Topology, i: usize, rng: &mut R) {
     let n0 = areas.floor_cells(i).count();
     if n0 <= crate::growth::MIN_AREA {
@@ -576,8 +576,16 @@ fn erode<R: Rng>(areas: &mut Areas, topology: &Topology, i: usize, rng: &mut R) 
         }
     }
     if removed > 0 {
-        remaining.sort_unstable();
-        areas.replace_area(i, remaining);
+        // Marked, not removed: the bitten cells stay in the area's footprint as a record
+        // of where the ruin stood, and only ownership is released — they read as rock and
+        // are free for another area to claim. See `plans/immutable-growth.md`.
+        let keep: HashSet<Hex> = remaining.into_iter().collect();
+        let bitten: Vec<Hex> = areas.floor_cells(i).filter(|c| !keep.contains(c)).collect();
+        areas.mark_eroded(i, &bitten);
+        // Iteration order downstream follows the footprint, and some consumers are
+        // order-sensitive (fuse's seam scans, `circle_rect_necks`' nearest-cell tie-break).
+        // The removal this replaced handed back a sorted survivor list, so sort to match.
+        areas.cells[i].sort_unstable();
     }
 }
 

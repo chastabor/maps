@@ -185,18 +185,34 @@ pub fn growth_svg(map: &CaveMap, labels: bool) -> String {
         }
     }
 
-    // Tiles their OWN shape fails to contain — the defect this view exists to expose.
+    // Tiles their own area's shape fails to bound — the defect this view exists to expose.
+    //
+    // The test is per shape kind, because the two are supposed to sit differently relative to
+    // their tiles (see `plans/tile-first-render.md`):
+    //
+    // - a **circle** contains its tiles, so a tile with any vertex outside is wrong;
+    // - a **rect**'s border belongs *inside* its tiles — sides down the outer column, top and
+    //   bottom joining the shoulder vertices — so an overhang is by design, and only a tile
+    //   lying WHOLLY outside the rect is wrong.
+    //
+    // Flagging a rect's overhang would make this count impossible to drive to zero, which is
+    // the whole point of drawing it.
     s.push_str(r##"<g fill="none" stroke="#ff2d2d" stroke-width="1.6">"##);
     for i in 0..map.areas.count() {
         let Some(sh) = map.areas.shape(i) else {
             continue;
         };
-        for h in map.areas.floor_cells(i) {
+        // ROOM cells, which is what the shape was derived from. Corridor floor sits outside
+        // the room's own border by design — the connector walls it — and is already marked
+        // white above, so flagging it here would only ever be noise.
+        for h in map.areas.room_cells(i) {
             let c = h.center(S);
-            let escapes = (0..6)
-                .map(|k| crate::grid::hex_corner(c, k, S))
-                .any(|v| !sh.contains(v));
-            if escapes {
+            let mut vs = (0..6).map(|k| crate::grid::hex_corner(c, k, S));
+            let unbounded = match sh {
+                RuinShape::Rect { .. } => !vs.any(|v| sh.contains(v)) && !sh.contains(c),
+                _ => vs.any(|v| !sh.contains(v)),
+            };
+            if unbounded {
                 let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(h));
             }
         }

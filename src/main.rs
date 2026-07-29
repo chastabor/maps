@@ -43,7 +43,10 @@ Options:
   -d, --debug          render raw hex cells instead of the finished map
   -G, --growth         render growth's output only: tiles, which area owns each,
                        and the shape derived from them (tiles their own shape
-                       fails to contain are outlined in red)
+                       fails to bound are outlined in red)
+  -T, --tile-shapes    derive circles that CONTAIN their tiles (r = farthest tile
+                       vertex). Transitional: the finished render still projects
+                       onto shapes and folds, so pair this with --growth
   -h, --help           show this help"
     )
 }
@@ -62,6 +65,7 @@ fn main() {
     let mut out: Option<String> = None;
     let mut debug: Option<bool> = None;
     let mut growth: bool = false;
+    let mut tile_bounded: Option<bool> = None;
     let mut water_level: Option<f64> = None;
     let mut title: Option<String> = None;
     let mut ruins_level: Option<f64> = None;
@@ -154,6 +158,7 @@ fn main() {
             "-o" | "--out" => out = Some(value("--out")),
             "-d" | "--debug" => debug = Some(true),
             "-G" | "--growth" => growth = true,
+            "-T" | "--tile-shapes" => tile_bounded = Some(true),
             "-h" | "--help" => {
                 println!("{}", usage());
                 return;
@@ -209,6 +214,7 @@ fn main() {
             decor_seed: decor_seed.or(config.decor_seed),
             name_seed: name_seed.or(config.name_seed),
             title: title.or_else(|| config.title.clone()),
+            tile_bounded_shapes: tile_bounded,
         },
     );
     let rendered = if growth {

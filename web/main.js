@@ -130,6 +130,7 @@ function collectOptions(defaults) {
   if (name) o.title = name;
   if ($("labels").checked) o.labels = true;
   if ($("growth-view").checked) o.growthView = true;
+  if ($("tile-shapes").checked) o.tileBoundedShapes = true;
   return o;
 }
 
@@ -176,6 +177,7 @@ function updateHash(out) {
   if (name) p.set("title", name);
   if ($("labels").checked) p.set("labels", "1");
   if ($("growth-view").checked) p.set("growthView", "1");
+  if ($("tile-shapes").checked) p.set("tileShapes", "1");
   history.replaceState(null, "", "#" + p.toString());
 }
 
@@ -199,6 +201,7 @@ function loadHash() {
   if (p.get("title")) $("map-name").value = p.get("title");
   if (p.get("labels")) $("labels").checked = true;
   if (p.get("growthView")) $("growth-view").checked = true;
+  if (p.get("tileShapes")) $("tile-shapes").checked = true;
   for (const { family } of LEVEL_SLIDERS) {
     const v = p.get(family);
     if (v !== null) {
@@ -240,6 +243,7 @@ document
 $("map-name").onchange = render;
 $("labels").onchange = render;
 $("growth-view").onchange = render;
+$("tile-shapes").onchange = render;
 for (const { family } of LEVEL_SLIDERS) {
   $(`${family}-auto`).onchange = render; // render recomputes disabled states
   $(family).oninput = () => {

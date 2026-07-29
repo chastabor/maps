@@ -32,6 +32,8 @@ pub struct Options {
     title: Option<String>,
     /// Overlay each area's index + content hash at its centroid (diagnostic).
     labels: Option<bool>,
+    /// Derive circles that contain their tiles (transitional — see `GenOptions`).
+    tile_bounded_shapes: Option<bool>,
     /// Render growth's output instead of the finished map: tiles, which area owns each, and
     /// the shape derived from them. Diagnostic — no outline, smoothing or wall band.
     growth_view: Option<bool>,
@@ -106,6 +108,7 @@ pub fn generate(opts: JsValue) -> Result<JsValue, JsValue> {
             decor_seed: parse_seed(&o.decor_seed, "decorSeed")?,
             name_seed: parse_seed(&o.name_seed, "nameSeed")?,
             title: o.title.clone(),
+            tile_bounded_shapes: o.tile_bounded_shapes,
         },
     );
 

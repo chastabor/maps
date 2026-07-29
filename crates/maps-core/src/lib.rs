@@ -181,6 +181,13 @@ pub struct GenOptions {
     /// Fine-tunes the ruins tag's default (ruins 0.5, untagged 0.1); the
     /// `organic` tag always means no ruins and ignores this.
     pub ruins_level: Option<f64>,
+    /// Derive circles that **contain** their tiles (`r` = farthest tile vertex, i.e. `√n·s`
+    /// for a complete flower) instead of fitting just inside them.
+    ///
+    /// Transitional and default off — the render still projects the traced tile boundary onto
+    /// each shape, which folds when the shape sits outside that boundary. Use it with the
+    /// growth view to see the intended geometry. See `plans/tile-first-render.md`.
+    pub tile_bounded_shapes: Option<bool>,
     /// Fraction (0..=1) of the geometric (ruin) areas promoted to clean
     /// **dungeon** rooms — crisp walls, rendered doors, and (later) symmetric
     /// wings — instead of weathered ruins. Nested inside `ruins_level`: with
@@ -299,7 +306,8 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         Tags::random(&mut tag_rng)
     });
     let mut rng = Pcg64::seed_from_u64(shape_seed);
-    let params = resolve(&tags, &mut rng);
+    let mut params = resolve(&tags, &mut rng);
+    params.tile_bounded = opts.tile_bounded_shapes.unwrap_or(false);
     // The tag picks the state; the level only fine-tunes it: organic always
     // means no ruins, while ruins/untagged use the override in place of
     // their default fraction.

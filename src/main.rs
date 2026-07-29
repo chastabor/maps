@@ -1,4 +1,5 @@
 use maps::config::Config;
+use maps::core::growth_view::growth_svg;
 use maps::core::render::{debug_svg, svg};
 use maps::core::tags::Tags;
 use maps::core::{GenOptions, GridStyle, Mode, generate_with};
@@ -40,6 +41,9 @@ Options:
                        fuse with a same-kind neighbour into one compound
   -o, --out <FILE>     output SVG path (default: cave.svg)
   -d, --debug          render raw hex cells instead of the finished map
+  -G, --growth         render growth's output only: tiles, which area owns each,
+                       and the shape derived from them (tiles their own shape
+                       fails to contain are outlined in red)
   -h, --help           show this help"
     )
 }
@@ -57,6 +61,7 @@ fn main() {
     let mut tags: Option<Tags> = None;
     let mut out: Option<String> = None;
     let mut debug: Option<bool> = None;
+    let mut growth: bool = false;
     let mut water_level: Option<f64> = None;
     let mut title: Option<String> = None;
     let mut ruins_level: Option<f64> = None;
@@ -148,6 +153,7 @@ fn main() {
             "--title" => title = Some(value("--title")),
             "-o" | "--out" => out = Some(value("--out")),
             "-d" | "--debug" => debug = Some(true),
+            "-G" | "--growth" => growth = true,
             "-h" | "--help" => {
                 println!("{}", usage());
                 return;
@@ -205,7 +211,13 @@ fn main() {
             title: title.or_else(|| config.title.clone()),
         },
     );
-    let rendered = if debug { debug_svg(&map) } else { svg(&map) };
+    let rendered = if growth {
+        growth_svg(&map, true)
+    } else if debug {
+        debug_svg(&map)
+    } else {
+        svg(&map)
+    };
     if let Err(e) = std::fs::write(&out, rendered) {
         fail(&format!("failed to write {out}: {e}"));
     }

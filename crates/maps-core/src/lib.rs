@@ -10,6 +10,8 @@ pub(crate) mod fuse;
 pub mod geom;
 pub mod grid;
 pub mod growth;
+/// Growth-only view: tiles and the shapes derived from them, with no render pipeline.
+pub mod growth_view;
 pub mod naming;
 pub mod outline;
 pub mod render;

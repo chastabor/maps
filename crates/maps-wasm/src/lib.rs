@@ -32,6 +32,9 @@ pub struct Options {
     title: Option<String>,
     /// Overlay each area's index + content hash at its centroid (diagnostic).
     labels: Option<bool>,
+    /// Render growth's output instead of the finished map: tiles, which area owns each, and
+    /// the shape derived from them. Diagnostic — no outline, smoothing or wall band.
+    growth_view: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -107,7 +110,11 @@ pub fn generate(opts: JsValue) -> Result<JsValue, JsValue> {
     );
 
     let out = Output {
-        svg: render::svg_opts(&map, o.labels.unwrap_or(false)),
+        svg: if o.growth_view.unwrap_or(false) {
+            maps_core::growth_view::growth_svg(&map, o.labels.unwrap_or(false))
+        } else {
+            render::svg_opts(&map, o.labels.unwrap_or(false))
+        },
         title: map.title.clone(),
         tags: map.tags.to_string(),
         seed: seed.to_string(),

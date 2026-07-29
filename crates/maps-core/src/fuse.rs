@@ -793,11 +793,16 @@ fn axis_necks(
                 }
                 // Widen to cover the tiles the pair actually touches. Those tiles are floor
                 // whatever the fitted shapes say, so a corridor that stops short of them
-                // leaves the seam's outer row bounded by nothing but the organic trace. The
-                // walls out there end on tile edges rather than on an arc — see `end` below.
+                // leaves the seam's outer row bounded by nothing but the organic trace.
+                //
+                // Capped by the support intersection, which is where both shapes exist at all.
+                // Beyond it a wall has no border on one side and would be drawn past the room
+                // it is supposed to bound — measured: a rect's corridor wall 6px below its own
+                // bottom edge. Widening therefore buys back what the chord guard gave up
+                // (a wall on a real but short chord) without inventing wall outside a room.
                 if let Some((c_lo, c_hi)) = contact_span(areas, a, b, n, s) {
-                    lo = lo.min(c_lo);
-                    hi = hi.max(c_hi);
+                    lo = lo.min(c_lo).max(a_lo.max(b_lo));
+                    hi = hi.max(c_hi).min(a_hi.min(b_hi));
                 }
                 // Snap after, so the axis is chosen on the width the corridor will
                 // really have (snapping only ever moves a bound further inward, so

@@ -390,6 +390,103 @@ fn border_along(
     }
 }
 
+/// A hex tile's extent along unit direction `n`, centre to extreme.
+fn hex_support(n: Point, s: f64) -> f64 {
+    (0..6)
+        .map(|k| {
+            let c = grid::hex_corner((0.0, 0.0), k, s);
+            c.0 * n.0 + c.1 * n.1
+        })
+        .fold(f64::MIN, f64::max)
+}
+
+/// The extent along `n` of the tiles where the two areas actually touch — the ground the
+/// corridor has to cover, measured in tiles rather than in fitted geometry.
+///
+/// The support clamp (`support(sa) ∩ support(sb)`) is derived from the fitted *shapes*, and a
+/// fitted shape stops most of a cell short of its own outermost tiles. So the clamp can miss
+/// a contact row entirely: the corridor then covers one row exactly and leaves the next one
+/// outside its walls, where the seam keeps its organic boundary and the band chords across
+/// the mouth. Each contact tile contributes its **whole** extent, so a wall placed at the
+/// result bounds the tile instead of bisecting it.
+fn contact_span(areas: &Areas, a: usize, b: usize, n: Point, s: f64) -> Option<(f64, f64)> {
+    let e = hex_support(n, s);
+    // Each side's own contact tiles, then the INTERSECTION. Both rooms must have floor across
+    // the whole range or the corridor would span an offset where only one of them is there,
+    // and that wall runs out of the pair entirely — measured, it costs 39 connectors and puts
+    // walls 9px inside neighbouring rooms.
+    let side = |x: usize, y: usize| -> Option<(f64, f64)> {
+        let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+        for c in areas.floor_cells(x) {
+            if c.neighbors()
+                .iter()
+                .any(|nb| areas.owner_of(*nb) == Some(y))
+            {
+                let p = c.center(s);
+                let un = p.0 * n.0 + p.1 * n.1;
+                lo = lo.min(un - e);
+                hi = hi.max(un + e);
+            }
+        }
+        (hi > lo).then_some((lo, hi))
+    };
+    let (a_lo, a_hi) = side(a, b)?;
+    let (b_lo, b_hi) = side(b, a)?;
+    let (lo, hi) = (a_lo.max(b_lo), a_hi.min(b_hi));
+    (hi > lo).then_some((lo, hi))
+}
+
+/// Where the wall line `p·n = u` leaves one hex TILE, as a coordinate along `d`, on the
+/// `sgn` side — or `None` if the line misses the tile.
+///
+/// A pointy-top hex is the intersection of three slabs: edge normals at 0° and ±60°, each an
+/// apothem from the centre. Clipping the line against all three gives the interval it spans
+/// inside the tile, and the answer is that interval's `sgn` end.
+fn tile_exit(centre: Point, n: Point, u: f64, d: Point, sgn: f64, s: f64) -> Option<f64> {
+    const AP: f64 = grid::HEX_APOTHEM;
+    let a = AP * s;
+    let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
+    for m in [(1.0, 0.0), (0.5, AP), (-0.5, AP)] {
+        // A point on the line is `u·n + t·d`, so its offset on normal `m` is `aj + t·bj`.
+        let aj = u * (n.0 * m.0 + n.1 * m.1) - (centre.0 * m.0 + centre.1 * m.1);
+        let bj = d.0 * m.0 + d.1 * m.1;
+        if bj.abs() < 1e-9 {
+            // Parallel to this slab: either wholly inside it or the line misses the tile.
+            if aj.abs() > a {
+                return None;
+            }
+            continue;
+        }
+        let (t0, t1) = ((-a - aj) / bj, (a - aj) / bj);
+        lo = lo.max(t0.min(t1));
+        hi = hi.min(t0.max(t1));
+    }
+    (hi >= lo).then_some(if sgn >= 0.0 { hi } else { lo })
+}
+
+/// [`border_along`]'s tile-based counterpart: how far area `i`'s **floor** reaches along `d`
+/// on the wall line `p·n = u`, for when the fitted shape does not reach that line at all.
+///
+/// A fitted circle stops at `max_cell_centre_distance + 0.4·s`, most of a cell short of the
+/// area's own outermost tiles, so a wall placed to bound those tiles has no arc to end on.
+/// The tile edge is the honest endpoint there — it is ground the area really holds, and it is
+/// a hex edge the room and the corridor share, which is what lets the band join the corridor's
+/// wall to the room's arc instead of chording across the mouth.
+fn tile_border_along(
+    areas: &Areas,
+    i: usize,
+    n: Point,
+    u: f64,
+    d: Point,
+    sgn: f64,
+    s: f64,
+) -> Option<f64> {
+    areas
+        .floor_cells(i)
+        .filter_map(|c| tile_exit(c.center(s), n, u, d, sgn, s))
+        .reduce(|x, y| if sgn >= 0.0 { x.max(y) } else { x.min(y) })
+}
+
 /// Rows and vertical columns occupied by an area's **room** cells. `interior_only`
 /// keeps just the cells no wall cuts (all six neighbours in the same area).
 ///
@@ -694,6 +791,14 @@ fn axis_necks(
                         hi = hi.min(in_hi);
                     }
                 }
+                // Widen to cover the tiles the pair actually touches. Those tiles are floor
+                // whatever the fitted shapes say, so a corridor that stops short of them
+                // leaves the seam's outer row bounded by nothing but the organic trace. The
+                // walls out there end on tile edges rather than on an arc — see `end` below.
+                if let Some((c_lo, c_hi)) = contact_span(areas, a, b, n, s) {
+                    lo = lo.min(c_lo);
+                    hi = hi.max(c_hi);
+                }
                 // Snap after, so the axis is chosen on the width the corridor will
                 // really have (snapping only ever moves a bound further inward, so
                 // it cannot undo the guard).
@@ -705,11 +810,12 @@ fn axis_necks(
         else {
             continue;
         };
-        // The nearer shape along `d` faces forward (+1) and the farther back.
-        let (sl, sr) = if support(&sa, d) <= support(&sb, d) {
-            (sa, sb)
+        // The nearer shape along `d` faces forward (+1) and the farther back. The area each
+        // belongs to travels with it, so a wall endpoint can fall back to that area's tiles.
+        let ((sl, il), (sr, ir)) = if support(&sa, d) <= support(&sb, d) {
+            ((sa, a), (sb, b))
         } else {
-            (sb, sa)
+            ((sb, b), (sa, a))
         };
         // The full clamp is the widest corridor that still meets both borders,
         // and it is deliberately aggressive — that is what produces the
@@ -740,11 +846,15 @@ fn axis_necks(
             prev = Some((u_lo, u_hi));
             // The wall at normal-offset `u`, as its two border endpoints.
             let at = |u: f64, t: f64| (n.0 * u + d.0 * t, n.1 * u + d.1 * t);
+            // A wall ends on the room's own border where that border crosses the line, and on
+            // the room's outermost TILE edge where it does not — the tile-clamp above reaches
+            // rows the fitted shape falls short of, and those walls need somewhere to end.
+            let end = |sh: &ruins::RuinShape, i: usize, sgn: f64, u: f64| -> Option<f64> {
+                border_along(sh, n, u, d, sgn)
+                    .or_else(|| tile_border_along(areas, i, n, u, d, sgn, s))
+            };
             let wall = |u: f64| -> Option<(Point, Point)> {
-                Some((
-                    at(u, border_along(&sl, n, u, d, 1.0)?),
-                    at(u, border_along(&sr, n, u, d, -1.0)?),
-                ))
+                Some((at(u, end(&sl, il, 1.0, u)?), at(u, end(&sr, ir, -1.0, u)?)))
             };
             let (Some(top), Some(bot)) = (wall(u_lo), wall(u_hi)) else {
                 continue;

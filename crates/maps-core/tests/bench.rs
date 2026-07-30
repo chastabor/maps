@@ -10,7 +10,7 @@ use std::time::Instant;
 #[ignore]
 fn stages() {
     use maps_core::grid::HexGrid;
-    use maps_core::growth::{grid_radius, grow_areas, resolve};
+    use maps_core::growth::{grid_dims, grow_areas, resolve};
     use maps_core::outline::{Constraints, OutlineParams, build_outline};
     use maps_core::{render, ruins, topology, water};
     use rand::SeedableRng;
@@ -24,7 +24,8 @@ fn stages() {
         let mut rng = Pcg64::seed_from_u64(1000 + seed);
         let t = Instant::now();
         let params = resolve(&tags, &mut rng);
-        let grid = HexGrid::hexagon(grid_radius(&params));
+        let (cols, rows) = grid_dims(&params);
+        let grid = HexGrid::rectangle(cols, rows);
         // Time the ruin path: classify every area geometric.
         let slot_kinds = vec![maps_core::AreaKind::Ruin; params.sizes.len()];
         let slot_fusible = vec![false; params.sizes.len()];

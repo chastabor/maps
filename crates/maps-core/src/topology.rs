@@ -300,7 +300,8 @@ fn place_exits<R: Rng>(grid: &HexGrid, areas: &Areas, tags: &Tags, rng: &mut R) 
         // rim would dead-end mid-map, so discard the candidate instead.
         let mut stub: Vec<Hex> = Vec::new();
         let mut cur = attach;
-        while cur.distance(Hex::ORIGIN) < grid.radius {
+        let at_rim = |h: Hex| grid.edge_distance(h) == Some(0);
+        while !at_rim(cur) {
             let steps = outward_steps(grid, areas, area, cur, &stub);
             if steps.is_empty() {
                 break;
@@ -308,7 +309,7 @@ fn place_exits<R: Rng>(grid: &HexGrid, areas: &Areas, tags: &Tags, rng: &mut R) 
             cur = steps[rng.random_range(0..steps.len())];
             stub.push(cur);
         }
-        if cur.distance(Hex::ORIGIN) < grid.radius {
+        if !at_rim(cur) {
             cand.remove(k);
             continue;
         }
@@ -317,18 +318,23 @@ fn place_exits<R: Rng>(grid: &HexGrid, areas: &Areas, tags: &Tags, rng: &mut R) 
     exits
 }
 
-/// Free in-grid neighbours of `cur` strictly further from the centre whose
-/// own neighbourhood touches no area other than `area` (so exit passages
-/// never merge with doors or other chambers).
+/// Free in-grid neighbours of `cur` strictly nearer the map edge whose own
+/// neighbourhood touches no area other than `area` (so exit passages never
+/// merge with doors or other chambers).
+///
+/// Nearness to the **edge** rather than distance from the centre: on a
+/// rectangle those differ, and it is the edge a passage leaving the map is
+/// aiming for — heading away from the centre of a tall board can run parallel
+/// to the near side for a long time without ever arriving.
 fn outward_steps(grid: &HexGrid, areas: &Areas, area: usize, cur: Hex, stub: &[Hex]) -> Vec<Hex> {
-    let d0 = cur.distance(Hex::ORIGIN);
+    let d0 = grid.edge_distance(cur).unwrap_or(i32::MAX);
     cur.neighbors()
         .into_iter()
         .filter(|&n| {
             grid.contains(n)
                 && areas.owner_of(n).is_none()
                 && !stub.contains(&n)
-                && n.distance(Hex::ORIGIN) > d0
+                && grid.edge_distance(n).is_some_and(|d| d < d0)
                 && n.neighbors()
                     .iter()
                     .all(|m| areas.owner_of(*m).is_none_or(|o| o == area))

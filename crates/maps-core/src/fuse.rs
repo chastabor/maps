@@ -1432,6 +1432,20 @@ pub(crate) fn corridor_floor(areas: &Areas, grid: &HexGrid, s: f64) -> Vec<Corri
         if !neck.is_corridor() || !seen.insert((a, b)) {
             continue;
         }
+        // Dungeon pairs only. Corridor floor exists to give a connector's walls something
+        // to enclose, so claiming it for a pair that will never get a connector leaves floor
+        // no wall covers — which is what `sweep`'s `fo` counts. Ruin fusion is still
+        // deferred, so a fused ruin pair reaches the ladder and every candidate is rejected;
+        // the floor then survives on the late rollback in `commit_join_floor` alone, and it
+        // does not always catch it. Not claiming is the same rule the disk ring follows in
+        // `growth::Shape::candidates`: do not take ground you cannot finish using.
+        //
+        // Measured: connectors are untouched at 120 seeds (39 at tag defaults, 482 and 442
+        // dense — identical), and `fo` goes 1 -> 0. Ruin pairs were contributing no accepted
+        // connector at all, only the orphaned floor.
+        if areas.kind(a) != AreaKind::Dungeon || areas.kind(b) != AreaKind::Dungeon {
+            continue;
+        }
         let (Some(sa), Some(sb)) = (areas.shape(a), areas.shape(b)) else {
             continue;
         };

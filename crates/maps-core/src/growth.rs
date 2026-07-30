@@ -150,18 +150,46 @@ impl Shape {
         let eps = 0.01 * s;
         match *self {
             Shape::Disk { c, r } => {
+                // A ring must be **complete**, for the same reason a rect's strip must be
+                // (see below): near the curved map edge some sites lie off-grid, and
+                // claiming only the in-grid ones leaves a ragged room under a full circular
+                // wall. The circle's radius is driven by whichever tile is farthest, so a
+                // ring missing its outer arc still gets the complete ring's radius and the
+                // wall bulges into the rock — or across a rock gap into a neighbour's floor.
+                // Compare against the ideal lattice count over the same annulus and drop the
+                // move unless it fills; the room then grows away from the boundary and stays
+                // a complete flower.
                 let r2 = r + col;
+                let pred = |p: (f64, f64)| {
+                    let d = (p.0 - c.0).hypot(p.1 - c.1);
+                    d > r + eps && d <= r2 + eps
+                };
                 let ring: Vec<Hex> = grid
                     .cells()
                     .iter()
                     .copied()
-                    .filter(|&h| {
-                        let p = h.center(s);
-                        let d = (p.0 - c.0).hypot(p.1 - c.1);
-                        d > r + eps && d <= r2 + eps
-                    })
+                    .filter(|&h| pred(h.center(s)))
                     .collect();
-                vec![(false, ring, Shape::Disk { c, r: r2 })]
+                let (r_lo, r_hi) = (
+                    ((c.1 - r2) / row).floor() as i32 - 1,
+                    ((c.1 + r2) / row).ceil() as i32 + 1,
+                );
+                let mut ideal = 0usize;
+                for rr in r_lo..=r_hi {
+                    let q_lo = ((c.0 - r2) / col - rr as f64 / 2.0).floor() as i32 - 1;
+                    let q_hi = ((c.0 + r2) / col - rr as f64 / 2.0).ceil() as i32 + 1;
+                    for q in q_lo..=q_hi {
+                        if pred(Hex { q, r: rr }.center(s)) {
+                            ideal += 1;
+                        }
+                    }
+                }
+                let cells = if ring.len() == ideal {
+                    ring
+                } else {
+                    Vec::new()
+                };
+                vec![(false, cells, Shape::Disk { c, r: r2 })]
             }
             Shape::Rect { c, x0, x1, y0, y1 } => {
                 // A move's cells are the grid cells whose centre falls in the
@@ -513,14 +541,23 @@ pub fn resolve<R: Rng>(tags: &Tags, rng: &mut R) -> GrowthParams {
 }
 
 /// Board radius sized so the areas have room to grow plus buffer gaps.
-pub fn grid_radius(params: &GrowthParams) -> i32 {
+/// Board half-extents `(cols, rows)` big enough for the areas to grow into,
+/// in portrait proportion.
+///
+/// `rows = 3k`, `cols = 2k` puts the height/width ratio at
+/// `(1.5·3k)/(√3·2k) = 1.299` — a sheet of US Letter is 1.294 — since a row
+/// pitch (`1.5·s`) is shorter than a column pitch (`√3·s`), so equal cell
+/// counts would render *landscape*. Cell count is `(6k+1)(4k+1) ≈ 24k²`, and
+/// the areas want about three times their own size in room to grow.
+pub fn grid_dims(params: &GrowthParams) -> (i32, i32) {
     let total: usize = params.sizes.iter().sum();
     let needed = (total * 3) as i32;
-    let mut r = 4;
-    while 3 * r * r + 3 * r + 1 < needed {
-        r += 1;
+    let mut k = 2;
+    while (6 * k + 1) * (4 * k + 1) < needed {
+        k += 1;
     }
-    (r + 2).min(40)
+    let k = (k + 1).min(14);
+    (2 * k, 3 * k)
 }
 
 // ---------------------------------------------------------------------------
@@ -753,7 +790,7 @@ pub fn grow_areas<R: Rng>(
     slot_fusible: &[bool],
     hex_size: f64,
 ) -> Areas {
-    let mut owner: CellMap<u32> = CellMap::new(grid.radius);
+    let mut owner: CellMap<u32> = grid.cell_map();
     let mut builds: Vec<Build> = Vec::new();
     // `partner[a]` = the one area `a` has fused with (fuse-once). Grown in step
     // with `builds` each round.
@@ -772,7 +809,10 @@ pub fn grow_areas<R: Rng>(
             .cells()
             .iter()
             .copied()
-            .filter(|&h| h.distance(Hex::ORIGIN) <= grid.radius / 3)
+            .filter(|&h| {
+                grid.edge_distance(h)
+                    .is_some_and(|d| d >= grid.cols.min(grid.rows) * 2 / 3)
+            })
             .collect();
         cands[rng
             .random_range(0..cands.len().max(1))
@@ -991,7 +1031,7 @@ fn claim_join_floor(
     let mut cells: Vec<Vec<Hex>> = Vec::with_capacity(builds.len());
     let mut kinds = Vec::with_capacity(builds.len());
     let mut shapes = Vec::with_capacity(builds.len());
-    let mut pown: CellMap<u32> = CellMap::new(grid.radius);
+    let mut pown: CellMap<u32> = grid.cell_map();
     // Nothing is claimed yet, so no cell is corridor floor to exclude.
     let unclaimed = HashSet::new();
     for (i, b) in builds.iter().enumerate() {
@@ -1118,7 +1158,7 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
     let mut cells = Vec::new();
     let mut kinds = Vec::new();
     let mut shapes = Vec::new();
-    let mut owner: CellMap<u32> = CellMap::new(grid.radius);
+    let mut owner: CellMap<u32> = grid.cell_map();
     for (i, keep_i) in keep.iter().enumerate() {
         if !keep_i {
             continue;
@@ -1605,7 +1645,7 @@ fn finalize(
     let mut cells: Vec<Vec<Hex>> = Vec::new();
     let mut kinds: Vec<AreaKind> = Vec::new();
     let mut shapes: Vec<Option<RuinShape>> = Vec::new();
-    let mut owner: CellMap<u32> = CellMap::new(grid.radius);
+    let mut owner: CellMap<u32> = grid.cell_map();
     for b in builds {
         if b.cells.len() < MIN_AREA {
             continue;

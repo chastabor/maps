@@ -75,32 +75,44 @@ impl Hex {
     }
 }
 
-/// Dense per-cell storage for a board of known radius: O(1) array indexing
+/// Dense per-cell storage for a board of known extent: O(1) array indexing
 /// with no hashing — the hot replacement for `HashMap<Hex, T>` on lookup
 /// paths. Cells outside the axial bounding box read as empty (neighbours of
 /// rim cells probe there constantly).
+///
+/// The bounds are per axis because the board is a rectangle: a row's `q` range
+/// slides by `−r/2` to keep the left and right edges vertical in pixel space,
+/// so `q` spans a good deal wider than `r`. Build one sized to a grid with
+/// [`HexGrid::cell_map`] rather than working the bounds out at each call site.
 pub struct CellMap<T> {
-    radius: i32,
+    q_half: i32,
+    r_half: i32,
     width: i32,
     slots: Vec<Option<T>>,
 }
 
 impl<T: Copy> CellMap<T> {
-    pub fn new(radius: i32) -> Self {
-        let width = 2 * radius + 1;
+    /// Storage for `|q| <= q_half`, `|r| <= r_half`, plus one cell of slack on
+    /// every side so a rim cell's neighbours index in bounds instead of
+    /// short-circuiting.
+    pub fn new(q_half: i32, r_half: i32) -> Self {
+        let (q_half, r_half) = (q_half + 1, r_half + 1);
+        let width = 2 * q_half + 1;
+        let height = 2 * r_half + 1;
         CellMap {
-            radius,
+            q_half,
+            r_half,
             width,
-            slots: vec![None; (width * width) as usize],
+            slots: vec![None; (width * height) as usize],
         }
     }
 
     #[inline]
     fn slot(&self, h: Hex) -> Option<usize> {
-        if h.q.abs() > self.radius || h.r.abs() > self.radius {
+        if h.q.abs() > self.q_half || h.r.abs() > self.r_half {
             None
         } else {
-            Some(((h.q + self.radius) * self.width + (h.r + self.radius)) as usize)
+            Some(((h.r + self.r_half) * self.width + (h.q + self.q_half)) as usize)
         }
     }
 
@@ -127,27 +139,74 @@ impl<T: Copy> CellMap<T> {
     }
 }
 
-/// A hexagon-shaped board of cells within `radius` of the origin.
+/// A **rectangular** board, `2·cols+1` columns wide and `2·rows+1` rows tall,
+/// centred on the origin.
+///
+/// Rectangular rather than hexagonal for two reasons. It is the shape a reader
+/// expects of a map — the shape of a sheet of paper — and it makes the boundary
+/// a pair of independent axis ranges instead of a hex radius, so an
+/// out-of-bounds test is a comparison per axis and "how far to the edge" is
+/// well defined without a centre to measure from. Geometry fitted to the tiles
+/// leans on both (see `plans/tile-first-render.md`).
+///
+/// The rows alternate between `2·cols+1` and `2·cols` cells, because a row's
+/// `q` range slides by `−r/2` to hold the left and right edges vertical in
+/// pixel space and only even rows land flush. That half-column ragged edge is
+/// inherent to a rectangle on a hex lattice.
 pub struct HexGrid {
-    pub radius: i32,
+    /// Half-extent in columns: the widest row spans `q ∈ [−cols, cols]` at `r = 0`.
+    pub cols: i32,
+    /// Half-extent in rows: `r ∈ [−rows, rows]`.
+    pub rows: i32,
     cells: Vec<Hex>,
 }
 
 impl HexGrid {
-    pub fn hexagon(radius: i32) -> Self {
+    pub fn rectangle(cols: i32, rows: i32) -> Self {
         let mut cells = Vec::new();
-        for q in -radius..=radius {
-            let lo = (-radius).max(-q - radius);
-            let hi = radius.min(-q + radius);
-            for r in lo..=hi {
+        for r in -rows..=rows {
+            for q in Self::q_range(cols, r) {
                 cells.push(Hex::new(q, r));
             }
         }
-        HexGrid { radius, cells }
+        HexGrid { cols, rows, cells }
     }
 
+    /// The `q` values in row `r`: the integers with `q + r/2 ∈ [−cols, cols]`,
+    /// i.e. whose cell centre `x = √3·s·(q + r/2)` falls inside the rectangle.
+    #[inline]
+    fn q_range(cols: i32, r: i32) -> std::ops::RangeInclusive<i32> {
+        // ceil(−cols − r/2) ..= floor(cols − r/2), via floor(±r/2) on integers.
+        (-cols - r.div_euclid(2))..=(cols + (-r).div_euclid(2))
+    }
+
+    #[inline]
     pub fn contains(&self, h: Hex) -> bool {
-        h.distance(Hex::ORIGIN) <= self.radius
+        h.r.abs() <= self.rows && Self::q_range(self.cols, h.r).contains(&h.q)
+    }
+
+    /// How many cells `h` sits from the nearest edge — `0` on the rim itself,
+    /// and `None` off the board. Replaces "distance from the origin" as the
+    /// measure of outwardness: on a rectangle the nearest edge is what a
+    /// passage heading off the map is aiming for, and unlike a hex radius it
+    /// stays meaningful when the board is not square.
+    pub fn edge_distance(&self, h: Hex) -> Option<i32> {
+        if !self.contains(h) {
+            return None;
+        }
+        let rng = Self::q_range(self.cols, h.r);
+        Some(
+            (self.rows - h.r)
+                .min(h.r + self.rows)
+                .min(rng.end() - h.q)
+                .min(h.q - rng.start()),
+        )
+    }
+
+    /// A `CellMap` sized to this board, slack included.
+    pub fn cell_map<T: Copy>(&self) -> CellMap<T> {
+        // The `−r/2` slide widens the q span by half the row count each way.
+        CellMap::new(self.cols + self.rows.div_euclid(2) + 1, self.rows)
     }
 
     /// All cells in a fixed, deterministic order.

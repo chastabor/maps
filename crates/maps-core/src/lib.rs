@@ -22,7 +22,7 @@ pub mod topology;
 pub mod water;
 
 use grid::HexGrid;
-use growth::{Areas, GrowthParams, grid_radius, grow_areas, resolve};
+use growth::{Areas, GrowthParams, grid_dims, grow_areas, resolve};
 use outline::{OutlineParams, Point, WallRun, build_outline};
 use rand::Rng;
 use rand::SeedableRng;
@@ -342,7 +342,8 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         fuse_level,
         &mut rng,
     );
-    let grid = HexGrid::hexagon(grid_radius(&params));
+    let (cols, rows) = grid_dims(&params);
+    let grid = HexGrid::rectangle(cols, rows);
     // Staggered simultaneous growth: dungeon rooms grow as their geometry and
     // symmetric wings grow as lockstep sibling orbits (symmetry is chosen
     // inside, from the shape stream).

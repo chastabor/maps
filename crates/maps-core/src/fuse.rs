@@ -650,28 +650,6 @@ fn shapes_overlap(a: &ruins::RuinShape, b: &ruins::RuinShape) -> bool {
         _ => false,
     }
 }
-
-/// How far along `n` a wall may sit and still cross this shape on a chord at least
-/// two cells wide — `None` for anything but a circle, which is the only border that
-/// can be grazed (a rect's sides meet a perpendicular wall squarely at every
-/// offset).
-///
-/// The half-chord at offset `u` is `√(r² − (c·n − u)²)`, zero exactly at the
-/// circle's extreme. Requiring a cell's span of it costs the corridor almost
-/// nothing — the arc is nearly flat there, so for `r = 46` the bound moves in by
-/// 1.6px — and it is what stops a wall leaving the border tangentially. Measured
-/// over the sweep, halving the requirement leaves the worst wall-in-room case at
-/// 13px instead of 10.5, so the full cell is the setting that earns its keep.
-fn chord_bounds(sh: &ruins::RuinShape, n: Point, s: f64) -> Option<(f64, f64)> {
-    let ruins::RuinShape::Circle { cx, cy, r } = *sh else {
-        return None;
-    };
-    let cn = cx * n.0 + cy * n.1;
-    // Shortest half-chord worth a wall: one cell's span.
-    let reach = (r * r - s * s).max(0.0).sqrt();
-    Some((cn - reach, cn + reach))
-}
-
 /// Snap a corridor wall offset onto the hex lattice, moving **inward** (`up` for a
 /// lower bound, else a upper one).
 ///
@@ -765,50 +743,21 @@ fn axis_necks(
         {
             continue;
         }
-        // Pick the axis PER PAIR: the one whose clamp is valid and widest. For
-        // the diagonals this is the mirror rule from the FIX diagrams — a pair
-        // offset the other way needs the mirrored axis, and choosing by clamp
-        // width selects it automatically.
+        // Pick the axis PER PAIR: the one where the two rooms touch across the widest run of
+        // tiles. For the diagonals this is the mirror rule from the FIX diagrams — a pair
+        // offset the other way needs the mirrored axis, and choosing by contact width selects
+        // it automatically.
+        //
+        // The width IS the contact tiles' extent (`contact_span`): the ground the two rooms
+        // actually share, each tile counted whole, so a wall placed at the result bounds a tile
+        // rather than bisecting it. This replaced a clamp built from the fitted shapes' support
+        // intervals, narrowed by a tangency guard and then widened back toward the contact tiles
+        // anyway — three pixel reconciliations to arrive near the number the tiles give directly.
+        // See `plans/tile-first-render.md` phase 3b.
         let Some((&(d, n), clamp_lo, clamp_hi)) = axes
             .iter()
             .filter_map(|ax @ &(_, n)| {
-                let (Some((a_lo, a_hi)), Some((b_lo, b_hi))) = (support(&sa, n), support(&sb, n))
-                else {
-                    return None;
-                };
-                // A wall must cross a circle on a real CHORD, not graze it. The
-                // clamp's inner bound is often the circle's own extreme along `n`,
-                // and the wall there leaves the border at zero angle: the traced
-                // outline wobbles across it, and the splice is refused for crossing
-                // itself. `snap_wall` already moves the level corridor's bound off
-                // the extreme as a side effect of landing on a lattice line, but a
-                // flat normal is deliberately left unsnapped — measured, 400 clamp
-                // bounds per sweep sat *exactly* tangent there.
-                let (mut lo, mut hi) = (a_lo.max(b_lo), a_hi.min(b_hi));
-                for sh in [&sa, &sb] {
-                    if let Some((in_lo, in_hi)) = chord_bounds(sh, n, s) {
-                        lo = lo.max(in_lo);
-                        hi = hi.min(in_hi);
-                    }
-                }
-                // Widen to cover the tiles the pair actually touches. Those tiles are floor
-                // whatever the fitted shapes say, so a corridor that stops short of them
-                // leaves the seam's outer row bounded by nothing but the organic trace.
-                //
-                // Capped by the support intersection, which is where both shapes exist at all.
-                // Beyond it a wall has no border on one side and would be drawn past the room
-                // it is supposed to bound — measured: a rect's corridor wall 6px below its own
-                // bottom edge. Widening therefore buys back what the chord guard gave up
-                // (a wall on a real but short chord) without inventing wall outside a room.
-                if let Some((c_lo, c_hi)) = contact_span(areas, a, b, n, s) {
-                    lo = lo.min(c_lo).max(a_lo.max(b_lo));
-                    hi = hi.max(c_hi).min(a_hi.min(b_hi));
-                }
-                // Snap after, so the axis is chosen on the width the corridor will
-                // really have (snapping only ever moves a bound further inward, so
-                // it cannot undo the guard).
-                let lo = snap_wall(lo, n, s, true);
-                let hi = snap_wall(hi, n, s, false);
+                let (lo, hi) = contact_span(areas, a, b, n, s)?;
                 (hi - lo > 0.0).then_some((ax, lo, hi))
             })
             .max_by(|x, y| (x.2 - x.1).total_cmp(&(y.2 - y.1)))

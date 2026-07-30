@@ -135,6 +135,84 @@ fn offset_wall(wall: (Point, Point), toward: (Point, Point), d: f64) -> (Point, 
     )
 }
 
+/// A rect's four edges as segments, in `wall_param` order (top L→R, right T→B,
+/// bottom R→L, left B→T) so a crossing's parameter and the wall walk agree.
+fn rect_edges(sh: &RuinShape) -> Vec<(Point, Point)> {
+    let RuinShape::Rect { cx, cy, hw, hh } = *sh else {
+        return Vec::new();
+    };
+    let (x0, x1, y0, y1) = (cx - hw, cx + hw, cy - hh, cy + hh);
+    vec![
+        ((x0, y0), (x1, y0)),
+        ((x1, y0), (x1, y1)),
+        ((x1, y1), (x0, y1)),
+        ((x0, y1), (x0, y0)),
+    ]
+}
+
+/// Where two circles cross: empty when they are separate, nested, or concentric.
+fn circle_circle(c0: Point, r0: f64, c1: Point, r1: f64) -> Vec<Point> {
+    let (dx, dy) = (c1.0 - c0.0, c1.1 - c0.1);
+    let d = dx.hypot(dy);
+    // Tangency is excluded, not just separation: touching borders enclose no span, so the
+    // two ends a caller wants would coincide and clip nothing. The margin also keeps a
+    // near-tangent pair — where the two roots are numerically indistinguishable — from
+    // returning a degenerate span.
+    const EPS: f64 = 1e-6;
+    if d < EPS || d >= r0 + r1 - EPS || d <= (r0 - r1).abs() + EPS {
+        return Vec::new();
+    }
+    // Distance along the centre line to the crossing chord, then half the chord.
+    let a = (r0 * r0 - r1 * r1 + d * d) / (2.0 * d);
+    let h2 = r0 * r0 - a * a;
+    if h2 < 0.0 {
+        return Vec::new();
+    }
+    let h = h2.sqrt();
+    let base = (c0.0 + a * dx / d, c0.1 + a * dy / d);
+    let (px, py) = (-dy / d * h, dx / d * h);
+    vec![(base.0 + px, base.1 + py), (base.0 - px, base.1 - py)]
+}
+
+/// Where segment `a→b` crosses a circle, endpoints included.
+fn segment_circle(a: Point, b: Point, c: Point, r: f64) -> Vec<Point> {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let (fx, fy) = (a.0 - c.0, a.1 - c.1);
+    let (qa, qb, qc) = (
+        dx * dx + dy * dy,
+        2.0 * (fx * dx + fy * dy),
+        fx * fx + fy * fy - r * r,
+    );
+    if qa < 1e-12 {
+        return Vec::new();
+    }
+    let disc = qb * qb - 4.0 * qa * qc;
+    if disc < 0.0 {
+        return Vec::new();
+    }
+    let sq = disc.sqrt();
+    [(-qb - sq) / (2.0 * qa), (-qb + sq) / (2.0 * qa)]
+        .into_iter()
+        .filter(|t| (-1e-9..=1.0 + 1e-9).contains(t))
+        .map(|t| (a.0 + dx * t, a.1 + dy * t))
+        .collect()
+}
+
+/// Where two segments cross; `None` when parallel or when the crossing lies off
+/// either span.
+fn segment_segment(a: Point, b: Point, c: Point, d: Point) -> Option<Point> {
+    let (r, s) = ((b.0 - a.0, b.1 - a.1), (d.0 - c.0, d.1 - c.1));
+    let denom = r.0 * s.1 - r.1 * s.0;
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let (qp, e) = ((c.0 - a.0, c.1 - a.1), 1e-9);
+    let t = (qp.0 * s.1 - qp.1 * s.0) / denom;
+    let u = (qp.0 * r.1 - qp.1 * r.0) / denom;
+    ((-e..=1.0 + e).contains(&t) && (-e..=1.0 + e).contains(&u))
+        .then_some((a.0 + r.0 * t, a.1 + r.1 * t))
+}
+
 /// The six corners of a pointy-top hex, in `wall_param` order (see
 /// [`grid::hex_corner`](crate::grid::hex_corner) for the one corner convention).
 fn hex_corners(cx: f64, cy: f64, s: f64) -> [Point; 6] {
@@ -216,6 +294,49 @@ impl RuinShape {
 }
 
 impl RuinShape {
+    /// Where this shape's border crosses `other`'s.
+    ///
+    /// Two fused rooms' borders overlap along one span (measured: never any other count),
+    /// so this returns that span's two ends — the points where the compound's outer wall
+    /// switches from one room's border to the other's. That is what lets the wall be
+    /// **clipped** at a seam instead of joined by a chord between two projected run ends,
+    /// which is what chamfers a fused corner. See `plans/tile-first-render.md` phase 2a.
+    ///
+    /// Rooms only (rect and circle, the shapes with a closed border). Halls and hex cells
+    /// return empty, so a caller falls back to its previous endpoint rather than guessing.
+    pub fn border_crossings(&self, other: &RuinShape) -> Vec<Point> {
+        use RuinShape as R;
+        match (*self, *other) {
+            (
+                R::Circle { cx, cy, r },
+                R::Circle {
+                    cx: ox,
+                    cy: oy,
+                    r: or,
+                },
+            ) => circle_circle((cx, cy), r, (ox, oy), or),
+            (R::Circle { cx, cy, r }, R::Rect { .. }) => rect_edges(other)
+                .into_iter()
+                .flat_map(|(a, b)| segment_circle(a, b, (cx, cy), r))
+                .collect(),
+            (R::Rect { .. }, R::Circle { cx, cy, r }) => rect_edges(self)
+                .into_iter()
+                .flat_map(|(a, b)| segment_circle(a, b, (cx, cy), r))
+                .collect(),
+            (R::Rect { .. }, R::Rect { .. }) => {
+                let (mine, theirs) = (rect_edges(self), rect_edges(other));
+                mine.iter()
+                    .flat_map(|&(a, b)| {
+                        theirs
+                            .iter()
+                            .filter_map(move |&(c, d)| segment_segment(a, b, c, d))
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Whether `p` lies within the space this shape walls in — inside the perimeter
     /// for a room, between the side walls for a hall, inside the hexagon for a cell.
     ///

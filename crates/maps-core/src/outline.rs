@@ -551,6 +551,12 @@ impl Hex {
 /// (position, narrow-cell centre, ruin shape, dungeon-wall flag).
 type TaggedPoint = (Point, Option<Point>, Option<RuinShape>, bool);
 
+/// Shorter way round between two wall parameters on a closed perimeter of length `per`.
+fn cyc_dist(a: f64, b: f64, per: f64) -> f64 {
+    let d = (a - b).rem_euclid(per);
+    d.min(per - d)
+}
+
 /// Shape-tile tracing (D1): replace every maximal run of dungeon-owned
 /// vertices with a resampling of the room's exact wall between the run's
 /// endpoints. Projecting vertices one-by-one kept the wall hostage to the
@@ -592,10 +598,7 @@ fn splice_dungeon_runs(
     let snap_range = 2.2 * crate::grid::SQRT3 / 2.0 * s;
     let snap = |shape: &RuinShape, t: f64, side: f64| -> f64 {
         let per = shape.perimeter().unwrap_or(0.0);
-        let cyc = |a: f64, b: f64| {
-            let d = (a - b).rem_euclid(per);
-            d.min(per - d)
-        };
+        let cyc = |a: f64, b: f64| cyc_dist(a, b, per);
         let mut best = (snap_range, t);
         for jamb in jambs.iter().filter(|j| &j.shape == shape) {
             let tw = shape.wall_param(jamb.center);
@@ -722,10 +725,7 @@ fn splice_dungeon_runs(
         // organic passage grazes the wall) and the walk wrapped the long way round
         // the room — drawing its far wall across open floor. Fold back to the raw
         // endpoints instead, like the folded-to-nothing case below.
-        let cyc = |a: f64, b: f64| {
-            let d = (a - b).rem_euclid(per);
-            d.min(per - d)
-        };
+        let cyc = |a: f64, b: f64| cyc_dist(a, b, per);
         let expected = len_of(raw_a, raw_b) + cyc(raw_a, ta) + cyc(raw_b, tb);
         if len > expected + 1e-6 || (len < 1e-6 && fwd_raw > 1e-6) {
             ta = raw_a;
@@ -775,6 +775,82 @@ fn wall_walk(shape: &RuinShape, ta: f64, dir: f64, len: f64, s: f64, closed: boo
         out.push(shape.wall_point((ta + dir * len).rem_euclid(per)));
     }
     out
+}
+
+/// The wall of a fused pair, built by **clipping each border against the other**: the arc of
+/// `a` that lies outside `b`, then the arc of `b` that lies outside `a`. The two meet at the
+/// borders' crossings, so the seam corner is exact — no chord between two projected run ends,
+/// which is what chamfers it (`plans/tile-first-render.md` phase 2a).
+///
+/// Returned closed (first point repeated) and tagged per vertex with the shape that vertex
+/// came from, so the renderer offsets each stretch inward on its own geometry across the seam.
+///
+/// `None` — leaving the caller on its existing path — when the pair is not this construction's
+/// business rather than when it fails:
+///
+/// - either shape has no closed border (a hall, whose `perimeter()` is `None`);
+/// - the borders do not cross in exactly **two** distinct points. Two convex borders can meet
+///   in more than two (two rects crossing like a `+` meet in eight, and their union is a
+///   twelve-sided cross, not two arcs). Every fused pair measured crosses in exactly one span,
+///   so this is a guard against the unmeasured case, not a fallback for a common one;
+/// - one border lies entirely inside the other, so there is no outside arc to walk.
+///
+/// Deliberately **no** nearest-crossing choice, no walk direction inferred from a middle
+/// vertex, and no length guard: each arc is picked by asking whether its own midpoint is
+/// outside the other shape, which has one answer. The first attempt at phase 2a chose the
+/// crossing nearest a projected endpoint instead and drew room walls up to 30px inside their
+/// own floor.
+pub fn compound_wall(a: RuinShape, b: RuinShape, s: f64) -> Option<WallRun> {
+    let (per_a, per_b) = (a.perimeter()?, b.perimeter()?);
+    // Exactly two distinct crossings. A rect corner sitting on the other's edge is reported
+    // by both edges incident to it, so dedupe before counting.
+    let mut xs: Vec<Point> = Vec::new();
+    for p in a.border_crossings(&b) {
+        if !xs.iter().any(|q| (q.0 - p.0).hypot(q.1 - p.1) < 1e-6) {
+            xs.push(p);
+        }
+    }
+    if xs.len() != 2 {
+        return None;
+    }
+    // The arc between the two crossings that lies OUTSIDE `other`, as (start, length).
+    // Both candidates are tried rather than one being derived, because which of the two
+    // is the outside arc depends on where the shapes sit, not on crossing order.
+    let outside_arc = |sh: RuinShape, per: f64, other: RuinShape| -> Option<(f64, f64)> {
+        let (t0, t1) = (sh.wall_param(xs[0]), sh.wall_param(xs[1]));
+        [
+            (t0, (t1 - t0).rem_euclid(per)),
+            (t1, (t0 - t1).rem_euclid(per)),
+        ]
+        .into_iter()
+        .find(|&(from, len)| {
+            len > 1e-9 && !other.contains(sh.wall_point((from + len / 2.0).rem_euclid(per)))
+        })
+    };
+    let (a_from, a_len) = outside_arc(a, per_a, b)?;
+    let (b_from, b_len) = outside_arc(b, per_b, a)?;
+
+    let walk_a = wall_walk(&a, a_from, 1.0, a_len, s, false);
+    let end = *walk_a.last()?;
+    // `b`'s arc joins the same two crossings, but its stored start may be either of them.
+    // Walk it from whichever end `a` finished at, so the two runs meet rather than jump.
+    let from_b_start = (b.wall_point(b_from).0 - end.0).hypot(b.wall_point(b_from).1 - end.1);
+    let other_end = (b_from + b_len).rem_euclid(per_b);
+    let from_b_end = (b.wall_point(other_end).0 - end.0).hypot(b.wall_point(other_end).1 - end.1);
+    let walk_b = if from_b_start <= from_b_end {
+        wall_walk(&b, b_from, 1.0, b_len, s, false)
+    } else {
+        wall_walk(&b, other_end, -1.0, b_len, s, false)
+    };
+
+    let mut out: WallRun = walk_a.into_iter().map(|p| (quantize_pt(p), a)).collect();
+    // Drop `b`'s first point: it is the crossing `a` already ended on.
+    out.extend(walk_b.into_iter().skip(1).map(|p| (quantize_pt(p), b)));
+    let first = out.first()?.0;
+    if out.last().map(|&(p, _)| p) != Some(first) {
+        out.push((first, b));
+    }
+    (out.len() > 3).then_some(out)
 }
 
 fn subdivide_tagged(pts: &[TaggedPoint]) -> Vec<TaggedPoint> {

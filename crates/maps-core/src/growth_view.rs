@@ -253,6 +253,44 @@ pub fn growth_svg(map: &CaveMap, labels: bool) -> String {
         s.push_str(&shape_path(sh, stroke, 1.3));
     }
 
+    // Each fused pair's COMPOUND wall: the arc of one border outside the other, then the
+    // reverse — what phase 2a will draw in place of a chord between two projected run ends.
+    // Drawn over both rooms' own outlines so the difference is visible: where this leaves the
+    // cyan/amber circles, those stretches are the interior barrier the wall should not include,
+    // and the seam corner here is the one the finished render currently chamfers.
+    //
+    // Fusion is read geometrically — growth keeps a one-cell rock gap between every pair it did
+    // not fuse, so room tiles at distance 1 mean the gap was closed. `compound_wall` declines
+    // any pair it does not answer for (no crossings, nested, a hall), and those simply draw
+    // nothing rather than a guess.
+    s.push_str(r##"<g fill="none" stroke="#ff53d0" stroke-width="2.0" stroke-opacity="0.95">"##);
+    for a in 0..map.areas.count() {
+        let Some(sa) = map.areas.shape(a) else {
+            continue;
+        };
+        for b in (a + 1)..map.areas.count() {
+            let Some(sb) = map.areas.shape(b) else {
+                continue;
+            };
+            let bs: Vec<Hex> = map.areas.room_cells(b).collect();
+            let fused = map
+                .areas
+                .room_cells(a)
+                .any(|x| bs.iter().any(|y| x.distance(*y) <= 1));
+            if !fused {
+                continue;
+            }
+            if let Some(run) = crate::outline::compound_wall(sa, sb, S) {
+                let pts: Vec<String> = run
+                    .iter()
+                    .map(|&(p, _)| format!("{:.1},{:.1}", p.0, p.1))
+                    .collect();
+                let _ = write!(s, r##"<polyline points="{}"/>"##, pts.join(" "));
+            }
+        }
+    }
+    s.push_str("</g>");
+
     if labels {
         let _ = write!(
             s,

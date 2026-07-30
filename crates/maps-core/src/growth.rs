@@ -1147,7 +1147,18 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
         let r = find(&mut root, i);
         *comp_cells.entry(r).or_default() += areas.floor_cells(i).count();
     }
-    let Some((&best, _)) = comp_cells.iter().max_by_key(|&(_, &v)| v) else {
+    // Largest total, ties broken by the component's root index.
+    //
+    // `comp_cells.iter().max_by_key(..)` looks equivalent and is not: `max_by_key` keeps the
+    // LAST maximum it sees, so with two components of equal size the winner was decided by
+    // `HashMap` iteration order — randomised per process. The same seed then produced a
+    // different surviving set of areas from one run to the next, and with it different doors,
+    // exits and outline (measured at HEAD: seed 23 of 120 in `large,ruins,dungeon,separate`,
+    // which is why that configuration's sweep digest would not hold still). The root index
+    // comes from area order, so it is part of the seed.
+    let mut totals: Vec<(usize, usize)> = comp_cells.into_iter().collect();
+    totals.sort_unstable_by_key(|&(root, cells)| (std::cmp::Reverse(cells), root));
+    let Some(&(best, _)) = totals.first() else {
         return areas;
     };
     let keep: Vec<bool> = (0..n).map(|i| find(&mut root, i) == best).collect();

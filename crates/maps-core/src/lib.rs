@@ -388,7 +388,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     let mouths = doorway::mouths(&topology, &areas, oparams.hex_size, &|p| {
         fusion.blocks_narrow(p)
     });
-    let (plug_cells, clean_shapes) =
+    let (plug_cells, mut clean_shapes) =
         doorway::apply_plugs(&mut ruin_map, &topology, &areas, oparams.hex_size);
 
     // Style each door that opens onto a dungeon room; other doors keep a
@@ -442,6 +442,27 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     let (mut outline, mut dungeon_walls) =
         build_outline(&areas, &topology, constraints, oparams, &mut rng);
     fusion.apply(&mut outline, &mut dungeon_walls, &mut areas, &topology);
+    // A fusion connector's wall is drawn geometry like a room's, so it keeps the clean
+    // treatment too. Without this the weathered passes hatch it: `wall_clean` tests a
+    // sample against `clean_shapes`, which `apply_plugs` fills with the dungeon rooms and
+    // the exit lips only, and a connector's wall runs further than the 0.3-cell tolerance
+    // from either room's border — so a perfectly good corridor came out looking organic.
+    // Taken from the wall runs, which carry the shapes the ladder actually accepted.
+    {
+        let mut seen: Vec<ruins::RuinShape> = Vec::new();
+        for &(_, sh) in dungeon_walls.iter().flatten() {
+            let is_conn = matches!(
+                sh,
+                ruins::RuinShape::Trapezoid { .. }
+                    | ruins::RuinShape::StraightHall { .. }
+                    | ruins::RuinShape::ArcHall { .. }
+            );
+            if is_conn && !seen.contains(&sh) {
+                seen.push(sh);
+            }
+        }
+        clean_shapes.extend(seen);
+    }
     let w = water::build_water(
         &areas,
         &topology,

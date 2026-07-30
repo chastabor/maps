@@ -44,9 +44,8 @@ Options:
   -G, --growth         render growth's output only: tiles, which area owns each,
                        and the shape derived from them (tiles their own shape
                        fails to bound are outlined in red)
-  -T, --tile-shapes    derive circles that CONTAIN their tiles (r = farthest tile
-                       vertex). Transitional: the finished render still projects
-                       onto shapes and folds, so pair this with --growth
+      --fitted-circles fit each circle just INSIDE its tiles (the old default)
+                       instead of containing them; for comparison only
   -h, --help           show this help"
     )
 }
@@ -158,7 +157,7 @@ fn main() {
             "-o" | "--out" => out = Some(value("--out")),
             "-d" | "--debug" => debug = Some(true),
             "-G" | "--growth" => growth = true,
-            "-T" | "--tile-shapes" => tile_bounded = Some(true),
+            "--fitted-circles" => tile_bounded = Some(false),
             "-h" | "--help" => {
                 println!("{}", usage());
                 return;

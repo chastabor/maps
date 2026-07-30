@@ -46,6 +46,7 @@ use crate::topology::Topology;
 fn fused_necks(
     areas: &Areas,
     corridor_pairs: &std::collections::HashMap<(usize, usize), Vec<Point>>,
+    s: f64,
 ) -> std::collections::HashSet<grid::Hex> {
     use std::collections::{HashMap, HashSet};
     let n = areas.count();
@@ -68,9 +69,26 @@ fn fused_necks(
         }
     }
     let mut neck = HashSet::new();
+    // A cell whose own room's border already CONTAINS it needs no lock, and taking one
+    // actively hurts: the lock's whole premise is that the seam cells "lie outside that
+    // room's geometry, and projecting undoes the fill". A tile-bounded circle (phase 1b)
+    // inverts that — projecting a seam vertex onto the arc moves it OUTWARD onto the
+    // border, undoing nothing — while the raw hex boundary it would be pinned to lies
+    // inside the arc, so the wall band dips in to reach it: measured at up to 9.05px for a
+    // 19-tile flower and 7.75px for a 7-tile one, which is the notch between two petals.
+    //
+    // A rect's border runs inside its tiles by design, so its seam cells fail this test and
+    // keep the lock. With fitted circles the tiles poke out too, so nothing changes there.
+    let contained = |c: grid::Hex| -> bool {
+        areas
+            .owner_of(c)
+            .and_then(|i| areas.shape(i))
+            .is_some_and(|sh| c.corners(s).iter().all(|v| sh.contains(*v)))
+    };
     for (&pair, (cells, faces)) in &seam {
         if faces / 2 <= 2 && !corridor_pairs.contains_key(&pair) {
-            neck.extend(cells.iter().copied()); // narrow touch, no corridor: give it a neck
+            // narrow touch, no corridor: give it a neck, minus cells their own room bounds
+            neck.extend(cells.iter().copied().filter(|c| !contained(*c)));
         }
     }
     neck
@@ -1642,7 +1660,7 @@ pub(crate) fn plan(areas: &Areas, s: f64) -> (Fusion, std::collections::HashSet<
     // `spans` is keyed by exactly the pairs with a corridor candidate (it is filled from
     // `necks.iter().filter(is_corridor)` above), so it doubles as the set `fused_necks`
     // stands aside for — no second pass, and the two cannot drift apart.
-    let mut join_cells = fused_necks(areas, &spans);
+    let mut join_cells = fused_necks(areas, &spans, s);
     join_cells.extend(areas.join().iter().copied());
     (
         Fusion {

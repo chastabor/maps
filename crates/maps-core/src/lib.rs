@@ -181,12 +181,17 @@ pub struct GenOptions {
     /// Fine-tunes the ruins tag's default (ruins 0.5, untagged 0.1); the
     /// `organic` tag always means no ruins and ignores this.
     pub ruins_level: Option<f64>,
-    /// Derive circles that **contain** their tiles (`r` = farthest tile vertex, i.e. `√n·s`
-    /// for a complete flower) instead of fitting just inside them.
+    /// Derive circles that **contain** their tiles — `r` = the farthest tile vertex, i.e.
+    /// `√n·s` for a complete `n`-tile flower — rather than fitting just inside them.
     ///
-    /// Transitional and default off — the render still projects the traced tile boundary onto
-    /// each shape, which folds when the shape sits outside that boundary. Use it with the
-    /// growth view to see the intended geometry. See `plans/tile-first-render.md`.
+    /// **Default on.** A fitted circle stops short of its own floor all the way round (6.2px
+    /// for a 7-tile flower), so the traced boundary has to bulge outside the wall and the
+    /// splice pulls it back, which is what made circular rooms come out weaving. Set it to
+    /// `Some(false)` to get the old fitted circle back for comparison — the CLI's
+    /// `--fitted-circles` and the sweep's `FITTED_CIRCLES=1` do exactly that.
+    ///
+    /// See `plans/tile-first-render.md`; the remaining work this exposed is the chord the
+    /// wall band draws across a fused seam (phase 2a's `outline::compound_wall`).
     pub tile_bounded_shapes: Option<bool>,
     /// Fraction (0..=1) of the geometric (ruin) areas promoted to clean
     /// **dungeon** rooms — crisp walls, rendered doors, and (later) symmetric
@@ -307,7 +312,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     });
     let mut rng = Pcg64::seed_from_u64(shape_seed);
     let mut params = resolve(&tags, &mut rng);
-    params.tile_bounded = opts.tile_bounded_shapes.unwrap_or(false);
+    params.tile_bounded = opts.tile_bounded_shapes.unwrap_or(true);
     // The tag picks the state; the level only fine-tunes it: organic always
     // means no ruins, while ruins/untagged use the override in place of
     // their default fraction.

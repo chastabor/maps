@@ -8,7 +8,8 @@
 //! cargo test -p maps-core --test sweep --release -- --ignored --nocapture
 //! ```
 //!
-//! Env knobs: `SEEDS` widens the seed range (default 120); `RUINS`, `DUNGEON` and
+//! Env knobs: `SEEDS` widens the seed range (default 120); `FITTED_CIRCLES=1` goes back to
+//! the pre-1b fitted circle for comparison; `RUINS`, `DUNGEON` and
 //! `FUSE` force the corresponding generation levels, which the tag defaults leave
 //! sparse — the connector work is much easier to see at high levels:
 //!
@@ -161,6 +162,9 @@ fn sweep() {
                     ruins_level: level("RUINS"),
                     dungeon_level: level("DUNGEON"),
                     fuse_level: level("FUSE"),
+                    // `FITTED_CIRCLES=1` reverts to the pre-1b fitted circle, so the cost of
+                    // the containing circle stays a one-command question.
+                    tile_bounded_shapes: std::env::var("FITTED_CIRCLES").ok().map(|_| false),
                     ..GenOptions::default()
                 },
             );

@@ -38,7 +38,10 @@ use crate::topology::Topology;
 /// wall), so the join is a full-hex-width, hex-aligned neck — the two touching
 /// hexes are already floor, so nothing new is filled. Rooms touching across ≥3
 /// faces already read as one compound and contribute nothing.
-fn fused_necks(areas: &Areas) -> std::collections::HashSet<grid::Hex> {
+fn fused_necks(
+    areas: &Areas,
+    skip: &std::collections::HashSet<(usize, usize)>,
+) -> std::collections::HashSet<grid::Hex> {
     use std::collections::{HashMap, HashSet};
     let n = areas.count();
     let is_d = |i: usize| areas.kind(i) == AreaKind::Dungeon;
@@ -60,7 +63,14 @@ fn fused_necks(areas: &Areas) -> std::collections::HashSet<grid::Hex> {
         }
     }
     let mut neck = HashSet::new();
-    for (cells, faces) in seam.values() {
+    for (&pair, (cells, faces)) in seam.iter() {
+        // A pair with a connector candidate is skipped: its seam is about to be spanned by
+        // a corridor whose walls are drawn geometry, and the raw-hex lock fights them. The
+        // lock exists for a narrow seam that gets NO corridor, where the alternative is
+        // projecting the seam onto one of the two rooms' pinching walls.
+        if skip.contains(&pair) {
+            continue;
+        }
         if faces / 2 <= 2 {
             neck.extend(cells.iter().copied()); // narrow touch: give it a neck
         }
@@ -1631,7 +1641,14 @@ pub(crate) fn plan(areas: &Areas, s: f64) -> (Fusion, std::collections::HashSet<
         .collect();
     // The outline must lock these on their own hex corners, not project them onto a
     // room's wall: they lie outside that room's geometry, and projecting undoes the fill.
-    let mut join_cells = fused_necks(areas);
+    // Pairs a corridor candidate exists for: their seam is spanned by drawn walls, so it
+    // must not also be locked on the raw hex boundary.
+    let corridor_pairs: std::collections::HashSet<(usize, usize)> = necks
+        .iter()
+        .filter(|n| n.is_corridor())
+        .map(|n| n.pair)
+        .collect();
+    let mut join_cells = fused_necks(areas, &corridor_pairs);
     join_cells.extend(areas.join().iter().copied());
     (
         Fusion {

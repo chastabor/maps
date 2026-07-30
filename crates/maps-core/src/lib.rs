@@ -448,20 +448,15 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // the exit lips only, and a connector's wall runs further than the 0.3-cell tolerance
     // from either room's border — so a perfectly good corridor came out looking organic.
     // Taken from the wall runs, which carry the shapes the ladder actually accepted.
-    {
-        let mut seen: Vec<ruins::RuinShape> = Vec::new();
-        for &(_, sh) in dungeon_walls.iter().flatten() {
-            let is_conn = matches!(
-                sh,
-                ruins::RuinShape::Trapezoid { .. }
-                    | ruins::RuinShape::StraightHall { .. }
-                    | ruins::RuinShape::ArcHall { .. }
-            );
-            if is_conn && !seen.contains(&sh) {
-                seen.push(sh);
-            }
+    //
+    // `perimeter()` is the codebase's room-vs-hall test (see `RuinShape::perimeter`), so a
+    // connector is a wall shape with no perimeter — rather than a list of hall variants to
+    // keep in step with the enum. `clean_shapes` is only ever scanned linearly by
+    // `decor::wall_clean`, so deduping into it directly needs no second vector.
+    for sh in dungeon_walls.iter().flatten().map(|&(_, sh)| sh) {
+        if sh.perimeter().is_none() && !clean_shapes.contains(&sh) {
+            clean_shapes.push(sh);
         }
-        clean_shapes.extend(seen);
     }
     let w = water::build_water(
         &areas,

@@ -38,9 +38,14 @@ use crate::topology::Topology;
 /// wall), so the join is a full-hex-width, hex-aligned neck — the two touching
 /// hexes are already floor, so nothing new is filled. Rooms touching across ≥3
 /// faces already read as one compound and contribute nothing.
+///
+/// A pair in `corridor_pairs` is left out: its seam is about to be spanned by a corridor
+/// whose walls are drawn geometry, and the raw-hex lock fights them. The lock is for a
+/// narrow seam that gets NO corridor, where the alternative is projecting the seam onto
+/// one of the two rooms' pinching walls.
 fn fused_necks(
     areas: &Areas,
-    skip: &std::collections::HashSet<(usize, usize)>,
+    corridor_pairs: &std::collections::HashMap<(usize, usize), Vec<Point>>,
 ) -> std::collections::HashSet<grid::Hex> {
     use std::collections::{HashMap, HashSet};
     let n = areas.count();
@@ -63,16 +68,9 @@ fn fused_necks(
         }
     }
     let mut neck = HashSet::new();
-    for (&pair, (cells, faces)) in seam.iter() {
-        // A pair with a connector candidate is skipped: its seam is about to be spanned by
-        // a corridor whose walls are drawn geometry, and the raw-hex lock fights them. The
-        // lock exists for a narrow seam that gets NO corridor, where the alternative is
-        // projecting the seam onto one of the two rooms' pinching walls.
-        if skip.contains(&pair) {
-            continue;
-        }
-        if faces / 2 <= 2 {
-            neck.extend(cells.iter().copied()); // narrow touch: give it a neck
+    for (&pair, (cells, faces)) in &seam {
+        if faces / 2 <= 2 && !corridor_pairs.contains_key(&pair) {
+            neck.extend(cells.iter().copied()); // narrow touch, no corridor: give it a neck
         }
     }
     neck
@@ -1641,14 +1639,10 @@ pub(crate) fn plan(areas: &Areas, s: f64) -> (Fusion, std::collections::HashSet<
         .collect();
     // The outline must lock these on their own hex corners, not project them onto a
     // room's wall: they lie outside that room's geometry, and projecting undoes the fill.
-    // Pairs a corridor candidate exists for: their seam is spanned by drawn walls, so it
-    // must not also be locked on the raw hex boundary.
-    let corridor_pairs: std::collections::HashSet<(usize, usize)> = necks
-        .iter()
-        .filter(|n| n.is_corridor())
-        .map(|n| n.pair)
-        .collect();
-    let mut join_cells = fused_necks(areas, &corridor_pairs);
+    // `spans` is keyed by exactly the pairs with a corridor candidate (it is filled from
+    // `necks.iter().filter(is_corridor)` above), so it doubles as the set `fused_necks`
+    // stands aside for — no second pass, and the two cannot drift apart.
+    let mut join_cells = fused_necks(areas, &spans);
     join_cells.extend(areas.join().iter().copied());
     (
         Fusion {

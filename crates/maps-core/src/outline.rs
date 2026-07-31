@@ -642,26 +642,14 @@ fn splice_dungeon_runs(
         }
     }
     let n = pts.len();
-    let mut out: Vec<TaggedPoint> = Vec::with_capacity(n + 16);
-    // Seam-adjacent runs (consecutive splicable runs of different shapes with
-    // no gap between — where two fused rooms' walls meet) accumulate into one
-    // band, flushed only at a real gap (a non-splicable vertex) or the loop's
-    // end. A fused compound then renders as one continuous wall, not two
-    // capsules notched at the seam. Non-fused rooms keep a rock gap, so every
-    // run is gap-bounded and flushes alone — output unchanged.
-    let mut current: WallRun = Vec::new();
-    // Emit the accumulated band (a polyline needs ≥2 points) and reset.
-    let mut flush = |current: &mut WallRun| {
-        let band = std::mem::take(current);
-        if band.len() > 1 {
-            walls.push(band);
-        }
-    };
+    // Pass 1 — resolve every run to a wall walk, without emitting it. Holding the runs
+    // back is what lets `square_seams` fix a junction: squaring it moves the END of one
+    // run and the START of the next, so neither can be walked until both are known.
+    let mut items: Vec<Item> = Vec::with_capacity(n + 16);
     let mut i = 0;
     while i < n {
         if !splicable(&pts[i]) {
-            flush(&mut current);
-            out.push(pts[i]);
+            items.push(Item::Vertex(pts[i]));
             i += 1;
             continue;
         }
@@ -670,10 +658,9 @@ fn splice_dungeon_runs(
         while j + 1 < n && splicable(&pts[j + 1]) && pts[j + 1].2 == Some(shape) {
             j += 1;
         }
-        // Replace run i..=j with the exact wall between the projected (and
-        // jamb-snapped) run ends, following whichever way around the run
-        // itself goes (its middle vertex disambiguates; trivially short runs
-        // take the short way).
+        // Run i..=j becomes the exact wall between the projected (and jamb-snapped) run
+        // ends, following whichever way around the run itself goes (its middle vertex
+        // disambiguates; trivially short runs take the short way).
         let per = shape.perimeter().unwrap_or(0.0);
         let (raw_a, raw_b) = (
             shape.wall_param(shape.project(pts[i].0)),
@@ -694,20 +681,12 @@ fn splice_dungeon_runs(
         // perimeter (measured: a one-vertex run beside a door walked 313 of a
         // 334 perimeter, drawing the room's far wall across open fused floor).
         let d_sign = if forward { 1.0 } else { -1.0 };
-        let len_of = |a: f64, b: f64| {
-            if forward {
-                (b - a).rem_euclid(per)
-            } else {
-                (a - b).rem_euclid(per)
-            }
-        };
         let gap_before = !splicable(&pts[(i + n - 1) % n]);
         let gap_after = !splicable(&pts[(j + 1) % n]);
-        // A snap that folds the run to nothing (both ends grabbed by one
-        // jamb) falls back to the raw endpoints. The run's start follows a
-        // gap and its end precedes one, so with walk direction `d` the start
-        // snaps to a jamb's `tw + d·half` edge and the end to `tw - d·half`.
-        let mut ta = if gap_before {
+        // The run's start follows a gap and its end precedes one, so with walk
+        // direction `d` the start snaps to a jamb's `tw + d·half` edge and the end
+        // to `tw - d·half`.
+        let ta = if gap_before {
             snap(&shape, raw_a, d_sign)
         } else {
             raw_a
@@ -717,34 +696,211 @@ fn splice_dungeon_runs(
         } else {
             raw_b
         };
-        let mut len = len_of(ta, tb);
-        // Snapping may only lengthen the run by as much as its endpoints actually
-        // moved — that is all "close the gap to the jamb edge" can ever justify. A
-        // longer result means an endpoint snapped to an edge BEHIND the walk (the
-        // far side of its own doorway, typically from a one-vertex run where an
-        // organic passage grazes the wall) and the walk wrapped the long way round
-        // the room — drawing its far wall across open floor. Fold back to the raw
-        // endpoints instead, like the folded-to-nothing case below.
-        let cyc = |a: f64, b: f64| cyc_dist(a, b, per);
-        let expected = len_of(raw_a, raw_b) + cyc(raw_a, ta) + cyc(raw_b, tb);
-        if len > expected + 1e-6 || (len < 1e-6 && fwd_raw > 1e-6) {
-            ta = raw_a;
-            len = len_of(raw_a, raw_b);
+        items.push(Item::Run(Run {
+            shape,
+            per,
+            raw_a,
+            raw_b,
+            ta,
+            tb,
+            dir: d_sign,
+            fwd_raw,
+        }));
+        i = j + 1;
+    }
+
+    // Pass 2 — square each fused seam onto the two borders' true crossing.
+    square_seams(&mut items, s);
+
+    // Pass 3 — walk and emit. Seam-adjacent runs (consecutive runs of different
+    // shapes with no gap between — where two fused rooms' walls meet) accumulate
+    // into one band, flushed only at a real gap (a non-splicable vertex) or the
+    // loop's end. A fused compound then renders as one continuous wall, not two
+    // capsules notched at the seam. Non-fused rooms keep a rock gap, so every run
+    // is gap-bounded and flushes alone.
+    let mut out: Vec<TaggedPoint> = Vec::with_capacity(n + 16);
+    let mut current: WallRun = Vec::new();
+    // Emit the accumulated band (a polyline needs ≥2 points) and reset.
+    let mut flush = |current: &mut WallRun| {
+        let band = std::mem::take(current);
+        if band.len() > 1 {
+            walls.push(band);
         }
-        let walk = wall_walk(&shape, ta, d_sign, len, s, false);
-        // Append this run's wall to the accumulating band, tagging each vertex
-        // with the shape it projects onto (so the renderer offsets correctly
-        // across a seam). The outline `out` keeps the raw dedup'd points.
-        current.extend(walk.iter().map(|&p| (quantize_pt(p), shape)));
-        for p in walk {
-            if out.last().map(|&(q, _, _, _)| q) != Some(p) {
-                out.push((p, None, Some(shape), true));
+    };
+    for item in items {
+        match item {
+            Item::Vertex(t) => {
+                flush(&mut current);
+                out.push(t);
+            }
+            Item::Run(r) => {
+                let walk = wall_walk(&r.shape, r.start(), r.dir, r.len(), s, false);
+                // Append this run's wall to the accumulating band, tagging each vertex
+                // with the shape it projects onto (so the renderer offsets correctly
+                // across a seam). The outline `out` keeps the raw dedup'd points.
+                current.extend(walk.iter().map(|&p| (quantize_pt(p), r.shape)));
+                for p in walk {
+                    if out.last().map(|&(q, _, _, _)| q) != Some(p) {
+                        out.push((p, None, Some(r.shape), true));
+                    }
+                }
             }
         }
-        i = j + 1;
     }
     flush(&mut current);
     *pts = out;
+}
+
+/// One entry of a spliced loop: either a vertex left organic, or a dungeon run resolved
+/// but not yet walked.
+enum Item {
+    Vertex(TaggedPoint),
+    Run(Run),
+}
+
+/// A maximal stretch of one room shape's boundary, resolved to a wall walk.
+///
+/// Kept as data rather than walked on the spot so that [`square_seams`] can move a
+/// junction's two endpoints — the end of one run and the start of the next — before
+/// either is turned into points.
+struct Run {
+    shape: RuinShape,
+    per: f64,
+    /// Where the raster actually left the wall, before any snapping. The length guard is
+    /// calibrated on these, so it stays a bound on how far snapping moved things.
+    raw_a: f64,
+    raw_b: f64,
+    /// Post-snap endpoints (jamb snapping at a gap, seam squaring at a fused junction).
+    ta: f64,
+    tb: f64,
+    /// Walk direction: `+1` with increasing wall parameter, `-1` against.
+    dir: f64,
+    /// Raw forward span, used only to tell a legitimately empty run from a folded one.
+    fwd_raw: f64,
+}
+
+impl Run {
+    fn forward(&self) -> bool {
+        self.dir > 0.0
+    }
+
+    /// Walk length from `a` to `b` in this run's direction.
+    fn span(&self, a: f64, b: f64) -> f64 {
+        if self.forward() {
+            (b - a).rem_euclid(self.per)
+        } else {
+            (a - b).rem_euclid(self.per)
+        }
+    }
+
+    /// Whether the snapped endpoints must be abandoned.
+    ///
+    /// This guards an **arc ambiguity, not an overshoot**. `wall_walk` takes a start, a
+    /// direction and a length along a *closed* perimeter, so two endpoint parameters
+    /// describe two arcs — the short way round and the long way. Direction comes from the
+    /// raster run's middle vertex, and nothing in that tells which arc is the wall. Move an
+    /// endpoint *past* the other and the span wraps: the walk then draws the room's entire
+    /// far wall across open floor (measured: a one-vertex run beside a door walked 313 of a
+    /// 334 perimeter).
+    ///
+    /// What moves an endpoint is **jamb snapping** — a doorway's `±half` edge, reconciled
+    /// in pixel space against a parameter the raster produced independently. Phase 3a
+    /// deletes that, and with it this guard: endpoints taken from tile vertexes are already
+    /// on the border and there is nothing to reconcile.
+    ///
+    /// Seam squaring cannot trip it. [`SEAM_REACH`] caps the move at arc `m`, so the new
+    /// length is at most `len_raw + m`, which is exactly the bound below (measured over
+    /// four configurations: 14–46 folds each, **none** of them at a seam). Removing the cap
+    /// is what inflates the bound until a wrapped walk satisfies it — the failure mode of
+    /// the first attempt at phase 2a, which drew walls 30px inside their own rooms.
+    fn folded(&self) -> bool {
+        let cyc = |a: f64, b: f64| cyc_dist(a, b, self.per);
+        let expected =
+            self.span(self.raw_a, self.raw_b) + cyc(self.raw_a, self.ta) + cyc(self.raw_b, self.tb);
+        let len = self.span(self.ta, self.tb);
+        len > expected + 1e-6 || (len < 1e-6 && self.fwd_raw > 1e-6)
+    }
+
+    fn start(&self) -> f64 {
+        if self.folded() { self.raw_a } else { self.ta }
+    }
+
+    fn len(&self) -> f64 {
+        if self.folded() {
+            self.span(self.raw_a, self.raw_b)
+        } else {
+            self.span(self.ta, self.tb)
+        }
+    }
+}
+
+/// How far a seam may move a run endpoint, in cells — applied both in the plane and along
+/// each border. A cell and a half: the raster junction and the border crossing both sit at
+/// the seam, so a larger move means the wrong crossing was picked (measured median: 6–8px,
+/// i.e. about half this). The cap is load-bearing, not cosmetic — see [`Run::folded`].
+const SEAM_REACH: f64 = 1.5;
+
+/// Square a fused compound's seam corner onto the two borders' **true crossing**.
+///
+/// Where two fused rooms' runs meet, each run ends wherever the cell raster left its own
+/// wall. Those two points differ, so the band jumps straight between them — a chord that
+/// cuts inside whichever room it crosses (measured: every wall segment reaching more than
+/// 2px into a room in the `fused` configurations is one of these chords or the step
+/// immediately after it, and all of them are circle↔circle). The two borders genuinely
+/// meet at a point, so the corner can be exact instead: end one run and start the next at
+/// the crossing they share. Same geometry as [`compound_wall`], applied to the one corner
+/// rather than by rebuilding the whole compound — which is what keeps every opening,
+/// doorway and jamb snap on its existing path.
+///
+/// Declines, leaving the chord, unless all of:
+///
+/// - the two borders cross in exactly **two** distinct points (so the overlap is one span
+///   — halls and hex cells report none at all and fall out here);
+/// - the crossing is **local** to the chord it replaces, within [`SEAM_REACH`] both in the
+///   plane and along each border. Without that cap a junction can grab the seam's *far*
+///   corner, and the walk wraps the long way round the room; the cap is also what keeps
+///   [`Run::folded`]'s bound honest.
+fn square_seams(items: &mut [Item], s: f64) {
+    let reach = SEAM_REACH * s;
+    for k in 1..items.len() {
+        let (before, after) = items.split_at_mut(k);
+        let (Some(Item::Run(a)), Some(Item::Run(b))) = (before.last_mut(), after.first_mut())
+        else {
+            continue;
+        };
+        // Exactly two distinct crossings. A rect corner lying on the other's edge is
+        // reported by both incident edges, so dedupe before counting.
+        let mut xs: Vec<Point> = Vec::new();
+        for p in a.shape.border_crossings(&b.shape) {
+            if !xs.iter().any(|q| (q.0 - p.0).hypot(q.1 - p.1) < 1e-6) {
+                xs.push(p);
+            }
+        }
+        if xs.len() != 2 {
+            continue;
+        }
+        // The chord this replaces: a's raw end to b's raw start. Neither is jamb-snapped
+        // — a seam junction has no gap on either side — so the raw params are the ones
+        // actually emitted today.
+        let (pa, pb) = (a.shape.wall_point(a.raw_b), b.shape.wall_point(b.raw_a));
+        let mid = ((pa.0 + pb.0) / 2.0, (pa.1 + pb.1) / 2.0);
+        let Some(&x) = xs
+            .iter()
+            .min_by(|u, v| {
+                let d = |p: &Point| (p.0 - mid.0).hypot(p.1 - mid.1);
+                d(u).total_cmp(&d(v))
+            })
+            .filter(|p| (p.0 - mid.0).hypot(p.1 - mid.1) <= reach)
+        else {
+            continue;
+        };
+        let (ta, tb) = (a.shape.wall_param(x), b.shape.wall_param(x));
+        if cyc_dist(a.raw_b, ta, a.per) > reach || cyc_dist(b.raw_a, tb, b.per) > reach {
+            continue;
+        }
+        a.tb = ta;
+        b.ta = tb;
+    }
 }
 
 /// Walk a room shape's wall from parameter `ta`, `len` far in direction

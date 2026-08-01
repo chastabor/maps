@@ -24,10 +24,6 @@ use rand::seq::SliceRandom;
 use std::collections::{BTreeSet, HashSet};
 
 const SQRT3: f64 = crate::grid::SQRT3;
-/// How far a **circular** dungeon room's drawn wall sits outside its outermost
-/// cell centres, in hex-size units. (Rectangles align their walls to the hex
-/// lattice instead — see `derive_shape`.)
-const ROOM_WALL_PAD: f64 = 0.4;
 /// Areas smaller than this are discarded as failed growths.
 pub(crate) const MIN_AREA: usize = 4;
 /// Organic areas add up to this many cells per round.
@@ -347,16 +343,17 @@ impl Shape {
 /// sibling's wall the exact mirror of its generator's (means/bboxes commute
 /// with the lattice transforms).
 ///
-/// `tile_bounded` switches the disk to the circle that **contains** its tiles — `r` = the
-/// farthest tile *vertex* rather than the farthest tile *centre* plus a pad, which for a
-/// complete `n`-tile flower is exactly `√n·s`. Off by default; see
-/// `plans/tile-first-render.md` phase 1b for why it cannot become the default until the
-/// render clips its own border instead of projecting a traced one onto it. The rectangle is
-/// unaffected either way: its border belongs *inside* its tiles, joining the shoulder
-/// vertices across the top and bottom and running down the outer column, which is what the
-/// bounding box already gives.
-fn derive_shape(cells: &[Hex], is_rect: bool, s: f64, tile_bounded: bool) -> RuinShape {
-    let pad = ROOM_WALL_PAD * s;
+/// The disk **contains** its tiles: `r` = the farthest tile *vertex*, which for a complete
+/// `n`-tile flower is exactly `√n·s`. That is the contract the render is built on — a
+/// corridor attaches through an apothem edge that lies inside the border, so its floor
+/// always crosses the border, and there is no such thing as a claimed tile outside the room.
+/// An earlier fitted disk (farthest tile *centre* plus a pad) left thousands of claimed tiles
+/// outside their own circle and has been removed; see `plans/tile-first-render.md` phase 1b.
+///
+/// The rectangle is different by design: its border belongs *inside* its tiles, joining the
+/// shoulder vertices across the top and bottom and running down the outer column, which is
+/// what the bounding box already gives.
+fn derive_shape(cells: &[Hex], is_rect: bool, s: f64) -> RuinShape {
     if is_rect {
         let (mut x0, mut x1, mut y0, mut y1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
         for h in cells {
@@ -391,26 +388,16 @@ fn derive_shape(cells: &[Hex], is_rect: bool, s: f64, tile_bounded: bool) -> Rui
         let c = (sx / cells.len() as f64, sy / cells.len() as f64);
         // Containment needs no completeness check on the ring: `r` is driven by whichever tile
         // is farthest, and a truncated ring's tiles are a subset of the complete ring's, so
-        // they all fall inside the same circle.
-        let r = if tile_bounded {
-            cells
-                .iter()
-                .flat_map(|h| {
-                    let p = h.center(s);
-                    (0..6).map(move |k| crate::grid::hex_corner(p, k, s))
-                })
-                .map(|v| (v.0 - c.0).hypot(v.1 - c.1))
-                .fold(0.0, f64::max)
-        } else {
-            cells
-                .iter()
-                .map(|h| {
-                    let p = h.center(s);
-                    (p.0 - c.0).hypot(p.1 - c.1)
-                })
-                .fold(0.0, f64::max)
-                + pad
-        };
+        // they all fall inside the same circle. (Growth refuses a truncated ring anyway — see
+        // `Shape::candidates` — but for over-reach into the rock, not for containment.)
+        let r = cells
+            .iter()
+            .flat_map(|h| {
+                let p = h.center(s);
+                (0..6).map(move |k| crate::grid::hex_corner(p, k, s))
+            })
+            .map(|v| (v.0 - c.0).hypot(v.1 - c.1))
+            .fold(0.0, f64::max);
         RuinShape::Circle {
             cx: c.0,
             cy: c.1,
@@ -478,10 +465,6 @@ pub struct GrowthParams {
     pub gamma: f64,
     /// Chaotic shape overrides gamma: prefer cells with exactly 2 connections.
     pub chaotic: bool,
-    /// Derive circles that **contain** their tiles instead of fitting just inside them —
-    /// see `derive_shape`. Transitional and default off; `plans/tile-first-render.md`
-    /// phase 1b explains why the render has to change before this can become the default.
-    pub tile_bounded: bool,
 }
 
 pub fn resolve<R: Rng>(tags: &Tags, rng: &mut R) -> GrowthParams {
@@ -535,8 +518,6 @@ pub fn resolve<R: Rng>(tags: &Tags, rng: &mut R) -> GrowthParams {
         sizes,
         gamma,
         chaotic,
-        // Not tag-driven: an opt-in for the tile-first render work, set by the caller.
-        tile_bounded: false,
     }
 }
 
@@ -979,15 +960,8 @@ pub fn grow_areas<R: Rng>(
     // final, so the corridors are planned against the geometry the walls will use,
     // and every later stage (doors, outline, water, decor) sees corridor floor as
     // ordinary floor.
-    let join = claim_join_floor(
-        grid,
-        &mut owner,
-        &mut builds,
-        &mut partner,
-        hex_size,
-        params.tile_bounded,
-    );
-    let areas = finalize(grid, builds, hex_size, join, params.tile_bounded);
+    let join = claim_join_floor(grid, &mut owner, &mut builds, &mut partner, hex_size);
+    let areas = finalize(grid, builds, hex_size, join);
     // Staggered growth can occasionally leave an area whose only gap-neighbour
     // was an under-sized area that got dropped, orphaning it. Keep only the
     // largest connected component so the door graph always spans the map.
@@ -1024,7 +998,6 @@ fn claim_join_floor(
     builds: &mut [Build],
     partner: &mut [Option<u32>],
     hex_size: f64,
-    tile_bounded: bool,
 ) -> HashSet<Hex> {
     // Provisional areas at BUILD indices (no `MIN_AREA` filter, no component drop),
     // so a claim can be written straight back into `builds` by the same index.
@@ -1040,7 +1013,7 @@ fn claim_join_floor(
         }
         cells.push(b.cells.clone());
         kinds.push(b.kind);
-        shapes.push(build_shape(b, hex_size, &unclaimed, tile_bounded));
+        shapes.push(build_shape(b, hex_size, &unclaimed));
     }
     let provisional = Areas {
         eroded: HashSet::new(),
@@ -1627,12 +1600,7 @@ fn seed_orbit<R: Rng>(
 /// Dungeon and ruin rooms both grew from a flower into their exact geometry, so both
 /// derive a hex-aligned shape the same way. (A ruin that fell back to organic growth
 /// has `is_rect=false` but is kind Organic, so it takes no shape.)
-fn build_shape(
-    b: &Build,
-    hex_size: f64,
-    join: &HashSet<Hex>,
-    tile_bounded: bool,
-) -> Option<RuinShape> {
+fn build_shape(b: &Build, hex_size: f64, join: &HashSet<Hex>) -> Option<RuinShape> {
     matches!(b.kind, AreaKind::Dungeon | AreaKind::Ruin).then(|| {
         let room: Vec<Hex> = b
             .cells
@@ -1640,19 +1608,13 @@ fn build_shape(
             .copied()
             .filter(|c| !join.contains(c))
             .collect();
-        derive_shape(&room, b.is_rect, hex_size, tile_bounded)
+        derive_shape(&room, b.is_rect, hex_size)
     })
 }
 
 /// Drop under-sized areas, re-index, derive dungeon wall shapes, and build the
 /// final `Areas`.
-fn finalize(
-    grid: &HexGrid,
-    builds: Vec<Build>,
-    hex_size: f64,
-    join: HashSet<Hex>,
-    tile_bounded: bool,
-) -> Areas {
+fn finalize(grid: &HexGrid, builds: Vec<Build>, hex_size: f64, join: HashSet<Hex>) -> Areas {
     let mut cells: Vec<Vec<Hex>> = Vec::new();
     let mut kinds: Vec<AreaKind> = Vec::new();
     let mut shapes: Vec<Option<RuinShape>> = Vec::new();
@@ -1665,7 +1627,7 @@ fn finalize(
         for &c in &b.cells {
             owner.insert(c, idx);
         }
-        let shape = build_shape(&b, hex_size, &join, tile_bounded);
+        let shape = build_shape(&b, hex_size, &join);
         cells.push(b.cells);
         kinds.push(b.kind);
         shapes.push(shape);

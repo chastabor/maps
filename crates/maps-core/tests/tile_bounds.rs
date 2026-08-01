@@ -2,7 +2,7 @@
 //! properties the tile-first render is built on (`plans/tile-first-render.md`), so they are
 //! asserted rather than merely printed.
 //!
-//! 1. **A shape bounds its own tiles** (phase 1b/1c, needs `tile_bounded_shapes`).
+//! 1. **A shape bounds its own tiles** (phase 1b/1c).
 //! 2. **Every circle's tile set is a complete flower** — growth refuses a ring it cannot fill.
 //! 3. **No wall crosses a room it is not fused to.** This is a *consequence* of 2, not an
 //!    independent rule: a complete flower's border reaches only the tiles immediately
@@ -31,13 +31,12 @@ use maps_core::{CaveMap, GenOptions, generate_with};
 use std::collections::HashSet;
 
 /// The generation options every test here shares.
-fn opts(tags: &str, tile_bounded: bool) -> GenOptions {
+fn opts(tags: &str) -> GenOptions {
     GenOptions {
         tags: Some(Tags::parse(tags).unwrap()),
         ruins_level: Some(1.0),
         dungeon_level: Some(1.0),
         fuse_level: Some(1.0),
-        tile_bounded_shapes: Some(tile_bounded),
         ..GenOptions::default()
     }
 }
@@ -73,7 +72,7 @@ fn shapes_bound_their_own_tiles() {
         .unwrap_or(24);
     for tags in ["large,ruins,dungeon,separate", "large,ruins,dungeon,fused"] {
         for seed in 1..=seeds {
-            let m = generate_with(seed, &opts(tags, true));
+            let m = generate_with(seed, &opts(tags));
             let bad = unbounded(&m, s);
             assert!(
                 bad.is_empty(),
@@ -148,22 +147,20 @@ fn circles_are_complete_flowers() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(24);
-    for tb in [false, true] {
-        for seed in 1..=seeds {
-            let m = generate_with(seed, &opts("large,ruins,dungeon,fused", tb));
-            for i in 0..m.areas.count() {
-                if !matches!(m.areas.shape(i), Some(RuinShape::Circle { .. })) {
-                    continue;
-                }
-                let cells: Vec<Hex> = m.areas.room_cells(i).collect();
-                assert!(
-                    is_flower(&cells),
-                    "seed {seed} tile_bounded={tb}: area {} is a circle over {} tiles that are \
-                     not a complete flower: {cells:?}",
-                    i + 1,
-                    cells.len()
-                );
+    for seed in 1..=seeds {
+        let m = generate_with(seed, &opts("large,ruins,dungeon,fused"));
+        for i in 0..m.areas.count() {
+            if !matches!(m.areas.shape(i), Some(RuinShape::Circle { .. })) {
+                continue;
             }
+            let cells: Vec<Hex> = m.areas.room_cells(i).collect();
+            assert!(
+                is_flower(&cells),
+                "seed {seed}: area {} is a circle over {} tiles that are not a complete \
+                 flower: {cells:?}",
+                i + 1,
+                cells.len()
+            );
         }
     }
 }
@@ -179,7 +176,7 @@ fn walls_stay_out_of_unfused_rooms() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(24);
     for seed in 1..=seeds {
-        let m = generate_with(seed, &opts("large,ruins,dungeon,fused", true));
+        let m = generate_with(seed, &opts("large,ruins,dungeon,fused"));
         let n = m.areas.count();
         for a in 0..n {
             let Some(sa) = m.areas.shape(a) else { continue };

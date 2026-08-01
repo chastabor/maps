@@ -46,7 +46,6 @@ fn fused_seams_are_walled() {
                 ruins_level: Some(1.0),
                 dungeon_level: Some(1.0),
                 fuse_level: Some(1.0),
-                tile_bounded_shapes: Some(true),
                 ..GenOptions::default()
             },
         );

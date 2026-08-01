@@ -3,6 +3,12 @@
 //! generation path. Any refactor that changes a single byte of output for
 //! any case fails here.
 //!
+//! **Fusion is covered explicitly.** For a long time it was not: no case tag named `fused`, both
+//! seed-rolled cases happen to roll `fuse: Separate`, and `Case` had no `fuse_level` field at
+//! all — so the whole connector/seam/clipping path was invisible here. A change that rewrote
+//! every fused map passed this file with all 14 hashes unmoved, which is exactly the false
+//! assurance a byte-identity harness must not give.
+//!
 //! To (re)generate the table after an *intentional* output change:
 //! cargo test -p maps-core --test golden print_golden -- --nocapture --ignored
 
@@ -11,12 +17,13 @@ use maps_core::tags::Tags;
 use maps_core::{GenOptions, GridStyle, Mode, generate_with};
 
 /// (seed, tags or "" for seed-rolled, mode, grid, water_level, ruins_level,
-/// dungeon_level)
+/// dungeon_level, fuse_level)
 type Case = (
     u64,
     &'static str,
     &'static str,
     &'static str,
+    Option<f64>,
     Option<f64>,
     Option<f64>,
     Option<f64>,
@@ -31,12 +38,14 @@ const CASES: &[Case] = &[
         None,
         None,
         None,
+        None,
     ),
     (
         2,
         "medium,coral,wet,organic,plain",
         "cave",
         "hex",
+        None,
         None,
         None,
         None,
@@ -49,6 +58,7 @@ const CASES: &[Case] = &[
         Some(0.4),
         None,
         None,
+        None,
     ),
     (
         11,
@@ -58,6 +68,7 @@ const CASES: &[Case] = &[
         None,
         Some(0.9),
         None,
+        None,
     ),
     (
         7,
@@ -65,6 +76,7 @@ const CASES: &[Case] = &[
         "forest",
         "hex",
         Some(0.3),
+        None,
         None,
         None,
     ),
@@ -76,6 +88,7 @@ const CASES: &[Case] = &[
         Some(0.3),
         Some(0.75),
         None,
+        None,
     ),
     (
         13,
@@ -83,6 +96,7 @@ const CASES: &[Case] = &[
         "cave",
         "square",
         Some(1.0),
+        None,
         None,
         None,
     ),
@@ -94,9 +108,10 @@ const CASES: &[Case] = &[
         Some(0.05),
         None,
         None,
+        None,
     ),
-    (42, "", "cave", "hex", None, None, None),
-    (99, "", "forest", "none", None, None, None),
+    (42, "", "cave", "hex", None, None, None, None),
+    (99, "", "forest", "none", None, None, None, None),
     (
         19,
         "large,chamber,connected,wet,ruins,islamic",
@@ -104,6 +119,7 @@ const CASES: &[Case] = &[
         "hex",
         Some(0.3),
         Some(0.85),
+        None,
         None,
     ),
     (
@@ -113,6 +129,7 @@ const CASES: &[Case] = &[
         "hex",
         None,
         Some(0.5),
+        None,
         None,
     ),
     // Dungeon path: geometric areas split into clean, doorless-decor rooms.
@@ -125,6 +142,7 @@ const CASES: &[Case] = &[
         None,
         Some(1.0),
         Some(0.5),
+        None,
     ),
     (
         19,
@@ -134,6 +152,38 @@ const CASES: &[Case] = &[
         Some(0.3),
         Some(0.9),
         Some(0.6),
+        None,
+    ),
+    // Fusion: the connector/seam/clip path, which nothing above reaches.
+    (
+        7,
+        "large,ruins,dungeon,fused",
+        "cave",
+        "hex",
+        None,
+        Some(1.0),
+        Some(1.0),
+        Some(1.0),
+    ),
+    (
+        23,
+        "large,chamber,connected,ruins,dungeon,fused,truchet",
+        "cave",
+        "hex",
+        None,
+        Some(1.0),
+        Some(1.0),
+        Some(1.0),
+    ),
+    (
+        99,
+        "large,ruins,dungeon,fused",
+        "forest",
+        "square",
+        Some(0.3),
+        Some(0.8),
+        Some(0.6),
+        Some(0.71),
     ),
 ];
 
@@ -153,6 +203,9 @@ const GOLDEN: &[(u64, u64)] = &[
     (0xff024c77df165aab, 0x5c4ec946af97249e),
     (0xc1cf2cf39e5a0ddd, 0x437d6c32fac02455),
     (0xbf860e72a9be4ee5, 0xd6f7e8973e9a9a00),
+    (0xb51856aa556bad5c, 0x2d5df9b87cc58fa5),
+    (0x8119cc3973da07b1, 0x3145e752e87a7053),
+    (0x6b3cfdded12b8f3d, 0xd4da6700cec7a3c4),
 ];
 
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -165,7 +218,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 fn run(case: &Case) -> (u64, u64) {
-    let (seed, tags, mode, grid, water, ruins, dungeon) = *case;
+    let (seed, tags, mode, grid, water, ruins, dungeon, fuse) = *case;
     let map = generate_with(
         seed,
         &GenOptions {
@@ -183,6 +236,7 @@ fn run(case: &Case) -> (u64, u64) {
             water_level: water,
             ruins_level: ruins,
             dungeon_level: dungeon,
+            fuse_level: fuse,
             ..GenOptions::default()
         },
     );

@@ -1357,6 +1357,64 @@ fn splice_outline_necks(outline: &mut [Vec<Point>], necks: Vec<Neck>) -> Vec<Nec
     kept
 }
 
+/// Trim a corridor's two walls to the stretch that lies **outside both rooms**.
+///
+/// A corridor is built from the tiles the two rooms share, so each of its walls starts deep
+/// inside one room, crosses whatever gap there is, and ends deep inside the other. Only the
+/// middle is wall: the ends are lines drawn across open room floor.
+///
+/// [`clip::split_outside`](crate::clip::split_outside) already removes those ends from the
+/// rendered wall band, but the **outline** splice inserts the untrimmed wall endpoints straight
+/// into the floor loop, so the loop dives into one room's interior and back out — which is what
+/// folds it. Trimming at source fixes both layers from one place and keeps them agreeing, which
+/// splicing one and clipping the other cannot.
+///
+/// `false` when a wall has no outside stretch at all: the two borders already overlap, so the
+/// compound is open without a corridor and the pair needs none (the `crop`/`square_seams` path
+/// handles it). The caller drops the candidate.
+fn trim_to_gap(neck: &mut Neck, rooms: &[ruins::RuinShape]) -> bool {
+    // The longest run of `a`→`b` that no room encloses, as (start, end) points.
+    let longest_outside = |a: Point, b: Point| -> Option<(Point, Point)> {
+        let at = |t: f64| {
+            if t <= 0.0 {
+                a
+            } else if t >= 1.0 {
+                b
+            } else {
+                (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+            }
+        };
+        let mut ts: Vec<f64> = vec![0.0, 1.0];
+        for r in rooms {
+            ts.extend(r.segment_crossings(a, b));
+        }
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+        // Between consecutive breakpoints the segment is wholly in or wholly out, so one
+        // midpoint decides the interval. Keep the longest outside one: a corridor spans one
+        // gap, and a shorter sliver is a graze past a corner.
+        ts.windows(2)
+            .filter(|w| {
+                let m = at(0.5 * (w[0] + w[1]));
+                !rooms.iter().any(|r| r.contains(m))
+            })
+            .max_by(|x, y| (x[1] - x[0]).total_cmp(&(y[1] - y[0])))
+            .map(|w| (at(w[0]), at(w[1])))
+    };
+    let (Some(w0), Some(w1)) = (
+        longest_outside(neck.lines[0].0, neck.lines[0].1),
+        longest_outside(neck.lines[1].0, neck.lines[1].1),
+    ) else {
+        return false;
+    };
+    neck.lines = [w0, w1];
+    neck.hall = ruins::RuinShape::Trapezoid {
+        wall0: w0,
+        wall1: w1,
+    };
+    true
+}
+
 /// Every connector candidate for every fused pair, widest-first per pair.
 ///
 /// Returns the candidates and the pair classification they were built from, so a caller
@@ -1393,6 +1451,18 @@ fn plan_necks(areas: &Areas, s: f64) -> (Vec<Neck>, Vec<(usize, usize, FuseClass
     // one for, so a corridor exists between every fused pair.
     let covered: Vec<(usize, usize)> = necks.iter().map(|n| n.pair).collect();
     necks.extend(contact_necks(areas, &pairs, &covered, s));
+    // Every corridor is trimmed to the gap it actually spans, so the outline splice and the
+    // wall band insert the same geometry and neither carries a line across open room floor.
+    let rooms: Vec<ruins::RuinShape> = (0..areas.count())
+        .filter_map(|i| areas.shape(i))
+        .filter(|sh| {
+            matches!(
+                sh,
+                ruins::RuinShape::Circle { .. } | ruins::RuinShape::Rect { .. }
+            )
+        })
+        .collect();
+    necks.retain_mut(|n| !n.is_corridor() || trim_to_gap(n, &rooms));
     (necks, pairs)
 }
 

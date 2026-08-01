@@ -203,7 +203,7 @@ const GOLDEN: &[(u64, u64)] = &[
     (0xff024c77df165aab, 0x5c4ec946af97249e),
     (0xc1cf2cf39e5a0ddd, 0x437d6c32fac02455),
     (0xbf860e72a9be4ee5, 0xd6f7e8973e9a9a00),
-    (0xb51856aa556bad5c, 0x2d5df9b87cc58fa5),
+    (0x950dc4faeb3e98e3, 0x2d5df9b87cc58fa5),
     (0x8119cc3973da07b1, 0x3145e752e87a7053),
     (0x6b3cfdded12b8f3d, 0xd4da6700cec7a3c4),
 ];

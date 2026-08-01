@@ -3,6 +3,7 @@
 //! `(seed, tags)` in, map out. No I/O, no platform dependencies — usable
 //! natively and from wasm.
 
+pub mod clip;
 pub mod decor;
 pub mod doorway;
 /// Fusion connectors — internal; nothing outside the crate names these types.

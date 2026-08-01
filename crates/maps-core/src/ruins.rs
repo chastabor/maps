@@ -337,6 +337,43 @@ impl RuinShape {
         }
     }
 
+    /// Where the segment `a`→`b` crosses this shape's border, as parameters `t` in `0..=1`,
+    /// ascending.
+    ///
+    /// Exact — a quadratic for a circle, four segment intersections for a rect — so a caller
+    /// clipping a polyline against a room never has to search for the crossing. A rect's corners
+    /// sit on hex vertices and a corridor between two rects spans vertex to vertex, so for that
+    /// pair the answer is lattice-exact; a circle's border is the only one that falls between
+    /// vertices, and even there it is a closed form rather than a bisection.
+    ///
+    /// Shapes without a closed border return nothing, as they do for
+    /// [`border_crossings`](Self::border_crossings).
+    pub fn segment_crossings(&self, a: Point, b: Point) -> Vec<f64> {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len2 = dx * dx + dy * dy;
+        if len2 < 1e-12 {
+            return Vec::new();
+        }
+        // Recover the parameter from a crossing point by projecting it back onto the segment.
+        let param = |p: Point| ((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2;
+        let mut ts: Vec<f64> = match *self {
+            RuinShape::Circle { cx, cy, r } => segment_circle(a, b, (cx, cy), r)
+                .into_iter()
+                .map(param)
+                .collect(),
+            RuinShape::Rect { .. } => rect_edges(self)
+                .into_iter()
+                .filter_map(|(c, d)| segment_segment(a, b, c, d))
+                .map(param)
+                .collect(),
+            _ => Vec::new(),
+        };
+        ts.retain(|t| (0.0..=1.0).contains(t));
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+        ts
+    }
+
     /// Whether `p` lies within the space this shape walls in — inside the perimeter
     /// for a room, between the side walls for a hall, inside the hexagon for a cell.
     ///

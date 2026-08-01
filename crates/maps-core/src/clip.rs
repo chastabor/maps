@@ -212,3 +212,89 @@ pub fn openings_from(shape: &RuinShape, others: &[RuinShape]) -> Vec<Span> {
         .filter_map(|o| opening_span(shape, o))
         .collect()
 }
+
+/// Split a tagged wall run into the stretches that **no other room encloses**.
+///
+/// The counterpart to [`wall_spans`], for the other side of the same cut. Where a room's border
+/// is clipped by the things that open it, a *connector's* wall is clipped by the rooms it runs
+/// into: a corridor is built from the tiles the two rooms share, and those are room tiles, so its
+/// walls necessarily start out running inside both rooms. That stretch is not wall — it is open
+/// floor with a line drawn across it.
+///
+/// Each vertex carries the shape it belongs to, so a run is only ever clipped against *other*
+/// rooms. Without that a fused compound's band would clip away its own two rooms' walls, which is
+/// most of it.
+///
+/// `margin` is how far inside a room a point must be to count as enclosed. A wall legitimately
+/// *touches* a border it meets — a squared seam corner lies exactly on both — so testing plain
+/// containment would eat the join. One pixel is enough to separate "on the border" from "inside
+/// the room".
+///
+/// Returns the surviving stretches in order, each with the crossing point as its new end, so the
+/// renderer's per-run capsule ends where the wall really ends and the gap between two stretches
+/// is the passage. Stretches of fewer than two points are dropped: a polyline needs two.
+pub fn split_outside(
+    run: &[(Point, RuinShape)],
+    rooms: &[RuinShape],
+    margin: f64,
+) -> Vec<Vec<(Point, RuinShape)>> {
+    // Clip against each room shrunk by `margin` rather than testing distance-to-border as we
+    // go: it puts the margin into the geometry, so the crossings stay exact. A wall legitimately
+    // *touches* a border it meets — a squared seam corner lies on both — and without the inset
+    // that join would be eaten.
+    let inner: Vec<RuinShape> = rooms.iter().map(|r| r.shrink(margin)).collect();
+    // Ownership is deliberately NOT an exemption. A room's wall lies *on* its own border, so it
+    // never falls inside the shrunk copy, and a stretch that does — a wall rerouted across its
+    // own room to meet a corridor — is the same defect as a wall inside a neighbour.
+    let enclosed = |p: Point| inner.iter().any(|r| r.contains(p));
+    let mut out: Vec<Vec<(Point, RuinShape)>> = Vec::new();
+    let mut cur: Vec<(Point, RuinShape)> = Vec::new();
+    for w in run.windows(2) {
+        let ((a, sa), (b, _)) = (w[0], w[1]);
+        let lerp = |t: f64| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+        // The endpoints are the ORIGINAL vertices, not `lerp(0)`/`lerp(1)`: the arithmetic is
+        // not bit-identical, and a vertex that differs in its last bits from the next segment's
+        // start is a duplicate the run did not have before. That alone moved every digest.
+        let at = |t: f64| {
+            if t <= 0.0 {
+                a
+            } else if t >= 1.0 {
+                b
+            } else {
+                lerp(t)
+            }
+        };
+        // Every parameter at which this segment enters or leaves a room, exactly. Between two
+        // consecutive breakpoints the segment is wholly inside or wholly outside, so one
+        // midpoint test classifies the whole interval — no sampling, and nothing narrow can
+        // hide between samples. This is what lets a wall crossing the 6px shoulder gap between
+        // two fused rects survive: both its endpoints are enclosed, but the middle is not.
+        let mut ts: Vec<f64> = vec![0.0, 1.0];
+        for r in &inner {
+            ts.extend(r.segment_crossings(a, b));
+        }
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+        for pair in ts.windows(2) {
+            let (t0, t1) = (pair[0], pair[1]);
+            let (p0, p1) = (at(t0), at(t1));
+            if enclosed(at(0.5 * (t0 + t1))) {
+                // Inside a room: not wall. Close whatever was open.
+                if cur.len() > 1 {
+                    out.push(std::mem::take(&mut cur));
+                } else {
+                    cur.clear();
+                }
+                continue;
+            }
+            if cur.last().map(|&(p, _)| p) != Some(p0) {
+                cur.push((p0, sa));
+            }
+            cur.push((p1, sa));
+        }
+    }
+    if cur.len() > 1 {
+        out.push(cur);
+    }
+    out
+}

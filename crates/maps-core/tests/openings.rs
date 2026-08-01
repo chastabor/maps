@@ -8,8 +8,17 @@
 //!   mean a room's wall alternates in and out of its partner and "the span to remove" has no
 //!   single answer. Two rects crossing like a `+` would do it: eight crossings, and a union that
 //!   is a twelve-sided cross rather than two arcs.
-//! - **a connector's wall stretch crosses a room's border at most once.** More would mean one
-//!   throat needs several disjoint cuts in the same wall.
+//! - **no connector wall reaches deeper into a room than the clip's own margin.** A corridor is
+//!   built from the tiles the two rooms share, so its walls start out crossing both rooms'
+//!   interiors; `fuse::apply` clips those stretches away with `clip::split_outside`, leaving
+//!   nothing further in than the margin it works to.
+//!
+//! Two earlier framings of the second one were wrong, both worth recording. It first asserted "a
+//! connector's wall crosses a room's border at most once" — true of the geometry *before* clipping
+//! landed, meaningless after. Counting border crossings of the shrunk room instead still failed,
+//! on 2 stretches of 47: a wall running tangent to the boundary registers a crossing pair without
+//! ever going anywhere. **Depth** is the quantity the guarantee is actually about, and it is
+//! immune to tangency.
 //!
 //! Both hold with no exceptions at 200 seeds. The printed distribution is also the coverage
 //! record phase 2 reads its three cases off — see `plans/tile-first-render.md`.
@@ -53,6 +62,9 @@ fn border_flips(sh: &R, other: &R) -> usize {
 
 /// How many times a polyline crosses `sh`'s border, by sign flips of `contains` along it.
 /// Open polyline, so ends are not joined.
+///
+/// Callers pass the room shrunk by the clip margin, so "inside" means what the clip treats as
+/// inside; a wall legitimately touches a border it meets.
 fn poly_flips(poly: &[P], sh: &R) -> usize {
     if poly.len() < 2 {
         return 0;
@@ -137,8 +149,9 @@ fn openings() {
         for (lvl, lv) in [("defaults", None), ("dense", Some(1.0))] {
             // pair-class -> (one span, never meet, several spans)
             let mut pairs: std::collections::BTreeMap<String, [usize; 3]> = Default::default();
-            // connector flank crossings -> count
+            // connector flank crossings -> count, plus the deepest any wall reaches into a room
             let mut conn: std::collections::BTreeMap<usize, usize> = Default::default();
+            let mut deepest = 0.0f64;
             let mut conn_kind: std::collections::BTreeMap<(String, usize), usize> =
                 Default::default();
             for seed in 1..=seeds {
@@ -174,7 +187,20 @@ fn openings() {
                 }
                 for (poly, flank) in connector_stretches(&m) {
                     for room in flank {
-                        let f = poly_flips(&poly, &room);
+                        // The clip's own margin (`fuse::apply` passes 1.0).
+                        let f = poly_flips(&poly, &room.shrink(1.0));
+                        for w in poly.windows(2) {
+                            for t in 0..=8 {
+                                let g = t as f64 / 8.0;
+                                let c = (
+                                    w[0].0 + (w[1].0 - w[0].0) * g,
+                                    w[0].1 + (w[1].1 - w[0].1) * g,
+                                );
+                                if room.contains(c) {
+                                    deepest = deepest.max(room.wall_dist(c));
+                                }
+                            }
+                        }
                         *conn.entry(f).or_default() += 1;
                         // For 0 flips, WHICH side: wholly outside the room (the wall never
                         // reaches its border) or wholly inside it?
@@ -199,11 +225,11 @@ fn openings() {
                 "[{tagstr} {lvl}] a fused pair's borders overlap in several spans, so the clip \
                  has no single answer: {pairs:?}"
             );
-            let many: usize = conn.iter().filter(|&(&f, _)| f > 1).map(|(_, n)| n).sum();
-            assert_eq!(
-                many, 0,
-                "[{tagstr} {lvl}] {many} connector wall stretch(es) cross a room's border more \
-                 than once, so one throat would need several disjoint cuts: {conn:?}"
+            // The margin `fuse::apply` clips to, plus room for the sampling to land just inside.
+            assert!(
+                deepest <= 1.5,
+                "[{tagstr} {lvl}] a connector wall reaches {deepest:.2}px into a room — deeper \
+                 than the clip margin, so `clip::split_outside` left wall ink on open floor"
             );
             println!("=== {tagstr} {lvl} ({seeds} seeds)");
             for (k, v) in &pairs {
@@ -213,7 +239,7 @@ fn openings() {
                 );
             }
             let tot: usize = conn.values().sum();
-            println!("    connector x room ({tot} flanks): {conn:?}");
+            println!("    connector x room ({tot} flanks): {conn:?} deepest={deepest:.2}px");
             println!("      by room kind: {conn_kind:?}");
         }
     }

@@ -462,6 +462,107 @@ fn contact_span(areas: &Areas, a: usize, b: usize, n: Point, s: f64) -> Option<(
     (hi > lo).then_some((lo, hi))
 }
 
+/// The contact tiles' extent in a corridor's own `(n, d)` frame, each tile counted whole:
+/// `((across_lo, across_hi), (along_lo, along_hi))`.
+///
+/// The across-range is [`contact_span`]'s — the intersection of the two sides, so the corridor
+/// only spans offsets where both rooms have floor. The along-range is the **union** of both
+/// sides' contact tiles, because that is the ground the corridor has to bridge: from the far
+/// edge of one room's contact tiles to the far edge of the other's.
+///
+/// Purely tile data. No fitted border is consulted, so a corridor built from this exists for
+/// every pair that touches, which is the property [`contact_necks`] needs.
+fn contact_box(
+    areas: &Areas,
+    a: usize,
+    b: usize,
+    n: Point,
+    d: Point,
+    s: f64,
+) -> Option<((f64, f64), (f64, f64))> {
+    let across = contact_span(areas, a, b, n, s)?;
+    let ed = hex_support(d, s);
+    let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+    for (x, y) in [(a, b), (b, a)] {
+        for c in areas.floor_cells(x) {
+            if c.neighbors()
+                .iter()
+                .any(|nb| areas.owner_of(*nb) == Some(y))
+            {
+                let p = c.center(s);
+                let ud = p.0 * d.0 + p.1 * d.1;
+                lo = lo.min(ud - ed);
+                hi = hi.max(ud + ed);
+            }
+        }
+    }
+    (hi > lo).then_some((across, (lo, hi)))
+}
+
+/// A corridor for every fused pair that no other construction could build one for.
+///
+/// The other constructions end a wall where it meets a room's fitted *border*, and at the full
+/// tile-derived width that border may present nothing to end on — neither a crossing nor a tile
+/// the wall line passes through. The pair then gets **no connector at all**, and if its seam is
+/// not covered by the two rooms' own borders it is left unwalled (measured: 2 pairs of 687 over
+/// 200 seeds, both rect↔rect, both with the seam midpoint half an apothem outside both rects).
+///
+/// This builds the same [`Neck`] from the tiles that touch and nothing else, so it cannot fail
+/// for a pair that touches at all. A corridor then exists between every fused pair, which is
+/// worth more than covering those two seams: it is the object that says *these two borders need
+/// clipping*, so the render has one thing to ask rather than having to rediscover the
+/// relationship from the shapes.
+fn contact_necks(
+    areas: &Areas,
+    pairs: &[(usize, usize, FuseClass)],
+    covered: &[(usize, usize)],
+    s: f64,
+) -> Vec<Neck> {
+    const AP: f64 = grid::HEX_APOTHEM;
+    // Every axis the other constructions use, so the widest contact wins as it does there.
+    const AXES: [(Point, Point); 4] = [
+        ((1.0, 0.0), (0.0, 1.0)),
+        ((0.0, 1.0), (1.0, 0.0)),
+        ((AP, -0.5), (0.5, AP)),
+        ((AP, 0.5), (-0.5, AP)),
+    ];
+    let mut out = Vec::new();
+    for &(a, b, _) in pairs {
+        if covered.contains(&(a, b)) {
+            continue;
+        }
+        let (Some(sa), Some(sb)) = (areas.shape(a), areas.shape(b)) else {
+            continue;
+        };
+        let Some((&(d, n), across, along)) = AXES
+            .iter()
+            .filter_map(|ax @ &(d, n)| {
+                contact_box(areas, a, b, n, d, s).map(|(ac, al)| (ax, ac, al))
+            })
+            .max_by(|x, y| (x.1.1 - x.1.0).total_cmp(&(y.1.1 - y.1.0)))
+        else {
+            continue;
+        };
+        let at = |u: f64, t: f64| (n.0 * u + d.0 * t, n.1 * u + d.1 * t);
+        let wall = |u: f64| (at(u, along.0), at(u, along.1));
+        let hall = ruins::RuinShape::Trapezoid {
+            wall0: wall(across.0),
+            wall1: wall(across.1),
+        };
+        out.push(Neck {
+            pair: (a, b),
+            shape_a: sa,
+            shape_b: sb,
+            lines: [wall(across.0), wall(across.1)],
+            hall,
+            kind: NeckKind::AxisCorridor,
+            claimed: Vec::new(),
+            cell: s,
+        });
+    }
+    out
+}
+
 /// Where the wall line `p·n = u` leaves one hex TILE, as a coordinate along `d`, on the
 /// `sgn` side — or `None` if the line misses the tile.
 ///
@@ -811,7 +912,12 @@ fn axis_necks(
         // a fitting width far less often (measured: 446 connectors against 462),
         // because a wall that crosses something often clears it a couple of units
         // in, and a 20%-of-clamp step overshoots straight past that.
-        for scale in (0..9).map(|i| 1.0 - 0.08 * i as f64) {
+        // One candidate per pair, at the full contact width. This was a nine-rung ladder from
+        // the full clamp down to 0.36 of it, so an over-long corridor could degrade into a
+        // shorter one instead of being rejected. With the rejection gone the ladder has nothing
+        // to feed, and it was costing quality as well as complexity: the narrower rungs put
+        // walls in worse places (dense `worst` 1.7px with the ladder, 0.9px without).
+        for scale in [1.0f64] {
             // Each rung snaps too, so no rung leaves a wall mid-row; two rungs
             // that land on the same pair of lines are one candidate.
             let u_lo = snap_wall(mid - half * scale, n, s, true);
@@ -1201,56 +1307,6 @@ fn spliced_loop(neck: &Neck, loop_: &[Point]) -> Option<(Vec<Point>, Vec<usize>)
     Some((out, inserted))
 }
 
-/// Proper (transversal) intersection of segments `a→b` and `c→d`.
-fn segs_cross(a: Point, b: Point, c: Point, d: Point) -> bool {
-    let o = |p: Point, q: Point, r: Point| (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
-    let (s1, s2, s3, s4) = (
-        o(a, b, c).signum(),
-        o(a, b, d).signum(),
-        o(c, d, a).signum(),
-        o(c, d, b).signum(),
-    );
-    s1 != s2 && s3 != s4 && s1 != 0.0 && s2 != 0.0 && s3 != 0.0 && s4 != 0.0
-}
-
-/// Whether the walls a splice inserts cross anything else in the loop. Exact
-/// rather than windowed: every segment touching an inserted vertex is tested
-/// against every other segment, so a fold is caught however far apart the two
-/// strands are in index order (a wide corridor's walls can reach right across a
-/// loop). Cost is O(inserted · n), which is cheap because a splice inserts only
-/// a handful of vertices.
-fn inserted_walls_cross(pts: &[Point], inserted: &[usize]) -> bool {
-    let m = pts.len();
-    if m < 4 {
-        return false;
-    }
-    let closed = pts[0] == pts[m - 1];
-    let segs = m - 1;
-    // Segments in the junction neighbourhood of an inserted vertex — not just the
-    // two incident ones. Where an inserted wall endpoint lands almost on top of an
-    // original vertex, the resulting spike is a crossing a couple of segments away
-    // from the insertion itself.
-    const NEAR: usize = 4;
-    let mut probe: Vec<usize> = inserted
-        .iter()
-        .flat_map(|&i| i.saturating_sub(NEAR)..=i + NEAR)
-        .filter(|&si| si < segs)
-        .collect();
-    probe.sort_unstable();
-    probe.dedup();
-    probe.iter().any(|&si| {
-        (0..segs).any(|sj| {
-            let apart = si.abs_diff(sj);
-            // Skip self and index-adjacent pairs (they legitimately share an
-            // endpoint), and the wrap-around pair of a closed loop.
-            if apart <= 1 || (closed && apart == segs - 1) {
-                return false;
-            }
-            segs_cross(pts[si], pts[si + 1], pts[sj], pts[sj + 1])
-        })
-    })
-}
-
 /// Splice each level-corridor connector's outer walls into the floor outline so
 /// the `#fp` border and fill follow the corridor rather than the old pinched
 /// cell-union seam (splicing only the wall band would leave a stray outline line
@@ -1277,18 +1333,20 @@ fn splice_outline_necks(outline: &mut [Vec<Point>], necks: Vec<Neck>) -> Vec<Nec
         if placed.contains(&neck.pair) {
             continue;
         }
-        let mut proposed: Vec<(usize, Vec<Point>)> = Vec::new();
-        let mut safe = true;
-        for (li, lp) in outline.iter().enumerate() {
-            if let Some((new, inserted)) = spliced_loop(&neck, lp) {
-                if inserted_walls_cross(&new, &inserted) {
-                    safe = false;
-                    break;
-                }
-                proposed.push((li, new));
-            }
-        }
-        if safe && !proposed.is_empty() {
+        // Spliced unconditionally. There used to be a `inserted_walls_cross` gate here that
+        // rejected a corridor whose inserted walls crossed the rest of the loop, and an
+        // acceptance ladder feeding it narrower and narrower candidates until one passed. Both
+        // were a RENDER constraint deciding whether a corridor exists: growth had already
+        // claimed the tiles, and the only thing that may refuse a claim is the rock gap to a
+        // non-fused area. A wall that crosses a room is now clipped away by
+        // `clip::split_outside` instead of preventing the corridor — measured, that is both
+        // more corridors (355 -> 731 dense) and shallower walls (1.7px -> 0.9px).
+        let proposed: Vec<(usize, Vec<Point>)> = outline
+            .iter()
+            .enumerate()
+            .filter_map(|(li, lp)| spliced_loop(&neck, lp).map(|(new, _)| (li, new)))
+            .collect();
+        if !proposed.is_empty() {
             for (li, new) in proposed {
                 outline[li] = new;
             }
@@ -1331,6 +1389,10 @@ fn plan_necks(areas: &Areas, s: f64) -> (Vec<Neck>, Vec<(usize, usize, FuseClass
     necks.extend(axis_necks(areas, &pairs, FuseClass::Both, &DIAGONALS, s));
     necks.extend(axis_necks(areas, &pairs, FuseClass::Angle, &BOTH_AXES, s));
     necks.extend(circle_rect_necks(areas, &pairs, s));
+    // Last: a tile-only corridor for any fused pair the constructions above could not build
+    // one for, so a corridor exists between every fused pair.
+    let covered: Vec<(usize, usize)> = necks.iter().map(|n| n.pair).collect();
+    necks.extend(contact_necks(areas, &pairs, &covered, s));
     (necks, pairs)
 }
 
@@ -1531,56 +1593,6 @@ fn commit_join_floor(areas: &mut Areas, necks: &[Neck], s: f64) {
     }
 }
 
-/// The shape pairs of every **class-D** fused pair — the ones
-/// [`crop_internal_barriers`] may have a barrier to crop.
-fn class_both_pairs(
-    areas: &Areas,
-    pairs: &[(usize, usize, FuseClass)],
-) -> Vec<(ruins::RuinShape, ruins::RuinShape)> {
-    pairs
-        .iter()
-        .filter(|&&(_, _, cls)| cls == FuseClass::Both)
-        .filter_map(|&(a, b, _)| areas.shape(a).zip(areas.shape(b)))
-        .collect()
-}
-
-/// Crop the internal barrier of a **class-D** fused pair: where two overlapping
-/// shapes each project a wall through the other's interior, that stretch is a wall
-/// standing in open floor. Drop those vertices so the compound reads as one space.
-///
-/// Interior vertices only — a run endpoint is never dropped, because every path is
-/// expected to reach an area and removing an endpoint makes the renderer criss-cross
-/// borders between passageways. Rare in practice (measured: 10 vertices over seeds
-/// 1..=200), since the traced boundary already follows cell ownership; this catches
-/// the residue where the *shapes* overlap even though the cells do not.
-fn crop_internal_barriers(walls: &mut [WallRun], pairs: &[(ruins::RuinShape, ruins::RuinShape)]) {
-    let inside = |sh: &ruins::RuinShape, p: Point| match *sh {
-        ruins::RuinShape::Circle { cx, cy, r } => (p.0 - cx).hypot(p.1 - cy) < r - 1.0,
-        ruins::RuinShape::Rect { cx, cy, hw, hh } => {
-            (p.0 - cx).abs() < hw - 1.0 && (p.1 - cy).abs() < hh - 1.0
-        }
-        _ => false,
-    };
-    if pairs.is_empty() {
-        return;
-    }
-    for run in walls.iter_mut() {
-        if run.len() < 3 {
-            continue;
-        }
-        let last = run.len() - 1;
-        let mut i = 0;
-        run.retain(|&(p, sh)| {
-            let endpoint = i == 0 || i == last;
-            i += 1;
-            endpoint
-                || !pairs
-                    .iter()
-                    .any(|(sa, sb)| (sh == *sa && inside(sb, p)) || (sh == *sb && inside(sa, p)))
-        });
-    }
-}
-
 // ---------------------------------------------------------------------------
 // The two entry points `generate_with` uses.
 // ---------------------------------------------------------------------------
@@ -1596,9 +1608,6 @@ pub(crate) struct Fusion {
     /// set, which is harmless: avoiding a connector that is later dropped only
     /// nudges a door slightly.
     necks: Vec<Neck>,
-    /// Class-D pairs. See [`fuse_pairs`] for why classification cannot see corridor
-    /// floor, and where that is enforced.
-    barriers: Vec<(ruins::RuinShape, ruins::RuinShape)>,
     /// Join floor no candidate claims — see [`Fusion::release_orphans`].
     orphans: Vec<grid::Hex>,
     cell: f64,
@@ -1612,8 +1621,7 @@ pub(crate) struct Fusion {
 /// to either room, so projecting them onto a room wall would pinch the seam shut or
 /// undo the fill.
 pub(crate) fn plan(areas: &Areas, s: f64) -> (Fusion, std::collections::HashSet<grid::Hex>) {
-    let (mut necks, pairs) = plan_necks(areas, s);
-    let barriers = class_both_pairs(areas, &pairs);
+    let (mut necks, _pairs) = plan_necks(areas, s);
     // Growth already claimed the corridor floor (`growth::claim_join_floor`); recover
     // which cells serve which pair from the geometry, so each candidate knows the
     // footprint it must cover. Every candidate of a pair gets the same footprint, so the
@@ -1665,7 +1673,6 @@ pub(crate) fn plan(areas: &Areas, s: f64) -> (Fusion, std::collections::HashSet<
     (
         Fusion {
             necks,
-            barriers,
             orphans,
             cell: s,
         },
@@ -1715,7 +1722,7 @@ impl Fusion {
     pub(crate) fn apply(
         self,
         outline: &mut [Vec<Point>],
-        walls: &mut [WallRun],
+        walls: &mut Vec<WallRun>,
         areas: &mut Areas,
         topology: &Topology,
     ) {
@@ -1730,7 +1737,25 @@ impl Fusion {
             .chain(topology.merged_doors.iter().map(|&(_, _, p)| p.center(s)))
             .collect();
         splice_necks(walls, &necks, &door_cells);
-        crop_internal_barriers(walls, &self.barriers);
+        // Clip every wall against the rooms it runs into. A corridor is built from the tiles the
+        // two rooms share — room tiles — so its walls start out running inside both rooms, and a
+        // fused pair's two borders overlap by construction. Neither stretch is wall: it is open
+        // floor with a line across it. This replaces `crop_internal_barriers`, which did
+        // the same thing for class-D pairs only, and by dropping interior vertices — leaving a
+        // chord between the survivors — rather than by ending the run at the crossing.
+        let rooms: Vec<ruins::RuinShape> = (0..areas.count())
+            .filter_map(|i| areas.shape(i))
+            .filter(|sh| {
+                matches!(
+                    sh,
+                    ruins::RuinShape::Circle { .. } | ruins::RuinShape::Rect { .. }
+                )
+            })
+            .collect();
+        *walls = walls
+            .iter()
+            .flat_map(|run| crate::clip::split_outside(run, &rooms, 1.0))
+            .collect();
         commit_join_floor(areas, &necks, s);
     }
 }

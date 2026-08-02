@@ -361,7 +361,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // doors, water and decor have been seeing it as ordinary floor all along. Nothing
     // here mutates `areas`; accepting a connector needs the traced outline, so the
     // splice waits until after `build_outline` (see `fuse::Fusion`).
-    let (fusion, neck_cells) = fuse::plan(&areas, oparams.hex_size);
+    let (fusion, neck_cells) = fuse::plan(&areas, &topology, oparams.hex_size);
     // Before anything reads the floor: corridor floor whose pair dissolved is not floor.
     fusion.release_orphans(&mut areas);
     let mut ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);

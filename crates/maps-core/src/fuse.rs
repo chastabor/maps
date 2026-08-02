@@ -499,6 +499,106 @@ fn contact_box(
     (hi > lo).then_some((across, (lo, hi)))
 }
 
+/// A corridor per [`Connection`](crate::topology::Connection), with its walls taken from the run of
+/// cells the connection occupies.
+///
+/// The one construction for room-to-room links, and the reason the object exists. Everything it
+/// needs is on the connection: `topology` decided the edge and reserved its cells, so the walls are
+/// simply the two sides of that run — its extent across the corridor, each cell counted whole.
+/// Nothing to negotiate with another pass and nothing to fall back to, because it cannot fail for a
+/// connection whose cells were claimed.
+///
+/// It cannot come from `fuse_pairs`: after that (correctly) keys on `room_cells`, a pair joined by a
+/// corridor is not a fused pair, and should not be — fusing them merges the two rooms into one
+/// compound and crops the wall between them away.
+///
+/// The axis is the one best aligned with the direction between the two rooms, not the widest
+/// contact: a corridor runs **from** one room **to** the other. Its length reaches a cell past the
+/// run at each end so both walls cross both borders; [`trim_to_gap`] cuts them back to the gap and
+/// [`clip::split_outside`](crate::clip::split_outside) removes whatever still lies inside a room.
+fn connection_necks(
+    areas: &Areas,
+    connections: &[crate::topology::Connection],
+    s: f64,
+) -> Vec<Neck> {
+    const AP: f64 = grid::HEX_APOTHEM;
+    const AXES: [(Point, Point); 4] = [
+        ((1.0, 0.0), (0.0, 1.0)),
+        ((0.0, 1.0), (1.0, 0.0)),
+        ((AP, -0.5), (0.5, AP)),
+        ((AP, 0.5), (-0.5, AP)),
+    ];
+    let centroid = |i: usize| -> Option<Point> {
+        let v: Vec<Point> = areas.room_cells(i).map(|c| c.center(s)).collect();
+        (!v.is_empty()).then(|| {
+            let n = v.len() as f64;
+            (
+                v.iter().map(|p| p.0).sum::<f64>() / n,
+                v.iter().map(|p| p.1).sum::<f64>() / n,
+            )
+        })
+    };
+    let mut out = Vec::new();
+    for conn in connections {
+        let (a, b) = (conn.a, conn.b);
+        let (Some(sa), Some(sb)) = (areas.shape(a), areas.shape(b)) else {
+            continue;
+        };
+        // Only the cells still claimed: `ruins::erode` and `shrink_corridors` may have marked some
+        // back to rock, and a wall must bound the floor that is actually there.
+        let cells: Vec<Point> = conn
+            .cells
+            .iter()
+            .filter(|c| areas.is_join(**c))
+            .map(|c| c.center(s))
+            .collect();
+        if cells.is_empty() {
+            continue;
+        }
+        let (Some(ca), Some(cb)) = (centroid(a), centroid(b)) else {
+            continue;
+        };
+        let want = (cb.0 - ca.0, cb.1 - ca.1);
+        let Some(&(d, n)) = AXES.iter().max_by(|x, y| {
+            let dot = |ax: Point| (ax.0 * want.0 + ax.1 * want.1).abs();
+            dot(x.0).total_cmp(&dot(y.0))
+        }) else {
+            continue;
+        };
+        let (en, ed) = (hex_support(n, s), hex_support(d, s));
+        let (mut n_lo, mut n_hi) = (f64::MAX, f64::MIN);
+        let (mut d_lo, mut d_hi) = (f64::MAX, f64::MIN);
+        for p in &cells {
+            let (un, ud) = (p.0 * n.0 + p.1 * n.1, p.0 * d.0 + p.1 * d.1);
+            n_lo = n_lo.min(un - en);
+            n_hi = n_hi.max(un + en);
+            d_lo = d_lo.min(ud - ed);
+            d_hi = d_hi.max(ud + ed);
+        }
+        if n_hi <= n_lo {
+            continue;
+        }
+        let (d_lo, d_hi) = (d_lo - s, d_hi + s);
+        let at = |u: f64, t: f64| (n.0 * u + d.0 * t, n.1 * u + d.1 * t);
+        let wall = |u: f64| (at(u, d_lo), at(u, d_hi));
+        let (w0, w1) = (wall(n_lo), wall(n_hi));
+        out.push(Neck {
+            pair: (a, b),
+            shape_a: sa,
+            shape_b: sb,
+            lines: [w0, w1],
+            hall: ruins::RuinShape::Trapezoid {
+                wall0: w0,
+                wall1: w1,
+            },
+            kind: NeckKind::AxisCorridor,
+            claimed: cells,
+            cell: s,
+        });
+    }
+    out
+}
+
 /// A corridor for every fused pair that no other construction could build one for.
 ///
 /// The other constructions end a wall where it meets a room's fitted *border*, and at the full
@@ -1435,7 +1535,11 @@ fn trim_to_gap(neck: &mut Neck, rooms: &[ruins::RuinShape]) -> bool {
 /// `keep_largest_component` drop areas and re-index, `topology::build` shrinks ruin
 /// areas, and `ruins::build` erodes ruin room boundaries and can refit or demote one to
 /// no shape at all. The walls must be drawn against the geometry that survived all that.
-fn plan_necks(areas: &Areas, s: f64) -> (Vec<Neck>, Vec<(usize, usize, FuseClass)>) {
+fn plan_necks(
+    areas: &Areas,
+    connections: &[crate::topology::Connection],
+    s: f64,
+) -> (Vec<Neck>, Vec<(usize, usize, FuseClass)>) {
     // The two hex diagonals: corridor axis ∓30°, normal 60°/120°. Which one a
     // pair uses is chosen per pair inside `axis_necks` (the mirror rule).
     const AP: f64 = grid::HEX_APOTHEM;
@@ -1469,6 +1573,20 @@ fn plan_necks(areas: &Areas, s: f64) -> (Vec<Neck>, Vec<(usize, usize, FuseClass
         })
         .collect();
     necks.retain_mut(|n| !n.is_corridor() || trim_to_gap(n, &rooms));
+    // Room-to-room links, from the floor `topology` reserved for each. A different population from
+    // the fused pairs above — `candidate_cells_by_pair` skips intra-group pairs — so the two never
+    // compete for the same pair and need no coverage negotiation between them.
+    //
+    // Trimmed where possible but never DROPPED. `trim_to_gap` declines a corridor whose walls lie
+    // wholly inside the two rooms, on the reasoning that the compound is already open and needs
+    // none — true of a fused pair whose borders overlap, false of a connection, whose floor was
+    // deliberately reserved and must be walled. `clip::split_outside` removes whatever stretch does
+    // lie inside a room, so keeping it costs nothing.
+    let mut links = connection_necks(areas, connections, s);
+    for n in links.iter_mut() {
+        trim_to_gap(n, &rooms);
+    }
+    necks.extend(links);
     // `contact_necks` runs AFTER the trim, and `covered` is read off the survivors. Taking it
     // before meant a pair whose only candidate trimmed away counted as served, so the fallback
     // never fired and the pair ended with no corridor at all — its claimed floor left unwalled.
@@ -1556,7 +1674,8 @@ pub(crate) fn corridor_floor(areas: &Areas, grid: &HexGrid, s: f64) -> Vec<Corri
     use std::collections::BTreeMap;
     let mut out = Vec::new();
     let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
-    for neck in plan_necks(areas, s).0 {
+    // No connections yet: this runs from `growth`, before `topology` chooses any edge.
+    for neck in plan_necks(areas, &[], s).0 {
         let (a, b) = neck.pair;
         if !neck.is_corridor() || !seen.insert((a, b)) {
             continue;
@@ -1712,8 +1831,12 @@ pub(crate) struct Fusion {
 /// narrow seams' and the claimed corridor floor's. Both belong to the join rather than
 /// to either room, so projecting them onto a room wall would pinch the seam shut or
 /// undo the fill.
-pub(crate) fn plan(areas: &Areas, s: f64) -> (Fusion, std::collections::HashSet<grid::Hex>) {
-    let (mut necks, _pairs) = plan_necks(areas, s);
+pub(crate) fn plan(
+    areas: &Areas,
+    topology: &Topology,
+    s: f64,
+) -> (Fusion, std::collections::HashSet<grid::Hex>) {
+    let (mut necks, _pairs) = plan_necks(areas, &topology.connections, s);
     // Growth already claimed the corridor floor (`growth::claim_join_floor`); recover
     // which cells serve which pair from the geometry, so each candidate knows the
     // footprint it must cover. Every candidate of a pair gets the same footprint, so the

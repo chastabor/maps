@@ -20,7 +20,7 @@ use crate::grid::Hex;
 use crate::growth::Areas;
 use crate::outline::Point;
 use crate::ruins::RuinShape;
-use crate::topology::{Door, Exit, Topology};
+use crate::topology::{Connection, Exit, Topology};
 use std::collections::{HashMap, HashSet};
 
 /// √3/2 — the apothem of a unit-side hex (centre to edge midpoint). Half of
@@ -128,7 +128,7 @@ pub enum Anchor {
 /// geometry of the gap they carve in the room wall.
 #[derive(Clone, Debug)]
 pub struct Mouth {
-    /// Indices into `topology.doors`, ascending.
+    /// Indices into `topology.connections`, ascending.
     pub members: Vec<usize>,
     pub anchor: Anchor,
     /// The opening's centre: on the anchor room's wall, slid along its edge
@@ -164,7 +164,7 @@ pub fn mouths(
     blocked: &dyn Fn(Point) -> bool,
 ) -> Vec<Mouth> {
     let find = crate::growth::find;
-    let doors = &topology.doors;
+    let doors = &topology.connections;
     let dungeon = |i: usize| areas.kind(i) == AreaKind::Dungeon;
     let mut root: Vec<usize> = (0..doors.len()).collect();
     // Two doors merge into one mouth only when they carve one opening in one
@@ -173,7 +173,7 @@ pub fn mouths(
     // would hang one long door bar across open floor between the openings.)
     for i in 0..doors.len() {
         for j in i + 1..doors.len() {
-            if doors[i].cell.distance(doors[j].cell) <= 1
+            if doors[i].cell().distance(doors[j].cell()) <= 1
                 && crate::topology::shared_dungeon_room(areas, &doors[i], &doors[j]).is_some()
             {
                 let (a, b) = (find(&mut root, i), find(&mut root, j));
@@ -206,13 +206,13 @@ pub fn mouths(
 
 fn mouth(
     members: Vec<usize>,
-    doors: &[Door],
+    doors: &[Connection],
     areas: &Areas,
     s: f64,
     blocked: &dyn Fn(Point) -> bool,
 ) -> Option<Mouth> {
     let dungeon = |i: usize| areas.kind(i) == AreaKind::Dungeon;
-    let centers: Vec<Point> = members.iter().map(|&i| doors[i].cell.center(s)).collect();
+    let centers: Vec<Point> = members.iter().map(|&i| doors[i].cell().center(s)).collect();
     let c0 = centers
         .iter()
         .fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
@@ -487,7 +487,7 @@ pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Ve
         let mut rooms: Vec<usize> = m
             .members
             .iter()
-            .flat_map(|&i| [topology.doors[i].a, topology.doors[i].b])
+            .flat_map(|&i| [topology.connections[i].a, topology.connections[i].b])
             .filter(|&r| areas.kind(r) == AreaKind::Dungeon)
             .collect();
         rooms.sort_unstable();
@@ -495,7 +495,10 @@ pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Ve
         // The door cells' centroid: the opening's true location, on whichever
         // wall each room presents to it.
         let dc = {
-            let ps = m.members.iter().map(|&i| topology.doors[i].cell.center(s));
+            let ps = m
+                .members
+                .iter()
+                .map(|&i| topology.connections[i].cell().center(s));
             let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
             for p in ps {
                 sx += p.0;
@@ -504,7 +507,11 @@ pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Ve
             }
             (sx / n, sy / n)
         };
-        let cells: Vec<Hex> = m.members.iter().map(|&i| topology.doors[i].cell).collect();
+        let cells: Vec<Hex> = m
+            .members
+            .iter()
+            .map(|&i| topology.connections[i].cell())
+            .collect();
         for r in rooms {
             if let Some(sh) = areas.shapes()[r] {
                 // The porch first: it decides where the opening is and how wide, so the border
@@ -709,10 +716,10 @@ fn wall_anchor(shape: RuinShape, p: Point, travel: Option<Point>) -> Option<(Poi
 /// A door's unit passage direction (a-side to b-side neighbour centroid).
 /// `None` if the door's two sides can't be located — never for a built map,
 /// since every door touches both its areas.
-fn passage_dir(d: &Door, areas: &Areas, s: f64) -> Option<Point> {
+fn passage_dir(d: &Connection, areas: &Areas, s: f64) -> Option<Point> {
     let (mut a_acc, mut a_n) = ((0.0, 0.0), 0u32);
     let (mut b_acc, mut b_n) = ((0.0, 0.0), 0u32);
-    for n in d.cell.neighbors() {
+    for n in d.cell().neighbors() {
         let p = n.center(s);
         match areas.owner_of(n) {
             Some(o) if o == d.a => {

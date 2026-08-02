@@ -222,11 +222,11 @@ pub fn growth_svg(map: &CaveMap, labels: bool) -> String {
     // Door cells and exit stubs: floor that belongs to the topology rather than to an area,
     // and the tiles a passage attaches through.
     s.push_str(r##"<g stroke="none">"##);
-    for d in &map.topology.doors {
+    for d in &map.topology.connections {
         let _ = write!(
             s,
             r##"<polygon points="{}" fill="#f2f2ea" fill-opacity="0.9"/>"##,
-            hex_points(d.cell)
+            hex_points(d.cell())
         );
     }
     for e in &map.topology.exits {

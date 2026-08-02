@@ -397,7 +397,7 @@ fn grid_layer(map: &CaveMap, style: &Style, bounds: (f64, f64, f64, f64)) -> Str
             for i in 0..map.areas.count() {
                 floor.extend(map.areas.floor_cells(i));
             }
-            floor.extend(map.topology.doors.iter().map(|d| d.cell));
+            floor.extend(map.topology.connections.iter().map(|d| d.cell()));
             for e in &map.topology.exits {
                 floor.extend(e.stub.iter().copied());
             }
@@ -784,7 +784,7 @@ fn door_layer(map: &CaveMap, style: &Style) -> String {
     let mut marks = String::new(); // metal bands + leaf seams (stroke only)
     let mut bars = String::new(); // portcullis bars (rings)
 
-    let doors = &map.topology.doors;
+    let doors = &map.topology.connections;
     for m in &map.mouths {
         // Wall-anchored bars sit half the wall band INSIDE the room, so the
         // leaf spans the inward-thick wall: its outer face flush with the
@@ -1017,8 +1017,8 @@ pub fn debug_svg(map: &CaveMap) -> String {
     s.push_str("</g>");
 
     s.push_str(r##"<g fill="#f2f2ea" stroke="none">"##);
-    for d in &map.topology.doors {
-        let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(d.cell));
+    for d in &map.topology.connections {
+        let _ = write!(s, r##"<polygon points="{}"/>"##, hex_points(d.cell()));
     }
     s.push_str("</g>");
 
@@ -1053,7 +1053,7 @@ pub fn debug_svg(map: &CaveMap) -> String {
         map.areas.count(),
         n_ruin,
         n_dungeon,
-        map.topology.doors.len(),
+        map.topology.connections.len(),
         n_corridors,
         map.topology.exits.len(),
     );

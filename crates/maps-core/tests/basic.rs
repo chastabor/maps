@@ -242,7 +242,7 @@ fn doors_connect_all_areas() {
             continue;
         }
         let mut adj = vec![Vec::new(); n];
-        for d in &map.topology.doors {
+        for d in &map.topology.connections {
             adj[d.a].push(d.b);
             adj[d.b].push(d.a);
         }
@@ -271,7 +271,7 @@ fn doors_connect_all_areas() {
         assert!(
             seen.iter().all(|&s| s),
             "seed {seed}: door graph disconnected ({n} areas, {} doors)",
-            map.topology.doors.len()
+            map.topology.connections.len()
         );
     }
 }
@@ -281,7 +281,7 @@ fn tree_tag_gives_spanning_tree() {
     for seed in 0..15 {
         let map = generate(seed, Some(Tags::parse("medium,tree").unwrap()));
         assert_eq!(
-            map.topology.doors.len(),
+            map.topology.connections.len(),
             map.areas.count() - 1,
             "seed {seed}: tree culling should leave exactly N-1 doors"
         );
@@ -292,15 +292,15 @@ fn tree_tag_gives_spanning_tree() {
 fn doors_touch_both_areas_after_corridors() {
     for seed in 0..30 {
         let map = generate(seed, None);
-        for d in &map.topology.doors {
+        for d in &map.topology.connections {
             for side in [d.a, d.b] {
                 assert!(
-                    d.cell
+                    d.cell()
                         .neighbors()
                         .iter()
                         .any(|n| map.areas.owner_of(*n) == Some(side)),
                     "seed {seed}: door {:?} lost contact with area {side}",
-                    d.cell
+                    d.cell()
                 );
             }
         }

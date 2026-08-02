@@ -138,9 +138,9 @@ pub(crate) fn floor_and_narrow(areas: &Areas, topology: &Topology) -> (HashSet<H
             }
         }
     }
-    for d in &topology.doors {
-        floor.insert(d.cell);
-        narrow.insert(d.cell);
+    for d in &topology.connections {
+        floor.insert(d.cell());
+        narrow.insert(d.cell());
     }
     // Fill the lone pillar between two merged distance-2 doors, so their one
     // wide opening is backed by continuous floor instead of a floating rock nub

@@ -10,12 +10,34 @@ use rand::Rng;
 use rand::seq::SliceRandom;
 use std::collections::{BTreeMap, HashSet};
 
-/// A passable gap cell joining areas `a` and `b`.
-#[derive(Clone, Copy, Debug)]
-pub struct Door {
-    pub cell: Hex,
+/// One link between areas `a` and `b`, and the floor it occupies.
+///
+/// The single object every room-to-room connection is built from — see
+/// `plans/connection-object.md`. A doorway and a corridor are the same thing at different lengths:
+/// a doorway is one cell of floor with a leaf drawn across it, a corridor is several with none.
+/// Keeping both as one object is what stops the two being decided in different places and
+/// disagreeing, which is where every corridor bug has lived.
+///
+/// **`cells` is keyed on cells, not on area indices, deliberately.** `growth::finalize` and
+/// `keep_largest_component` re-map area indices, so anything stored against an `(a, b)` pair cannot
+/// be carried across them — that is what made a claimed corridor's pairing unrecoverable and left
+/// corridors pointing at areas that had been dropped. Cells are never re-mapped.
+#[derive(Clone, Debug)]
+pub struct Connection {
+    /// The floor this link occupies, nearest-first: `cells[0]` is the cell the leaf spans.
+    pub cells: Vec<Hex>,
     pub a: usize,
     pub b: usize,
+    /// Whether a door leaf is drawn across it. A corridor is a connection without one.
+    pub doored: bool,
+}
+
+impl Connection {
+    /// The cell the leaf spans — the connection's own anchor for anything that wants one point
+    /// rather than the run.
+    pub fn cell(&self) -> Hex {
+        self.cells[0]
+    }
 }
 
 /// An opening to the outside: an `attach` cell inside an area plus a short
@@ -28,7 +50,7 @@ pub struct Exit {
 }
 
 pub struct Topology {
-    pub doors: Vec<Door>,
+    pub connections: Vec<Connection>,
     pub exits: Vec<Exit>,
     /// Per-area flag: true if the area was shrunk into a corridor.
     pub is_corridor: Vec<bool>,
@@ -53,21 +75,26 @@ pub fn build<R: Rng>(
     let group = fuse_groups(areas);
     let pairs = candidate_cells_by_pair(grid, areas, &group);
     let edges = cull_edges(pairs.keys().copied().collect(), areas.count(), tags, rng);
-    let doors: Vec<Door> = edges
+    let connections: Vec<Connection> = edges
         .iter()
         .map(|&(ga, gb)| {
             let cands = &pairs[&(ga, gb)];
             let (cell, a, b) = cands[rng.random_range(0..cands.len())];
-            Door { cell, a, b }
+            Connection {
+                cells: vec![cell],
+                a,
+                b,
+                doored: true,
+            }
         })
         .collect();
 
     let exits = place_exits(grid, areas, tags, rng);
-    let is_corridor = shrink_corridors(areas, &doors, &exits, tags, rng);
-    let merged_doors = merged_pillar_pairs(areas, &doors, s);
+    let is_corridor = shrink_corridors(areas, &connections, &exits, tags, rng);
+    let merged_doors = merged_pillar_pairs(areas, &connections, s);
 
     Topology {
-        doors,
+        connections,
         exits,
         is_corridor,
         merged_doors,
@@ -75,7 +102,7 @@ pub fn build<R: Rng>(
 }
 
 /// The dungeon room both doors pierce, if any (the wall a merged opening cuts).
-pub(crate) fn shared_dungeon_room(areas: &Areas, a: &Door, b: &Door) -> Option<usize> {
+pub(crate) fn shared_dungeon_room(areas: &Areas, a: &Connection, b: &Connection) -> Option<usize> {
     [a.a, a.b]
         .into_iter()
         .find(|&r| areas.kind(r) == AreaKind::Dungeon && (r == b.a || r == b.b))
@@ -115,7 +142,7 @@ fn fuse_groups(areas: &Areas) -> Vec<usize> {
 /// shares exactly one neighbour; a bent one shares two and must stay separate.
 pub(crate) fn merged_pillar_pairs(
     areas: &Areas,
-    doors: &[Door],
+    doors: &[Connection],
     s: f64,
 ) -> Vec<(usize, usize, Hex)> {
     // Which of a rect's four edges a point sits outside (equality is all we
@@ -132,7 +159,7 @@ pub(crate) fn merged_pillar_pairs(
     let mut out = Vec::new();
     for i in 0..doors.len() {
         for j in i + 1..doors.len() {
-            if doors[i].cell.distance(doors[j].cell) != 2 {
+            if doors[i].cell().distance(doors[j].cell()) != 2 {
                 continue;
             }
             let Some(room) = shared_dungeon_room(areas, &doors[i], &doors[j]) else {
@@ -141,17 +168,17 @@ pub(crate) fn merged_pillar_pairs(
             let Some(RuinShape::Rect { cx, cy, hw, hh }) = areas.shape(room) else {
                 continue;
             };
-            if rect_wall(cx, cy, hw, hh, doors[i].cell.center(s))
-                != rect_wall(cx, cy, hw, hh, doors[j].cell.center(s))
+            if rect_wall(cx, cy, hw, hh, doors[i].cell().center(s))
+                != rect_wall(cx, cy, hw, hh, doors[j].cell().center(s))
             {
                 continue;
             }
             // Exactly one shared neighbour (the pillar), and it must be rock.
             let mut shared = doors[i]
-                .cell
+                .cell()
                 .neighbors()
                 .into_iter()
-                .filter(|n| doors[j].cell.neighbors().contains(n));
+                .filter(|n| doors[j].cell().neighbors().contains(n));
             if let (Some(p), None) = (shared.next(), shared.next())
                 && areas.owner_of(p).is_none()
             {
@@ -347,7 +374,7 @@ fn outward_steps(grid: &HexGrid, areas: &Areas, area: usize, cur: Hex, stub: &[H
 /// and exit attachments.
 fn shrink_corridors<R: Rng>(
     areas: &mut Areas,
-    doors: &[Door],
+    doors: &[Connection],
     exits: &[Exit],
     tags: &Tags,
     rng: &mut R,
@@ -355,8 +382,8 @@ fn shrink_corridors<R: Rng>(
     let n = areas.count();
     let mut door_cells: Vec<Vec<Hex>> = vec![Vec::new(); n];
     for d in doors {
-        door_cells[d.a].push(d.cell);
-        door_cells[d.b].push(d.cell);
+        door_cells[d.a].push(d.cell());
+        door_cells[d.b].push(d.cell());
     }
     let mut keep_cells: Vec<Vec<Hex>> = vec![Vec::new(); n];
     for e in exits {

@@ -142,7 +142,7 @@ pub struct CaveMap {
     pub tiles: Vec<Vec<Point>>,
     /// Per-area geometric ruin shape, if the area was reshaped.
     pub ruins: Vec<Option<ruins::RuinShape>>,
-    /// Per-door glyph style, aligned with `topology.doors`. Only doors that
+    /// Per-door glyph style, aligned with `topology.connections`. Only doors that
     /// touch a `Dungeon` area are rendered; the rest carry default entries.
     /// (Per-area kinds live on `areas` — see [`growth::Areas::kind`].)
     pub door_styles: Vec<DoorStyle>,
@@ -389,7 +389,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // rooms is sometimes left `Open` — a framed gap with no leaf; not every
     // room needs a door.
     let door_styles: Vec<DoorStyle> = topology
-        .doors
+        .connections
         .iter()
         .map(|d| {
             let (ka, kb) = (areas.kind(d.a), areas.kind(d.b));

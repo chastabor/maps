@@ -1815,9 +1815,9 @@ impl Fusion {
         // Door cells (and the pillar a merged pair swallows) locate the doorway
         // gaps a connector's wall has to break for — see `Neck::jamb_edge`.
         let door_cells: Vec<Point> = topology
-            .doors
+            .connections
             .iter()
-            .map(|d| d.cell.center(s))
+            .map(|d| d.cell().center(s))
             .chain(topology.merged_doors.iter().map(|&(_, _, p)| p.center(s)))
             .collect();
         splice_necks(walls, &necks, &door_cells);

@@ -696,10 +696,10 @@ fn erode<R: Rng>(areas: &mut Areas, topology: &Topology, i: usize, rng: &mut R) 
             anchors.insert(e.attach);
         }
     }
-    for d in &topology.doors {
+    for d in &topology.connections {
         if d.a == i || d.b == i {
             for c in areas.floor_cells(i) {
-                if c.neighbors().contains(&d.cell) {
+                if c.neighbors().contains(&d.cell()) {
                     anchors.insert(c);
                 }
             }

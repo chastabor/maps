@@ -703,8 +703,16 @@ fn fuse_pairs(areas: &Areas) -> Vec<(usize, usize, FuseClass)> {
         if areas.shape(a).is_none() {
             continue;
         }
-        for h in areas.floor_cells(a) {
+        // ROOM cells, not floor cells. Fusion is two rooms growing into each other, and it is
+        // their *rooms* that touch. Corridor floor is owned by an area but is not part of it, so a
+        // pair joined by a claimed corridor has adjacent floor and non-adjacent rooms — reading
+        // `floor_cells` here made every such pair look fused, and the two rooms were merged into
+        // one compound with the wall between them cropped away.
+        for h in areas.room_cells(a) {
             for nb in h.neighbors() {
+                if areas.is_join(nb) {
+                    continue;
+                }
                 if let Some(b) = areas
                     .owner_of(nb)
                     .filter(|&b| b != a && areas.shape(b).is_some())

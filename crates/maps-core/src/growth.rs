@@ -686,6 +686,26 @@ impl Areas {
     /// that should never have been the area's in the first place: `fuse` rolling back
     /// corridor floor no wall ended up enclosing. Ground the area really held and lost
     /// belongs in `eroded`.
+    /// Take `cells` as **corridor floor** for `area`: owned floor that is not part of the room.
+    ///
+    /// The one way floor enters an area after growth, used by `topology` to reserve a
+    /// [`Connection`](crate::topology::Connection)'s run once the edge is chosen. Recorded in `join`
+    /// as well as `cells`, so `room_cells` still excludes it and `derive_shape` never sees it — a
+    /// corridor must not stretch the room whose floor it is attached to.
+    ///
+    /// Cells already owned are skipped rather than stolen: the caller decides what to connect, not
+    /// who owns what.
+    pub fn claim_join(&mut self, area: usize, cells: &[Hex]) {
+        for &c in cells {
+            if self.owner.get(c).is_some() {
+                continue;
+            }
+            self.owner.insert(c, area as u32);
+            self.cells[area].push(c);
+            self.join.insert(c);
+        }
+    }
+
     pub fn remove_from_area(&mut self, area: usize, remove: &[Hex]) {
         for &c in remove {
             self.owner.remove(c);

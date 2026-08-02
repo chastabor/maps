@@ -79,9 +79,35 @@ pub fn build<R: Rng>(
         .iter()
         .map(|&(ga, gb)| {
             let cands = &pairs[&(ga, gb)];
+            // The RNG draw is unchanged and stays first: everything below is derived from the
+            // cell it picks, so the stream is untouched.
             let (cell, a, b) = cands[rng.random_range(0..cands.len())];
+            // The connection's whole run, not just the cell the leaf spans: the contiguous stretch
+            // of candidate cells joining these same two AREAS at this same place. A group pair can
+            // touch in several separate spots, so the run is grown outward from the chosen cell
+            // rather than taken as every candidate for the pair.
+            //
+            // Nothing reads this yet — `cell()` still returns the head — so it is inert until the
+            // walls are built from it. It is here because it is the input that step 2 needs, and
+            // deriving it at the moment the edge is chosen is the whole point of the object: this
+            // is where the connection is decided, so this is where its extent belongs.
+            let local: HashSet<Hex> = cands
+                .iter()
+                .filter(|&&(_, x, y)| (x, y) == (a, b))
+                .map(|&(h, _, _)| h)
+                .collect();
+            let mut cells = vec![cell];
+            let mut frontier = vec![cell];
+            while let Some(h) = frontier.pop() {
+                for nb in h.neighbors() {
+                    if local.contains(&nb) && !cells.contains(&nb) {
+                        cells.push(nb);
+                        frontier.push(nb);
+                    }
+                }
+            }
             Connection {
-                cells: vec![cell],
+                cells,
                 a,
                 b,
                 doored: true,

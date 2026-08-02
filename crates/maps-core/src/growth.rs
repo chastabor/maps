@@ -1098,20 +1098,38 @@ fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {
         return areas;
     }
     let mut root: Vec<usize> = (0..n).collect();
+    let union = |root: &mut Vec<usize>, x: usize, y: usize| {
+        let (a, b) = (find(root, x), find(root, y));
+        root[a] = b;
+    };
     for &h in grid.cells() {
-        if areas.owner_of(h).is_some() {
-            continue;
-        }
-        let mut adj: Vec<usize> = h
-            .neighbors()
-            .iter()
-            .filter_map(|n| areas.owner_of(*n))
-            .collect();
-        adj.sort_unstable();
-        adj.dedup();
-        for w in adj.windows(2) {
-            let (a, b) = (find(&mut root, w[0]), find(&mut root, w[1]));
-            root[a] = b;
+        match areas.owner_of(h) {
+            // Floor that directly touches another area's floor is a connection in its own
+            // right — a fused pair shares its seam with no free cell between, and a claimed
+            // corridor is floor the two rooms share. Counting only free-cell bridges made those
+            // pairs look isolated, so a perfectly reachable room could be dropped as an
+            // orphan; worse, claiming the gap cell for a corridor *removed* the very free cell
+            // that had been linking the pair.
+            Some(o) => {
+                for n in h.neighbors() {
+                    if let Some(p) = areas.owner_of(n).filter(|&p| p != o) {
+                        union(&mut root, o, p);
+                    }
+                }
+            }
+            // A free cell bridges every area it touches: that is a doorway waiting to happen.
+            None => {
+                let mut adj: Vec<usize> = h
+                    .neighbors()
+                    .iter()
+                    .filter_map(|n| areas.owner_of(*n))
+                    .collect();
+                adj.sort_unstable();
+                adj.dedup();
+                for w in adj.windows(2) {
+                    union(&mut root, w[0], w[1]);
+                }
+            }
         }
     }
     // Component cell totals.

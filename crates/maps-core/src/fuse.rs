@@ -1449,8 +1449,6 @@ fn plan_necks(areas: &Areas, s: f64) -> (Vec<Neck>, Vec<(usize, usize, FuseClass
     necks.extend(circle_rect_necks(areas, &pairs, s));
     // Last: a tile-only corridor for any fused pair the constructions above could not build
     // one for, so a corridor exists between every fused pair.
-    let covered: Vec<(usize, usize)> = necks.iter().map(|n| n.pair).collect();
-    necks.extend(contact_necks(areas, &pairs, &covered, s));
     // Every corridor is trimmed to the gap it actually spans, so the outline splice and the
     // wall band insert the same geometry and neither carries a line across open room floor.
     let rooms: Vec<ruins::RuinShape> = (0..areas.count())
@@ -1463,6 +1461,22 @@ fn plan_necks(areas: &Areas, s: f64) -> (Vec<Neck>, Vec<(usize, usize, FuseClass
         })
         .collect();
     necks.retain_mut(|n| !n.is_corridor() || trim_to_gap(n, &rooms));
+    // `contact_necks` runs AFTER the trim, and `covered` is read off the survivors. Taking it
+    // before meant a pair whose only candidate trimmed away counted as served, so the fallback
+    // never fired and the pair ended with no corridor at all — its claimed floor left unwalled.
+    // The last-resort construction is only a guarantee if it sees what actually survived.
+    let covered: Vec<(usize, usize)> = necks.iter().map(|n| n.pair).collect();
+    let mut extra = contact_necks(areas, &pairs, &covered, s);
+    // Trimmed if it can be, but NOT dropped if it cannot. `trim_to_gap` declines a corridor whose
+    // walls lie wholly inside the two rooms, reasoning that the compound is already open and needs
+    // none — true of a fused pair whose borders overlap, false of a pair whose floor growth
+    // claimed across a real gap. This is the last resort: dropping it here leaves that floor with
+    // no wall at all, whereas keeping it untrimmed costs nothing, since `clip::split_outside`
+    // removes whatever stretch does lie inside a room.
+    for n in extra.iter_mut() {
+        trim_to_gap(n, &rooms);
+    }
+    necks.extend(extra);
     (necks, pairs)
 }
 

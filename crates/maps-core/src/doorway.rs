@@ -32,6 +32,87 @@ pub const HEX_APOTHEM: f64 = crate::grid::HEX_APOTHEM;
 /// snaps to whichever its passage runs most nearly across.
 const DOOR_AXES: [(f64, f64); 3] = [(1.0, 0.0), (0.5, HEX_APOTHEM), (-0.5, HEX_APOTHEM)];
 
+/// A doorway's width, in hex sizes: one apothem per PAIR of shared edges, so 1–2 edges give one
+/// door and 3–4 give one twice as wide.
+///
+/// A door's width should say nothing about which way its passage comes in. It used to be one hex
+/// *width* per clustered door cell, capped at three, so the gap tracked how many cells happened to
+/// cluster. Both sizes here are lattice constants, and so is the wall they sit on — see
+/// [`porch_chord`]. `plans/tile-first-render.md` phase 3a.
+const DOOR_OPENING: f64 = HEX_APOTHEM;
+
+/// The two vertexes of the edge shared by neighbouring hexes `a` and `b`.
+fn shared_edge(a: Hex, b: Hex, s: f64) -> Option<[Point; 2]> {
+    let (ca, cb) = (a.corners(s), b.corners(s));
+    let hit: Vec<Point> = ca
+        .into_iter()
+        .filter(|p| cb.iter().any(|q| (q.0 - p.0).hypot(q.1 - p.1) < 1e-6))
+        .collect();
+    (hit.len() == 2).then(|| [hit[0], hit[1]])
+}
+
+/// The **porch**: the wall a doorway's leaf actually stands on, and the opening cut in it.
+///
+/// A room's border does not run along the tiles a passage attaches through — a rect's sits an
+/// apothem *inside* its outer column — so a doorway cut straight into the border is a gap in the
+/// wrong place and, once narrowed, a gap the floor does not match. The porch is the chord between
+/// the outer vertexes of the door cells' shared edges with this room: the wall steps out to the
+/// tile boundary, carries the door, and steps back.
+///
+/// The chord is a pure lattice constant — `s` across one shared edge, `√3·s` across two, `2s`
+/// across three, with no orientation variation over 5925 measured attachments — which is what
+/// makes one door size possible at all.
+///
+/// Returns `(chord, gap)` as `((A, B), (G0, G1))`, the gap centred on the chord with the leftover
+/// split evenly into a jamb at each end.
+fn porch_chord(
+    cells: &[Hex],
+    room: usize,
+    areas: &Areas,
+    s: f64,
+) -> Option<((Point, Point), (Point, Point))> {
+    let mut vs: Vec<Point> = Vec::new();
+    let mut edges = 0usize;
+    for &c in cells {
+        for nb in c.neighbors() {
+            if areas.owner_of(nb) != Some(room) {
+                continue;
+            }
+            if let Some(e) = shared_edge(c, nb, s) {
+                vs.extend(e);
+                edges += 1;
+            }
+        }
+    }
+    if vs.is_empty() {
+        return None;
+    }
+    // The chord spans the attachment: its two farthest-apart vertexes.
+    let (mut a, mut b, mut span) = (vs[0], vs[0], 0.0f64);
+    for p in &vs {
+        for q in &vs {
+            let d = (p.0 - q.0).hypot(p.1 - q.1);
+            if d > span {
+                span = d;
+                a = *p;
+                b = *q;
+            }
+        }
+    }
+    if span < 1e-6 {
+        return None;
+    }
+    // One door per pair of edges, never wider than the chord can frame.
+    let want = DOOR_OPENING * s * edges.div_ceil(2).max(1) as f64;
+    let door = want.min(span - 0.1 * s);
+    if door <= 0.0 {
+        return None;
+    }
+    let f = (1.0 - door / span) / 2.0;
+    let at = |t: f64| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+    Some(((a, b), (at(f), at(1.0 - f))))
+}
+
 /// How a mouth's centre point was anchored.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Anchor {
@@ -348,6 +429,16 @@ pub struct Jamb {
     pub shape: RuinShape,
     pub center: Point,
     pub half: f64,
+    /// The porch, if this doorway stands on one: for each end of the opening, the chord vertex
+    /// the wall steps out to and the gap edge the door starts at. `plus` is the end at wall
+    /// parameter `tw + half`, `minus` the end at `tw - half`, so the splice can pick the side
+    /// matching its walk direction without re-deriving the geometry.
+    ///
+    /// The wall run and the floor loop both grow these two points at the run's end, which is what
+    /// keeps them agreeing: the floor necks to the door because the boundary itself steps out to
+    /// the chord and back.
+    pub plus: Option<(Point, Point)>,
+    pub minus: Option<(Point, Point)>,
 }
 
 /// Insert every dungeon-exit plug into `ruin_map`, so the outline pipeline
@@ -413,8 +504,44 @@ pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Ve
             }
             (sx / n, sy / n)
         };
+        let cells: Vec<Hex> = m.members.iter().map(|&i| topology.doors[i].cell).collect();
         for r in rooms {
             if let Some(sh) = areas.shapes()[r] {
+                // The porch first: it decides where the opening is and how wide, so the border
+                // gap it replaces is derived from it rather than the other way round.
+                if let Some((chord, gap)) = porch_chord(&cells, r, areas, s) {
+                    let (pa, pb) = (sh.project(chord.0), sh.project(chord.1));
+                    let per = sh.perimeter().unwrap_or(0.0);
+                    let (ta, tb) = (sh.wall_param(pa), sh.wall_param(pb));
+                    let fwd = (tb - ta).rem_euclid(per);
+                    // The shorter way round is the span the doorway opens; `from` is its start.
+                    let (from, len) = if fwd <= per - fwd {
+                        (ta, fwd)
+                    } else {
+                        (tb, per - fwd)
+                    };
+                    if len > 1e-6 {
+                        // `minus` sits at `from`, `plus` at `from + len`; pair each with the
+                        // chord vertex that projects to it and the nearer gap edge.
+                        let near = |p: Point| {
+                            if (p.0 - chord.0.0).hypot(p.1 - chord.0.1)
+                                <= (p.0 - chord.1.0).hypot(p.1 - chord.1.1)
+                            {
+                                (chord.0, gap.0)
+                            } else {
+                                (chord.1, gap.1)
+                            }
+                        };
+                        out.push(Jamb {
+                            shape: sh,
+                            center: sh.wall_point((from + len / 2.0).rem_euclid(per)),
+                            half: len / 2.0,
+                            minus: Some(near(sh.wall_point(from))),
+                            plus: Some(near(sh.wall_point((from + len).rem_euclid(per)))),
+                        });
+                        continue;
+                    }
+                }
                 let half = m.opening / 2.0;
                 // The anchor room keeps the mouth's own centre so its wall gap
                 // and the door bar stay in lockstep. Every *other* room picks
@@ -429,6 +556,8 @@ pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Ve
                     shape: sh,
                     center: clamp_opening(sh, p, half, out_r),
                     half,
+                    plus: None,
+                    minus: None,
                 });
             }
         }
@@ -442,10 +571,14 @@ pub fn jambs(mouths: &[Mouth], topology: &Topology, areas: &Areas, s: f64) -> Ve
             let p = e.stub[0].center(s);
             let out_e = wall_anchor(sh, p, None).map_or((0.0, 0.0), |(_, o, _)| o);
             let center = clamp_opening(sh, p, half, out_e);
+            // Exits keep their throat plug (`exit_plug`) and so need no porch: the plug already
+            // gives the passage a wall to meet.
             out.push(Jamb {
                 shape: sh,
                 center,
                 half,
+                plus: None,
+                minus: None,
             });
         }
     }

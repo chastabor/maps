@@ -436,7 +436,12 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         .collect();
     for c in &topology.connections {
         for &cell in &c.along {
-            join_cells.insert(cell, outline::JoinKind::Link);
+            // Only where the floor was actually claimed. A connection whose run was not reserved —
+            // an organic one, which has no wall to build — is a plain free gap cell, not a join at
+            // all, and marking it `Link` would lock an organic doorway onto the lattice.
+            if areas.is_join(cell) {
+                join_cells.insert(cell, outline::JoinKind::Link);
+            }
         }
     }
     let constraints = outline::Constraints {

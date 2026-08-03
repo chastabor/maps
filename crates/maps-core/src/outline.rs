@@ -257,7 +257,18 @@ pub(crate) fn smooth_loops<R: Rng>(
                     // Ask the join what it is, rather than consulting two sets in a priority
                     // order — see [`JoinKind`].
                     if join_cells.get(&cell) == Some(&JoinKind::Link) {
-                        return (p, tag, None, false);
+                        // Locked on its own hexagon but NOT splicable: the two differ, and a link
+                        // needs both. Non-splicable breaks the wall band, so the rooms keep their
+                        // own walls. Locked keeps the floor boundary crisp on the lattice — left
+                        // shapeless it is organic, gets smoothed and jittered, and the passage
+                        // reads as a cave tunnel even though its walls are drawn as dungeon.
+                        let c = cell.center(size);
+                        let hex = RuinShape::HexCell {
+                            cx: c.0,
+                            cy: c.1,
+                            s: size,
+                        };
+                        return (p, tag, Some(hex), false);
                     }
                     if join_cells.contains_key(&cell) {
                         let c = cell.center(size);

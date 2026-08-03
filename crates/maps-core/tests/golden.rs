@@ -201,11 +201,11 @@ const GOLDEN: &[(u64, u64)] = &[
     (0x5ca4b8a0bbb62435, 0x8455dbb0b2e060ee),
     (0x72e82d5c55603114, 0x3dab226b58621735),
     (0xff024c77df165aab, 0x5c4ec946af97249e),
-    (0x7c0f208b8560ce28, 0x437d6c32fac02455),
-    (0x73da1bf236bf464e, 0xd6f7e8973e9a9a00),
-    (0xdf2353f46399be30, 0x2d5df9b87cc58fa5),
-    (0x239ef6582c141369, 0x3145e752e87a7053),
-    (0x92e17287ea7265d7, 0xd4da6700cec7a3c4),
+    (0xc56d0ae3a765c6c9, 0x437d6c32fac02455),
+    (0x66ddc357855d1bd9, 0xd6f7e8973e9a9a00),
+    (0xd507fb81614e5f3a, 0x2d5df9b87cc58fa5),
+    (0x8b1eeeb52d8dedc5, 0x3145e752e87a7053),
+    (0x608a7b27fc0760c9, 0xd4da6700cec7a3c4),
 ];
 
 fn fnv1a(bytes: &[u8]) -> u64 {

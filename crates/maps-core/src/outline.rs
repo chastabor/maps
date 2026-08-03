@@ -72,6 +72,16 @@ pub enum JoinKind {
     /// splicable, and the band merge treats the pair as fused: measured, five shaped rooms collapsed
     /// to two wall runs and the map lost nearly every room.
     Link,
+    /// A **junction** — a join cell where three or more areas meet, no pair's section. Walled
+    /// from its own hex edges by `fuse::junction_walls`, and classified by the same function
+    /// (`fuse::junction_cells`) that builds those walls, so the outline and the wall layer
+    /// cannot disagree about which cells these are.
+    ///
+    /// The boundary currently treats it exactly as a [`Seam`](Self::Seam) — the arm below matches
+    /// on `Link` and then on presence, so a junction takes the seam path. When the render phase
+    /// gives junctions their own treatment (the bowtie work), the kind is already in the data and
+    /// no third classification site needs to be added.
+    Junction,
 }
 
 impl Constraints<'static> {

@@ -362,7 +362,6 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // here mutates `areas`; accepting a connector needs the traced outline, so the
     // splice waits until after `build_outline` (see `fuse::Fusion`).
     let (fusion, neck_cells) = fuse::plan(&areas, &topology, oparams.hex_size);
-    // Before anything reads the floor: corridor floor whose pair dissolved is not floor.
     let mut ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
 
     // Doorway mouths onto dungeon rooms: flush openings cut into the exact
@@ -433,6 +432,13 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         .iter()
         .map(|&c| (c, outline::JoinKind::Seam))
         .collect();
+    // Junctions, from the SAME function that builds their walls (`fuse::junction_walls`), so the
+    // two classifiers cannot drift. Inserted before the links so a cell that is both stays a
+    // `Link` — the wall layer applies both constructions there, and the boundary must keep
+    // reading it as the gap the link's walls close.
+    for cell in fuse::junction_cells(&areas) {
+        join_cells.insert(cell, outline::JoinKind::Junction);
+    }
     for c in &topology.connections {
         for &cell in &c.along {
             // Only where the floor was actually claimed. A connection whose run was not reserved —

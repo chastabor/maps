@@ -690,7 +690,7 @@ fn erode<R: Rng>(areas: &mut Areas, topology: &Topology, i: usize, rng: &mut R) 
     // erosion would pick it first and dissolve the fusion the corridor exists to carry.
     // This is how a fused pair used to lose a side. This anchor is what prevents it, and it is
     // load-bearing: measured over 120 maps, 1203 of 1203 claimed cells survive erosion because
-    // of it. There is no longer a backstop behind it — see `fuse::plan`.
+    // of it. There is no longer a backstop behind it — see `fuse::commit_join_floor`'s doc.
     anchors.extend(areas.floor_cells(i).filter(|&c| areas.is_join(c)));
     for e in &topology.exits {
         if e.area == i {

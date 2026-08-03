@@ -612,6 +612,36 @@ fn connection_necks(
     out
 }
 
+/// One cell's hex-edge wall runs: an edge is wall unless `is_mouth` says it opens.
+///
+/// Edge `k` spans corner `k` to corner `k+1` — see `outline`'s `D`. Each vertex carries the
+/// cell's own hexagon, so the renderer's inward offset follows the lattice. Shared by
+/// [`link_walls`] and [`junction_walls`], which differ only in their mouth rule — the
+/// edge-to-corner correspondence is load-bearing and lives here once.
+fn hex_edge_walls(
+    c: grid::Hex,
+    s: f64,
+    is_mouth: impl Fn(grid::Hex) -> bool,
+    out: &mut Vec<WallRun>,
+) {
+    let ctr = c.center(s);
+    let hex = ruins::RuinShape::HexCell {
+        cx: ctr.0,
+        cy: ctr.1,
+        s,
+    };
+    let corners = c.corners(s);
+    for (k, nb) in c.neighbors().into_iter().enumerate() {
+        if is_mouth(nb) {
+            continue;
+        }
+        out.push(vec![
+            (crate::outline::quantize_pt(corners[k]), hex),
+            (crate::outline::quantize_pt(corners[(k + 1) % 6]), hex),
+        ]);
+    }
+}
+
 /// The wall of every room-to-room **link**: its own floor's boundary, as hex edges.
 ///
 /// Tile-exact by construction, and the reason a link needs no fitted geometry at all. An edge of a
@@ -620,7 +650,30 @@ fn connection_necks(
 ///
 /// Emitted as `dungeon_walls` runs, so a link is drawn with the dungeon's own double border rather
 /// than an organic single stroke: a corridor between two dungeon rooms is part of the dungeon.
-/// Each vertex carries its cell's hexagon, so the renderer's inward offset follows the lattice.
+fn link_walls(areas: &Areas, connections: &[crate::topology::Connection], s: f64) -> Vec<WallRun> {
+    let mut out = Vec::new();
+    for conn in connections {
+        let own: std::collections::HashSet<grid::Hex> = conn
+            .along
+            .iter()
+            .copied()
+            .filter(|c| areas.is_join(*c))
+            .collect();
+        if own.is_empty() {
+            continue;
+        }
+        for &c in &own {
+            // Its own floor, or a room it joins: a mouth, not a wall.
+            let is_mouth = |nb: grid::Hex| {
+                own.contains(&nb)
+                    || matches!(areas.owner_of(nb), Some(o) if o == conn.a || o == conn.b)
+            };
+            hex_edge_walls(c, s, is_mouth, &mut out);
+        }
+    }
+    out
+}
+
 /// Cells where three or more areas meet. A junction is its **own** section, not part of any
 /// pair's.
 ///
@@ -629,20 +682,23 @@ fn connection_necks(
 /// this shape: the cell touching its owner plus two other areas, with a link neck and a corridor
 /// neck existing for those pairs and neither covering the cell). Treated as a section of its own
 /// it is spoken for by definition and walls itself from its own hex edges.
-fn junction_cells(areas: &Areas) -> Vec<grid::Hex> {
+///
+/// Derived from the current `areas` at the point it is needed, per `outline`'s join-kind rule —
+/// junction-ness is time-varying (erosion or a later claim can change the neighbour count), so
+/// it must never be snapshotted early. `pub(crate)` so the outline's `JoinKind` map and the wall
+/// builder classify from the SAME source.
+pub(crate) fn junction_cells(areas: &Areas) -> Vec<grid::Hex> {
     let mut out: Vec<grid::Hex> = areas
         .join()
         .iter()
         .copied()
         .filter(|c| {
-            let mut owners: Vec<usize> = c
+            let owners: std::collections::BTreeSet<usize> = c
                 .neighbors()
                 .iter()
                 .filter_map(|n| areas.owner_of(*n))
+                .chain(areas.owner_of(*c))
                 .collect();
-            owners.extend(areas.owner_of(*c));
-            owners.sort_unstable();
-            owners.dedup();
             owners.len() >= 3
         })
         .collect();
@@ -659,60 +715,7 @@ fn junction_cells(areas: &Areas) -> Vec<grid::Hex> {
 fn junction_walls(areas: &Areas, s: f64) -> Vec<WallRun> {
     let mut out = Vec::new();
     for c in junction_cells(areas) {
-        let ctr = c.center(s);
-        let hex = ruins::RuinShape::HexCell {
-            cx: ctr.0,
-            cy: ctr.1,
-            s,
-        };
-        let corners = c.corners(s);
-        for (k, nb) in c.neighbors().into_iter().enumerate() {
-            if areas.owner_of(nb).is_some() {
-                continue;
-            }
-            out.push(vec![
-                (crate::outline::quantize_pt(corners[k]), hex),
-                (crate::outline::quantize_pt(corners[(k + 1) % 6]), hex),
-            ]);
-        }
-    }
-    out
-}
-
-fn link_walls(areas: &Areas, connections: &[crate::topology::Connection], s: f64) -> Vec<WallRun> {
-    let mut out = Vec::new();
-    for conn in connections {
-        let own: std::collections::HashSet<grid::Hex> = conn
-            .along
-            .iter()
-            .copied()
-            .filter(|c| areas.is_join(*c))
-            .collect();
-        if own.is_empty() {
-            continue;
-        }
-        for &c in &own {
-            let hex = ruins::RuinShape::HexCell {
-                cx: c.center(s).0,
-                cy: c.center(s).1,
-                s,
-            };
-            let corners = c.corners(s);
-            for (k, nb) in c.neighbors().into_iter().enumerate() {
-                // Its own floor, or a room it joins: a mouth, not a wall.
-                if own.contains(&nb) {
-                    continue;
-                }
-                if matches!(areas.owner_of(nb), Some(o) if o == conn.a || o == conn.b) {
-                    continue;
-                }
-                // Edge `k` spans corner `k` to corner `k+1` — see `outline`'s `D`.
-                out.push(vec![
-                    (crate::outline::quantize_pt(corners[k]), hex),
-                    (crate::outline::quantize_pt(corners[(k + 1) % 6]), hex),
-                ]);
-            }
-        }
+        hex_edge_walls(c, s, |nb| areas.owner_of(nb).is_some(), &mut out);
     }
     out
 }
@@ -1912,8 +1915,12 @@ fn commit_join_floor(areas: &mut Areas, walls: &[WallRun], s: f64) {
     // enclosed. Both a neck's `hall` and its claim window (`claim_offset`) are intermediate
     // decisions; the wall layer is the artifact, and this function's job is to keep only floor a
     // wall encloses.
-    let mut rooms: Vec<ruins::RuinShape> = areas.shapes().iter().flatten().copied().collect();
-    rooms.extend(walls.iter().flatten().map(|&(_, sh)| sh));
+    let mut enclosures: Vec<ruins::RuinShape> = areas.shapes().iter().flatten().copied().collect();
+    enclosures.extend(walls.iter().flatten().map(|&(_, sh)| sh));
+    // A run tags every vertex with its shape, so the extend pushes ~6x consecutive duplicates
+    // (measured: 403 -> 68 shapes at the densest tags). Consecutive by construction, so `dedup`
+    // is enough.
+    enclosures.dedup();
     // Collected before mutating: `areas.join()` borrows `areas`, `remove_from_area` needs
     // it mutably. Grouped by area so each pays one `retain` rather than one per cell.
     let mut by_area: std::collections::BTreeMap<usize, Vec<grid::Hex>> =
@@ -1922,7 +1929,7 @@ fn commit_join_floor(areas: &mut Areas, walls: &[WallRun], s: f64) {
         // `join` is pruned on removal, so every cell in it is owned floor.
         let Some(i) = areas.owner_of(c) else { continue };
         let p = c.center(s);
-        if !rooms.iter().any(|sh| sh.contains(p)) {
+        if !enclosures.iter().any(|sh| sh.contains(p)) {
             by_area.entry(i).or_default().push(c);
         }
     }

@@ -426,10 +426,23 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         .flat_map(|(i, sh)| areas.floor_cells(i).map(move |c| (c, sh)))
         .collect();
     let jambs = doorway::jambs(&mouths, &topology, &areas, oparams.hex_size);
+    // Every join cell with its kind. `fuse::plan` reports the seams; the links are the
+    // connections' own floor, and they take precedence where the two overlap — `fuse` counts all
+    // claimed corridor floor as a neck, so a link cell appears in both, and only one of them is
+    // right about how the boundary should treat it.
+    let mut join_cells: std::collections::HashMap<grid::Hex, outline::JoinKind> = neck_cells
+        .iter()
+        .map(|&c| (c, outline::JoinKind::Seam))
+        .collect();
+    for c in &topology.connections {
+        for &cell in &c.along {
+            join_cells.insert(cell, outline::JoinKind::Link);
+        }
+    }
     let constraints = outline::Constraints {
         ruin_cells: &ruin_map,
         dungeon_cells: &dungeon_cells,
-        neck_cells: &neck_cells,
+        join_cells: &join_cells,
         jambs: &jambs,
     };
     let (mut outline, mut dungeon_walls) =

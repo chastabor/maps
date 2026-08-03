@@ -37,11 +37,41 @@ pub struct Constraints<'a> {
     /// Every dungeon room cell's shape. Those boundary runs are replaced wholesale by
     /// the room's exact wall — see `splice_dungeon_runs` — and locked from the start.
     pub dungeon_cells: &'a HashMap<Hex, RuinShape>,
-    /// Fusion-seam and corridor cells, locked on their own raw hex boundary rather
-    /// than projected onto either room's shape (projecting would undo the fill).
-    pub neck_cells: &'a HashSet<Hex>,
+    /// Every join cell and **what kind of join it is** — see [`JoinKind`]. Locked on its own raw
+    /// hex boundary rather than projected onto either room's shape, which would undo the fill.
+    pub join_cells: &'a HashMap<Hex, JoinKind>,
     /// Doorway jambs, which hold an opening open against the smoothing.
     pub jambs: &'a [Jamb],
+}
+
+/// What a join cell *is*, and therefore how the boundary treats it.
+///
+/// One object carrying its own kind, rather than two sets of cells and a rule about which wins.
+/// The first attempt at this was a second `link_cells` set consulted before the seam set, which put
+/// the distinction in statement order instead of in the data — the same mistake that produced every
+/// corridor bug: one pass guessing what another pass meant.
+///
+/// **A join's kind is a property of the current areas, not a fact fixed once.** Two rooms joined by
+/// a link become a *seam* if they later grow into each other, and a seam that erodes apart becomes a
+/// link. So this must always be **derived from the areas** at the point it is needed, never
+/// snapshotted early and carried: today growth is finished before any join exists, so one derivation
+/// suffices, but anything that moves floor afterwards — further growth, `ruins::erode`,
+/// `shrink_corridors` — invalidates it. Derive it again rather than repairing a stale copy.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JoinKind {
+    /// A fused pair's **seam**. The two rooms are one compound space, so the band flows straight
+    /// through and their walls land in one continuous run — which is what lets a fusion connector
+    /// reach them at all. Splicable, tagged with a real perimeter-bearing shape.
+    Seam,
+    /// A **link**'s floor — the cells a [`Connection`](crate::topology::Connection) occupies. The
+    /// opposite treatment: the two rooms keep their own walls and the corridor's walls join them, so
+    /// this has to read as a *gap* that breaks the band.
+    ///
+    /// Getting this wrong is not subtle. A link cell owned by a dungeon area arrives in
+    /// `dungeon_cells` (built from `floor_cells`, which includes corridor floor), is therefore
+    /// splicable, and the band merge treats the pair as fused: measured, five shaped rooms collapsed
+    /// to two wall runs and the map lost nearly every room.
+    Link,
 }
 
 impl Constraints<'static> {
@@ -53,11 +83,11 @@ impl Constraints<'static> {
     /// `Constraints { ruin_cells: &map, ..Constraints::none() }`.
     pub fn none() -> Self {
         static SHAPES: LazyLock<HashMap<Hex, RuinShape>> = LazyLock::new(HashMap::new);
-        static CELLS: LazyLock<HashSet<Hex>> = LazyLock::new(HashSet::new);
+        static JOINS: LazyLock<HashMap<Hex, JoinKind>> = LazyLock::new(HashMap::new);
         Constraints {
             ruin_cells: &SHAPES,
             dungeon_cells: &SHAPES,
-            neck_cells: &CELLS,
+            join_cells: &JOINS,
             jambs: &[],
         }
     }
@@ -196,7 +226,7 @@ pub(crate) fn smooth_loops<R: Rng>(
     let Constraints {
         ruin_cells,
         dungeon_cells,
-        neck_cells,
+        join_cells,
         jambs,
     } = constraints;
     let size = params.hex_size;
@@ -224,7 +254,12 @@ pub(crate) fn smooth_loops<R: Rng>(
                     // land in one wall run — which is what lets the fusion
                     // connectors reach them at all.
                     let dungeon_shape = dungeon_cells.get(&cell).copied();
-                    if neck_cells.contains(&cell) {
+                    // Ask the join what it is, rather than consulting two sets in a priority
+                    // order — see [`JoinKind`].
+                    if join_cells.get(&cell) == Some(&JoinKind::Link) {
+                        return (p, tag, None, false);
+                    }
+                    if join_cells.contains_key(&cell) {
                         let c = cell.center(size);
                         let hex = RuinShape::HexCell {
                             cx: c.0,

@@ -44,7 +44,7 @@ pub struct Connection {
     ///
     /// For areas that face each other directly this is one cell deep by construction: a candidate
     /// cell touches *both* areas, so there is nothing between the two borders but it. The bound is
-    /// therefore on width, and [`CONNECTION_WIDTH`] sets it.
+    /// therefore on width, and `CONNECTION_WIDTH` sets it.
     pub along: Vec<Hex>,
     pub a: usize,
     pub b: usize,

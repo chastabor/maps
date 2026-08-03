@@ -155,6 +155,23 @@ pub fn build<R: Rng>(
     let is_corridor = shrink_corridors(areas, &connections, &exits, tags, rng);
     let merged_doors = merged_pillar_pairs(areas, &connections, s);
 
+    // Reserve each connection's floor — its `along` run, never the whole frontage.
+    //
+    // Here because this is where the connection is decided: growth claiming from a rule of its own
+    // meant the same fact ("these two areas are joined, by this floor") was derived twice, and the
+    // two could disagree. Dungeon-to-dungeon only — corridor floor exists to give a corridor's walls
+    // something to enclose, and an organic area has no wall to build, so its connections stay the
+    // free cells the outline traces organically.
+    //
+    // Last in `build` on purpose, so `shrink_corridors` and `merged_pillar_pairs` still see the free
+    // cells they were written against. Claimed for `a` arbitrarily: `join` keeps the run out of
+    // `room_cells`, so ownership only decides whose cell list carries it.
+    for c in &connections {
+        if areas.kind(c.a) == AreaKind::Dungeon && areas.kind(c.b) == AreaKind::Dungeon {
+            areas.claim_join(c.a, &c.along);
+        }
+    }
+
     Topology {
         connections,
         exits,

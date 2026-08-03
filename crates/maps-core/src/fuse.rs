@@ -115,6 +115,14 @@ enum NeckKind {
     /// [`circle_rect_necks`]: the narrow hex-aligned angle neck for a
     /// circle↔rectangle corner fusion; its endpoints hug the hall centreline.
     AngleNeck,
+    /// [`connection_necks`]: a room-to-room **link**. Spliced into neither layer — its wall is the
+    /// link's own hex-edge boundary (see [`link_walls`]), which is tile-exact and needs no fitting.
+    ///
+    /// The neck still exists because `commit_join_floor` keeps join floor a neck's hall covers, and
+    /// the link's floor must survive. Splicing its trapezoid as well produced the stray stubs at
+    /// every passage mouth: a one-cell link's two "walls" are shorter than the wall band is thick,
+    /// so they read as ticks at angles unrelated to the passage.
+    Link,
 }
 
 /// A clean connector joining one fused pair of geometric areas, in place of the
@@ -177,6 +185,11 @@ impl Neck {
     /// nudging them.
     fn is_corridor(&self) -> bool {
         self.kind == NeckKind::AxisCorridor
+    }
+
+    /// Whether this is a room-to-room link, whose wall is drawn from its own tiles.
+    fn is_link(&self) -> bool {
+        self.kind == NeckKind::Link
     }
 
     /// The connector's axis as `(near end, far end)` — the centreline between its two
@@ -591,10 +604,57 @@ fn connection_necks(
                 wall0: w0,
                 wall1: w1,
             },
-            kind: NeckKind::AxisCorridor,
+            kind: NeckKind::Link,
             claimed: cells,
             cell: s,
         });
+    }
+    out
+}
+
+/// The wall of every room-to-room **link**: its own floor's boundary, as hex edges.
+///
+/// Tile-exact by construction, and the reason a link needs no fitted geometry at all. An edge of a
+/// link cell is wall unless it faces the link's other floor or one of the two rooms it joins —
+/// those are its mouths, where the passage opens.
+///
+/// Emitted as `dungeon_walls` runs, so a link is drawn with the dungeon's own double border rather
+/// than an organic single stroke: a corridor between two dungeon rooms is part of the dungeon.
+/// Each vertex carries its cell's hexagon, so the renderer's inward offset follows the lattice.
+fn link_walls(areas: &Areas, connections: &[crate::topology::Connection], s: f64) -> Vec<WallRun> {
+    let mut out = Vec::new();
+    for conn in connections {
+        let own: std::collections::HashSet<grid::Hex> = conn
+            .along
+            .iter()
+            .copied()
+            .filter(|c| areas.is_join(*c))
+            .collect();
+        if own.is_empty() {
+            continue;
+        }
+        for &c in &own {
+            let hex = ruins::RuinShape::HexCell {
+                cx: c.center(s).0,
+                cy: c.center(s).1,
+                s,
+            };
+            let corners = c.corners(s);
+            for (k, nb) in c.neighbors().into_iter().enumerate() {
+                // Its own floor, or a room it joins: a mouth, not a wall.
+                if own.contains(&nb) {
+                    continue;
+                }
+                if matches!(areas.owner_of(nb), Some(o) if o == conn.a || o == conn.b) {
+                    continue;
+                }
+                // Edge `k` spans corner `k` to corner `k+1` — see `outline`'s `D`.
+                out.push(vec![
+                    (crate::outline::quantize_pt(corners[k]), hex),
+                    (crate::outline::quantize_pt(corners[(k + 1) % 6]), hex),
+                ]);
+            }
+        }
     }
     out
 }
@@ -1286,7 +1346,7 @@ impl Neck {
 /// with the hall so the renderer offsets its inner wall. The band then flows
 /// circle arc → neck → rectangle wall as one continuous wall.
 fn splice_necks(walls: &mut [WallRun], necks: &[Neck], doors: &[Point]) {
-    for neck in necks {
+    for neck in necks.iter().filter(|n| !n.is_link()) {
         // Which of the two shapes a spliced endpoint sits on — the endpoint is on
         // one border or the other by construction, so the nearer one wins.
         let shape_at = |p: Point| -> ruins::RuinShape {
@@ -1952,6 +2012,7 @@ impl Fusion {
             .chain(topology.merged_doors.iter().map(|&(_, _, p)| p.center(s)))
             .collect();
         splice_necks(walls, &necks, &door_cells);
+        walls.extend(link_walls(areas, &topology.connections, s));
         // Clip every wall against the rooms it runs into. A corridor is built from the tiles the
         // two rooms share — room tiles — so its walls start out running inside both rooms, and a
         // fused pair's two borders overlap by construction. Neither stretch is wall: it is open

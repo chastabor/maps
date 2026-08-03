@@ -18,6 +18,9 @@
 //!
 //! - where `clip::split_outside` cut a wall that ran into a room, which lands on a room's shrunk
 //!   border;
+//! - a **link mouth**: two rooms' runs meeting across a corridor's gap. A link breaks the wall
+//!   band (`outline::JoinKind::Link`), so the runs either side of it end adjacent and coincide,
+//!   with no seam there to square — the corridor's own walls join them;
 //! - a corridor **mouth**. Corridors are trimmed to the gap they span (`fuse::trim_to_gap`), so a
 //!   connector's wall ends exactly on each room's border and the two rooms' runs can meet there
 //!   with their borders never crossing. A seam corner is by definition a border *crossing*, so
@@ -26,6 +29,9 @@
 //! `SEEDS` widens the seed range (default 40).
 
 use maps_core::ruins::RuinShape;
+
+/// The hex size every map here is generated at.
+const HEX: f64 = 12.0;
 use maps_core::tags::Tags;
 use maps_core::{GenOptions, generate_with};
 
@@ -93,7 +99,17 @@ fn fused_seam_corners_are_points() {
                     let clip_cut = rooms
                         .iter()
                         .any(|r| *r != sa && *r != sb && r.shrink(1.0).wall_dist(p) < 0.2);
-                    if gap <= 0.15 && clip_cut {
+                    // A **link mouth**: two rooms' runs meeting across a corridor's gap. A link
+                    // breaks the wall band (`outline::JoinKind::Link`), so the runs either side of
+                    // it end adjacent in the same band and their ends coincide — but there is no
+                    // seam there to square; the corridor's own walls are what join them.
+                    let link_mouth = m.topology.connections.iter().any(|c| {
+                        c.along.iter().any(|h| {
+                            let lc = h.center(HEX);
+                            (lc.0 - p.0).hypot(lc.1 - p.1) < 1.5 * HEX
+                        })
+                    });
+                    if gap <= 0.15 && (clip_cut || link_mouth) {
                         clipped += 1;
                     } else if gap <= 0.15 && crossings(&sa, &sb).len() != 2 {
                         // A corridor MOUTH, not a seam corner. Since corridors are trimmed to
@@ -159,6 +175,6 @@ fn fused_seam_corners_are_points() {
     // tiles) or when the crossing is too far to be this corner's.
     println!(
         "squared {squared} seam corners, {chords} left as chords, \
-         {clipped} clip cuts and {mouths} corridor mouths excluded"
+         {clipped} clip cuts / link mouths and {mouths} corridor mouths excluded"
     );
 }

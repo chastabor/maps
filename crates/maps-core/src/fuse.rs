@@ -547,7 +547,7 @@ fn connection_necks(
         // Only the cells still claimed: `ruins::erode` and `shrink_corridors` may have marked some
         // back to rock, and a wall must bound the floor that is actually there.
         let cells: Vec<Point> = conn
-            .cells
+            .along
             .iter()
             .filter(|c| areas.is_join(**c))
             .map(|c| c.center(s))

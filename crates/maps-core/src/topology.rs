@@ -8,6 +8,13 @@ use crate::ruins::RuinShape;
 use crate::tags::{ConnectTag, ExitTag, LayoutTag, Tags};
 use rand::Rng;
 use rand::seq::SliceRandom;
+
+/// How many cells wide a connection's floor may be, at most.
+///
+/// The bound that makes a connection a *link* rather than an opening. One cell is the narrowest
+/// possible and matches what a doorway has always occupied, so it is where this starts; widening it
+/// widens every corridor in the map, which is a look decision rather than a correctness one.
+const CONNECTION_WIDTH: usize = 1;
 use std::collections::{BTreeMap, HashSet};
 
 /// One link between areas `a` and `b`, and the floor it occupies.
@@ -24,8 +31,21 @@ use std::collections::{BTreeMap, HashSet};
 /// corridors pointing at areas that had been dropped. Cells are never re-mapped.
 #[derive(Clone, Debug)]
 pub struct Connection {
-    /// The floor this link occupies, nearest-first: `cells[0]` is the cell the leaf spans.
-    pub cells: Vec<Hex>,
+    /// The **frontage**: every free cell where these two areas face each other at this place,
+    /// anchor first. How wide the link *could* be, not how wide it is.
+    ///
+    /// Two rooms sitting side by side share a broad front, and claiming all of it does not build a
+    /// corridor — it opens the rooms to each other along their whole facing edge and they dissolve
+    /// into one space. (Rendered: `plans/wip/whole.png`, where two of three maps lost nearly every
+    /// room.) So this is the *budget* the link is cut from, and [`Self::along`] is what it takes.
+    pub across: Vec<Hex>,
+    /// The floor the link actually **occupies** — a bounded-width run cut from [`Self::across`],
+    /// anchor first. This is what gets claimed and what the walls are built from.
+    ///
+    /// For areas that face each other directly this is one cell deep by construction: a candidate
+    /// cell touches *both* areas, so there is nothing between the two borders but it. The bound is
+    /// therefore on width, and [`CONNECTION_WIDTH`] sets it.
+    pub along: Vec<Hex>,
     pub a: usize,
     pub b: usize,
     /// Whether a door leaf is drawn across it. A corridor is a connection without one.
@@ -33,10 +53,9 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// The cell the leaf spans — the connection's own anchor for anything that wants one point
-    /// rather than the run.
+    /// The anchor: the cell the leaf spans, and the cell the run was grown from.
     pub fn cell(&self) -> Hex {
-        self.cells[0]
+        self.along[0]
     }
 }
 
@@ -96,18 +115,35 @@ pub fn build<R: Rng>(
                 .filter(|&&(_, x, y)| (x, y) == (a, b))
                 .map(|&(h, _, _)| h)
                 .collect();
-            let mut cells = vec![cell];
+            let mut across = vec![cell];
             let mut frontier = vec![cell];
             while let Some(h) = frontier.pop() {
                 for nb in h.neighbors() {
-                    if local.contains(&nb) && !cells.contains(&nb) {
-                        cells.push(nb);
+                    if local.contains(&nb) && !across.contains(&nb) {
+                        across.push(nb);
                         frontier.push(nb);
                     }
                 }
             }
+            // The link takes a bounded width from the frontage, grown outward from the anchor a
+            // ring at a time so it stays contiguous and centred rather than taking whichever cells
+            // the flood happened to reach first.
+            let mut along = vec![cell];
+            while along.len() < CONNECTION_WIDTH {
+                let Some(next) = across
+                    .iter()
+                    .copied()
+                    .filter(|h| !along.contains(h))
+                    .filter(|h| along.iter().any(|k| k.distance(*h) == 1))
+                    .min_by_key(|h| h.distance(cell))
+                else {
+                    break;
+                };
+                along.push(next);
+            }
             Connection {
-                cells,
+                across,
+                along,
                 a,
                 b,
                 doored: true,

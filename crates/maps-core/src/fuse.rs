@@ -621,6 +621,64 @@ fn connection_necks(
 /// Emitted as `dungeon_walls` runs, so a link is drawn with the dungeon's own double border rather
 /// than an organic single stroke: a corridor between two dungeon rooms is part of the dungeon.
 /// Each vertex carries its cell's hexagon, so the renderer's inward offset follows the lattice.
+/// Cells where three or more areas meet. A junction is its **own** section, not part of any
+/// pair's.
+///
+/// Growth claims such a cell for one pair, but no single pair's connector window reaches it —
+/// that is precisely why it survived as an orphan (all 6 residual cases over 1800 dense maps had
+/// this shape: the cell touching its owner plus two other areas, with a link neck and a corridor
+/// neck existing for those pairs and neither covering the cell). Treated as a section of its own
+/// it is spoken for by definition and walls itself from its own hex edges.
+fn junction_cells(areas: &Areas) -> Vec<grid::Hex> {
+    let mut out: Vec<grid::Hex> = areas
+        .join()
+        .iter()
+        .copied()
+        .filter(|c| {
+            let mut owners: Vec<usize> = c
+                .neighbors()
+                .iter()
+                .filter_map(|n| areas.owner_of(*n))
+                .collect();
+            owners.extend(areas.owner_of(*c));
+            owners.sort_unstable();
+            owners.dedup();
+            owners.len() >= 3
+        })
+        .collect();
+    // `join` is a `HashSet`; sort so the wall runs land in a seed-stable order.
+    out.sort_unstable();
+    out
+}
+
+/// A junction's wall: its own hex edges, walling only the ones facing **rock**.
+///
+/// An edge facing floor is a mouth — the junction opens into that area, and a wall drawn across
+/// open floor is the defect `clip::split_outside` exists to remove. Same construction as
+/// [`link_walls`], which is what makes the junction enclosable without any pair agreeing to it.
+fn junction_walls(areas: &Areas, s: f64) -> Vec<WallRun> {
+    let mut out = Vec::new();
+    for c in junction_cells(areas) {
+        let ctr = c.center(s);
+        let hex = ruins::RuinShape::HexCell {
+            cx: ctr.0,
+            cy: ctr.1,
+            s,
+        };
+        let corners = c.corners(s);
+        for (k, nb) in c.neighbors().into_iter().enumerate() {
+            if areas.owner_of(nb).is_some() {
+                continue;
+            }
+            out.push(vec![
+                (crate::outline::quantize_pt(corners[k]), hex),
+                (crate::outline::quantize_pt(corners[(k + 1) % 6]), hex),
+            ]);
+        }
+    }
+    out
+}
+
 fn link_walls(areas: &Areas, connections: &[crate::topology::Connection], s: f64) -> Vec<WallRun> {
     let mut out = Vec::new();
     for conn in connections {
@@ -1837,16 +1895,25 @@ pub(crate) fn corridor_floor(areas: &Areas, grid: &HexGrid, s: f64) -> Vec<Corri
 ///    that would mean re-tracing after the ladder, which is a larger change than the
 ///    stray is worth; the metric that watches this (`sweep.rs`'s `fo`) reads the cell set.
 ///
-/// The third way — an **orphan**, whose pair dissolved entirely — needs no ladder outcome
-/// and so does not wait: [`Fusion::release_orphans`] handles it before the outline is
-/// traced, which is why that case has no outline skew.
+/// There is no longer a third way. Floor whose pair dissolved entirely used to be released
+/// early, before the outline was traced, by a `release_orphans` backstop. Every case it
+/// existed for is now prevented: erosion anchors join floor (`ruins::erode`), and a cell where
+/// three areas meet is its own section with its own walls ([`junction_cells`]). Measured at 0
+/// released cells over 3000 maps, so the backstop and the bookkeeping it needed are gone.
 ///
 /// A corridor **mouth** survives: the hall's containment test clamps to the segment, so a
 /// cell overhanging an end still counts as inside if it is within the half-width of the
 /// end cap, and one sitting against a room's border is inside that room. Dropping those
 /// would punch a hole in the mouth.
-fn commit_join_floor(areas: &mut Areas, necks: &[Neck], s: f64) {
-    let rooms: Vec<ruins::RuinShape> = areas.shapes().iter().flatten().copied().collect();
+fn commit_join_floor(areas: &mut Areas, walls: &[WallRun], s: f64) {
+    // Tested against the walls that were actually DRAWN, not against the necks that were kept.
+    // Keeping a neck is not the same as drawing its wall: `splice_necks` filters links out, and
+    // `clip::split_outside` can clip a run away entirely, so the kept set overestimates what is
+    // enclosed. Both a neck's `hall` and its claim window (`claim_offset`) are intermediate
+    // decisions; the wall layer is the artifact, and this function's job is to keep only floor a
+    // wall encloses.
+    let mut rooms: Vec<ruins::RuinShape> = areas.shapes().iter().flatten().copied().collect();
+    rooms.extend(walls.iter().flatten().map(|&(_, sh)| sh));
     // Collected before mutating: `areas.join()` borrows `areas`, `remove_from_area` needs
     // it mutably. Grouped by area so each pays one `retain` rather than one per cell.
     let mut by_area: std::collections::BTreeMap<usize, Vec<grid::Hex>> =
@@ -1855,7 +1922,7 @@ fn commit_join_floor(areas: &mut Areas, necks: &[Neck], s: f64) {
         // `join` is pruned on removal, so every cell in it is owned floor.
         let Some(i) = areas.owner_of(c) else { continue };
         let p = c.center(s);
-        if !necks.iter().any(|n| n.hall.contains(p)) && !rooms.iter().any(|sh| sh.contains(p)) {
+        if !rooms.iter().any(|sh| sh.contains(p)) {
             by_area.entry(i).or_default().push(c);
         }
     }
@@ -1879,8 +1946,6 @@ pub(crate) struct Fusion {
     /// set, which is harmless: avoiding a connector that is later dropped only
     /// nudges a door slightly.
     necks: Vec<Neck>,
-    /// Join floor no candidate claims — see [`Fusion::release_orphans`].
-    orphans: Vec<grid::Hex>,
     cell: f64,
 }
 
@@ -1903,7 +1968,6 @@ pub(crate) fn plan(
     // span is computed once per pair and shared.
     let mut spans: std::collections::HashMap<(usize, usize), Vec<Point>> =
         std::collections::HashMap::new();
-    let mut spoken_for: std::collections::HashSet<grid::Hex> = std::collections::HashSet::new();
     for n in necks.iter().filter(|n| n.is_corridor()) {
         if let std::collections::hash_map::Entry::Vacant(slot) = spans.entry(n.pair) {
             let mine: Vec<grid::Hex> = areas
@@ -1912,7 +1976,6 @@ pub(crate) fn plan(
                 .copied()
                 .filter(|c| claim_offset(n, c.center(s)).is_some())
                 .collect();
-            spoken_for.extend(mine.iter().copied());
             slot.insert(mine.iter().map(|c| c.center(s)).collect());
         }
     }
@@ -1923,21 +1986,6 @@ pub(crate) fn plan(
             neck.claimed = pts.clone();
         }
     }
-    // Join floor NO candidate claims: the pair dissolved after growth claimed for it.
-    // `ruins::build` erodes ruin room boundaries and `finalize`/`keep_largest_component`
-    // can drop an area, so a partner's cells may be gone by now — and then `fuse_pairs`
-    // sees no pair and builds nothing, leaving the cell a spur of floor bridging nothing.
-    //
-    // Released HERE, before the outline is traced, and not by `commit_join_floor`: that
-    // runs inside `apply`, after `build_outline`, so a cell it rolls back is already
-    // drawn as a floor lobe and the boundary keeps the bulge while the cell set calls it
-    // rock. An orphan needs no ladder outcome to detect, so it does not have to wait.
-    let orphans: Vec<grid::Hex> = areas
-        .join()
-        .iter()
-        .copied()
-        .filter(|c| !spoken_for.contains(c) && areas.owner_of(*c).is_some())
-        .collect();
     // The outline must lock these on their own hex corners, not project them onto a
     // room's wall: they lie outside that room's geometry, and projecting undoes the fill.
     // `spans` is keyed by exactly the pairs with a corridor candidate (it is filled from
@@ -1945,14 +1993,7 @@ pub(crate) fn plan(
     // stands aside for — no second pass, and the two cannot drift apart.
     let mut join_cells = fused_necks(areas, &spans, s);
     join_cells.extend(areas.join().iter().copied());
-    (
-        Fusion {
-            necks,
-            orphans,
-            cell: s,
-        },
-        join_cells,
-    )
+    (Fusion { necks, cell: s }, join_cells)
 }
 
 impl Fusion {
@@ -1966,29 +2007,6 @@ impl Fusion {
             .iter()
             .filter(|n| !n.is_corridor())
             .any(|n| n.blocks(p))
-    }
-
-    /// Hand back join floor no connector candidate claims, before the outline is traced.
-    ///
-    /// The pair dissolved after growth claimed for it, so nothing will ever wall these
-    /// cells — see the collection site in [`plan`] for how that happens. Unlike the cases
-    /// [`commit_join_floor`] handles, this needs no acceptance-ladder outcome, so it runs
-    /// early enough that `build_outline` never traces the lobe and the cell set and the
-    /// drawn boundary cannot disagree.
-    ///
-    /// A **backstop**, not the first line of defence: the two causes that *can* be
-    /// prevented are, by `ruins::erode` and `topology::shrink_corridors` both treating
-    /// corridor floor as a cell that must survive. What is left is an area dropped
-    /// outright (`finalize`'s `MIN_AREA`, `keep_largest_component`) or a pair member
-    /// demoted to no shape at all, which cannot be exempted without weakening the
-    /// spans-the-map guarantee. Measured after the anchors: 4 maps over 200 seeds at tag
-    /// defaults, none dense.
-    pub(crate) fn release_orphans(&self, areas: &mut Areas) {
-        for &c in &self.orphans {
-            if let Some(i) = areas.owner_of(c) {
-                areas.remove_from_area(i, &[c]);
-            }
-        }
     }
 
     /// Splice the accepted connectors into both layers that draw a wall, crop the
@@ -2013,6 +2031,7 @@ impl Fusion {
             .collect();
         splice_necks(walls, &necks, &door_cells);
         walls.extend(link_walls(areas, &topology.connections, s));
+        walls.extend(junction_walls(areas, s));
         // Clip every wall against the rooms it runs into. A corridor is built from the tiles the
         // two rooms share — room tiles — so its walls start out running inside both rooms, and a
         // fused pair's two borders overlap by construction. Neither stretch is wall: it is open
@@ -2032,6 +2051,6 @@ impl Fusion {
             .iter()
             .flat_map(|run| crate::clip::split_outside(run, &rooms, 1.0))
             .collect();
-        commit_join_floor(areas, &necks, s);
+        commit_join_floor(areas, walls, s);
     }
 }

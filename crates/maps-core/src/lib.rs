@@ -363,7 +363,6 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // splice waits until after `build_outline` (see `fuse::Fusion`).
     let (fusion, neck_cells) = fuse::plan(&areas, &topology, oparams.hex_size);
     // Before anything reads the floor: corridor floor whose pair dissolved is not floor.
-    fusion.release_orphans(&mut areas);
     let mut ruin_map = ruins::ruin_cell_map(&areas, oparams.hex_size);
 
     // Doorway mouths onto dungeon rooms: flush openings cut into the exact

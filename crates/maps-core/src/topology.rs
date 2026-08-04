@@ -114,6 +114,48 @@ fn corner_bound(areas: &Areas, h: Hex, a: usize, b: usize, s: f64) -> bool {
     })
 }
 
+/// Widen a connection's mouth at each room until it presents [`CONNECTION_WIDTH`] cells to
+/// that room's floor, by adding free cells adjacent to the run that touch the room.
+///
+/// Added to the run BEFORE the apron marker, since these are free-run cells: the outline must
+/// treat them as band-breaking link floor, or the wall gap they exist to widen would not
+/// follow. Candidates are taken nearest-to-anchor first, tie broken by cell order, so the
+/// choice is seed-stable. A side with no such free cell keeps its narrow mouth — geometry
+/// allows nothing wider there.
+fn widen_mouths(areas: &Areas, conn: &mut Connection, _s: f64) {
+    for side in [conn.a, conn.b] {
+        loop {
+            let touching = conn
+                .along
+                .iter()
+                .filter(|cell| {
+                    cell.neighbors()
+                        .iter()
+                        .any(|n| areas.owner_of(*n) == Some(side) && !areas.is_join(*n))
+                })
+                .count();
+            if touching >= CONNECTION_WIDTH {
+                break;
+            }
+            let anchor = conn.cell();
+            let cand = conn
+                .along
+                .iter()
+                .flat_map(|cell| cell.neighbors())
+                .filter(|n| areas.owner_of(*n).is_none() && !conn.along.contains(n))
+                .filter(|n| {
+                    n.neighbors()
+                        .iter()
+                        .any(|m| areas.owner_of(*m) == Some(side) && !areas.is_join(*m))
+                })
+                .min_by_key(|n| (n.distance(anchor), n.q, n.r));
+            let Some(add) = cand else { break };
+            conn.along.insert(conn.apron_from, add);
+            conn.apron_from += 1;
+        }
+    }
+}
+
 /// The apron a connection needs on a side whose fitted border its free cells never reach:
 /// the protruding room tiles the passage crosses before the border can cap it.
 ///
@@ -288,6 +330,14 @@ pub fn build<R: Rng>(
     let mut connections = connections;
     for c in &mut connections {
         if areas.kind(c.a) == AreaKind::Dungeon && areas.kind(c.b) == AreaKind::Dungeon {
+            // The run is CONNECTION_WIDTH wide mid-span, but nothing yet guaranteed that width
+            // where it meets each room: the two cells often sit one-behind-the-other relative
+            // to a border, presenting a single cell there — so the passage necked to a one-door
+            // gap at the wall while being two cells wide in between (measured: 405 of 926 mouth
+            // sides). The wall gaps are cell-driven, so the fix is cells: widen each END with
+            // free cells beside the run that touch that side's floor, until the mouth is as
+            // wide as the run.
+            widen_mouths(areas, c, s);
             areas.claim_join(c.a, &c.along);
             // Door-to-door: the free cells end at the first floor cell, but the passage
             // geometrically continues through any room tiles that protrude beyond their fitted

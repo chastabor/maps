@@ -800,6 +800,98 @@ fn junction_walls(areas: &Areas, s: f64) -> Vec<WallRun> {
     out
 }
 
+/// Expand a corner-bound connection into the corner: the corridor's near-side wall becomes the
+/// rect's perpendicular wall line, extended straight from the corner to the partner's border.
+///
+/// The corner filter (`topology::corner_bound`) keeps connections off rect corners when any
+/// other candidate exists, but ~6% of pairs face each other ONLY at a corner. There the hex
+/// chain used to cap on the mouth wall a few pixels from the corner, leaving a wall sliver and
+/// a zigzag squeezing the passage (the width-2 gallery's red corrections, example 1). Per the
+/// correction: the wall is drawn FROM the corner, straight, along the perpendicular wall's own
+/// line — the corner section becomes corridor.
+///
+/// Applied per chain end, only when the straight extension actually reaches the partner's
+/// border within four cells — a corner whose extension misses the partner keeps its hex chain
+/// (the gallery's example 3: such a corner should not cap the corridor, and if no straight line
+/// exists the chain is still the only wall that closes it).
+fn expand_corners(
+    walls: &mut Vec<WallRun>,
+    areas: &Areas,
+    connections: &[crate::topology::Connection],
+    s: f64,
+) {
+    let apothem = crate::grid::HEX_APOTHEM * s;
+    for conn in connections {
+        if conn.along.iter().all(|c| !areas.is_join(*c)) {
+            continue;
+        }
+        for (side, partner) in [(conn.a, conn.b), (conn.b, conn.a)] {
+            let Some(ruins::RuinShape::Rect { cx, cy, hw, hh }) = areas.shape(side) else {
+                continue;
+            };
+            let Some(psh) = areas.shape(partner) else {
+                continue;
+            };
+            let p = conn.cell().center(s);
+            let (dx, dy) = (p.0 - cx, p.1 - cy);
+            // The mouth wall is the axis the anchor leaves through; the corner is the near end
+            // of that wall. Anchor inside the slab of neither axis means no corner case.
+            let (corner, dir) = if dx.abs() > hw && dy.abs() <= hh {
+                let x = cx + hw.copysign(dx);
+                let y = cy + hh.copysign(dy);
+                if (p.1 - y).abs() >= apothem {
+                    continue;
+                }
+                ((x, y), (dx.signum(), 0.0))
+            } else if dy.abs() > hh && dx.abs() <= hw {
+                let x = cx + hw.copysign(dx);
+                let y = cy + hh.copysign(dy);
+                if (p.0 - x).abs() >= apothem {
+                    continue;
+                }
+                ((x, y), (0.0, dy.signum()))
+            } else {
+                continue;
+            };
+            // Where the straight extension meets the partner's border, if it does at all.
+            let far = (corner.0 + dir.0 * 4.0 * s, corner.1 + dir.1 * 4.0 * s);
+            let hit = psh
+                .segment_crossings(corner, far)
+                .into_iter()
+                .fold(f64::MAX, f64::min);
+            if hit == f64::MAX {
+                continue;
+            }
+            let end = (
+                corner.0 + (far.0 - corner.0) * hit,
+                corner.1 + (far.1 - corner.1) * hit,
+            );
+            // The chain this replaces: the stitched hex run whose endpoint capped on the mouth
+            // wall inside the corner zone. Replaced whole — it is the corridor's near-side
+            // wall, and the straight segment is that wall done right. If no chain end is
+            // there (the mouth may sit flush already), the segment is still added: it closes
+            // the corner sliver the ring's own gap leaves.
+            let near_corner = |q: Point| (q.0 - corner.0).hypot(q.1 - corner.1) < apothem + 0.5;
+            walls.retain(|run| {
+                let hexed = run
+                    .iter()
+                    .all(|&(_, sh)| matches!(sh, ruins::RuinShape::HexCell { .. }));
+                let capped = near_corner(run[0].0) || near_corner(run[run.len() - 1].0);
+                !(hexed && capped)
+            });
+            let tag = ruins::RuinShape::HexCell {
+                cx: conn.cell().center(s).0,
+                cy: conn.cell().center(s).1,
+                s,
+            };
+            walls.push(vec![
+                (crate::outline::quantize_pt(corner), tag),
+                (crate::outline::quantize_pt(end), tag),
+            ]);
+        }
+    }
+}
+
 /// A corridor for every fused pair that no other construction could build one for.
 ///
 /// The other constructions end a wall where it meets a room's fitted *border*, and at the full
@@ -2201,6 +2293,7 @@ impl Fusion {
                 .flat_map(|run| crate::clip::split_outside(run, &lens, 0.2))
                 .collect();
         }
+        expand_corners(walls, areas, &topology.connections, s);
         commit_join_floor(areas, walls, s);
     }
 }

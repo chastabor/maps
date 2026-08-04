@@ -212,7 +212,21 @@ fn mouth(
     blocked: &dyn Fn(Point) -> bool,
 ) -> Option<Mouth> {
     let dungeon = |i: usize| areas.kind(i) == AreaKind::Dungeon;
-    let centers: Vec<Point> = members.iter().map(|&i| doors[i].cell().center(s)).collect();
+    // Every free-run cell of every member, not just each member's anchor: a connection is
+    // CONNECTION_WIDTH cells wide, and the mouth must span and count what the passage actually
+    // presents to the wall. Counting members alone pinned every opening at one hex — a two-cell
+    // passage necked to a one-door gap at the wall it entered (reported on seed
+    // 171030574712681231: a two-hex passageway with one-door openings both ends).
+    let cells: Vec<crate::grid::Hex> = {
+        let mut v: Vec<crate::grid::Hex> = members
+            .iter()
+            .flat_map(|&i| doors[i].along[..doors[i].apron_from].iter().copied())
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    let centers: Vec<Point> = cells.iter().map(|h| h.center(s)).collect();
     let c0 = centers
         .iter()
         .fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
@@ -315,8 +329,8 @@ fn mouth(
         }
     })?;
 
-    // One hex of opening per member door, capped at a triple gate.
-    let opening = members.len().min(3) as f64 * 2.0 * ap;
+    // One hex of opening per cell of passage, capped at a triple gate.
+    let opening = cells.len().min(3) as f64 * 2.0 * ap;
     // Centre the opening on the member cells' span along the wall, then slide
     // it within the pierced edge so the gap never crosses a corner.
     let (lo, hi) = centers

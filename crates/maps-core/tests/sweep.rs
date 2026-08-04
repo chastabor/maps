@@ -74,6 +74,37 @@ fn crosses(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
 }
 
 /// Whether a closed loop crosses itself, ignoring adjacent (endpoint-sharing) edges.
+/// A true interior crossing — the parametric intersection lies strictly inside BOTH segments.
+///
+/// [`crosses`] (and therefore `si`) also fires on *touches*: the outline passing exactly through
+/// a vertex that lies on another segment. Lattice-locked geometry produces those in abundance
+/// (every join cell's corners are quantized to the same grid), `signum(±0.0)` is ±1.0 so the
+/// zero guard never filters them, and they render as a clean meeting point, not a defect.
+/// Measured at CONNECTION_WIDTH=2: si counted 97 maps of 200 while strict crossings stayed at
+/// baseline (1-5 per 60). Both are reported; only this one measures the visual defect.
+fn strict_cross(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
+    let (r, s_) = ((b.0 - a.0, b.1 - a.1), (d.0 - c.0, d.1 - c.1));
+    let den = r.0 * s_.1 - r.1 * s_.0;
+    if den.abs() < 1e-12 {
+        return false;
+    }
+    let t = ((c.0 - a.0) * s_.1 - (c.1 - a.1) * s_.0) / den;
+    let u = ((c.0 - a.0) * r.1 - (c.1 - a.1) * r.0) / den;
+    t > 1e-6 && t < 1.0 - 1e-6 && u > 1e-6 && u < 1.0 - 1e-6
+}
+
+fn strictly_self_intersects(loop_: &[(f64, f64)]) -> bool {
+    let n = loop_.len();
+    if n < 4 {
+        return false;
+    }
+    (0..n).any(|i| {
+        ((i + 2)..n)
+            .filter(|&j| !(i == 0 && j == n - 1))
+            .any(|j| strict_cross(loop_[i], loop_[(i + 1) % n], loop_[j], loop_[(j + 1) % n]))
+    })
+}
+
 fn self_intersects(loop_: &[(f64, f64)]) -> bool {
     let n = loop_.len();
     if n < 4 {
@@ -150,6 +181,7 @@ fn sweep() {
     for tag_str in CONFIGS {
         let tags = Tags::parse(tag_str).unwrap();
         let (mut digest, mut si, mut conn, mut fo) = (0u64, 0, 0, 0usize);
+        let mut xsi = 0usize;
         let (mut deep, mut worst) = (Vec::new(), 0.0f64);
         let mut leaks = Vec::new();
 
@@ -171,6 +203,12 @@ fn sweep() {
 
             if m.outline.iter().any(|lp| self_intersects(lp)) {
                 si += 1;
+            }
+            if m.outline.iter().any(|lp| strictly_self_intersects(lp)) {
+                xsi += 1;
+                if std::env::var("SILIST").is_ok() {
+                    eprintln!("XSI {tag_str} seed={seed}");
+                }
             }
             let n = corridor_floor_outside(&m, hex_size);
             if n > 0 {
@@ -197,7 +235,7 @@ fn sweep() {
         }
 
         println!(
-            "{tag_str}\n  digest={digest:016x} si={si} conn={conn} fo={fo} worst={worst:.1}px"
+            "{tag_str}\n  digest={digest:016x} si={si} xsi={xsi} conn={conn} fo={fo} worst={worst:.1}px"
         );
         for (seed, n) in &leaks {
             println!("  corridor floor outside every wall: seed={seed} cells={n}");

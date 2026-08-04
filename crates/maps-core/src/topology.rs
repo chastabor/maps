@@ -14,7 +14,7 @@ use rand::seq::SliceRandom;
 /// The bound that makes a connection a *link* rather than an opening. One cell is the narrowest
 /// possible and matches what a doorway has always occupied, so it is where this starts; widening it
 /// widens every corridor in the map, which is a look decision rather than a correctness one.
-const CONNECTION_WIDTH: usize = 1;
+const CONNECTION_WIDTH: usize = 2;
 use std::collections::{BTreeMap, HashSet};
 
 /// One link between areas `a` and `b`, and the floor it occupies.

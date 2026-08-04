@@ -706,6 +706,20 @@ impl Areas {
         }
     }
 
+    /// Demote owned **room** floor to join floor: the cell keeps its owner and stays floor, but
+    /// leaves `room_cells`, so walls and the outline treat it as passage rather than room body.
+    ///
+    /// For a connection extending door-to-door through tiles that protrude beyond their room's
+    /// fitted border — the cell is already the room's, so this is a reclassification, not a
+    /// claim. The fitted shape is derived in `finalize` and is not refit afterwards, so demoting
+    /// later never moves a wall; it only hands the cell's boundary to the link's wall builder.
+    pub fn demote_to_join(&mut self, cells: &[Hex]) {
+        for &c in cells {
+            debug_assert!(self.owner.get(c).is_some());
+            self.join.insert(c);
+        }
+    }
+
     pub fn remove_from_area(&mut self, area: usize, remove: &[Hex]) {
         for &c in remove {
             self.owner.remove(c);

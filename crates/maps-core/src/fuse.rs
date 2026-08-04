@@ -642,6 +642,83 @@ fn hex_edge_walls(
     }
 }
 
+/// Stitch hex-edge segments that share endpoints into maximal polylines.
+///
+/// [`hex_edge_walls`] emits one two-point run per edge, and the renderer closes **each run as
+/// its own capsule** — outer line forward, inner offset back. Three consecutive edges of one
+/// cell therefore drew as three overlapping 12x7.2px wedges whose corners crossed instead of
+/// mitring: the "bowtie" tangle visible at every link mouth. Joined into one polyline, the
+/// renderer mitres the interior corners and draws one clean band.
+///
+/// Where two segments from **different cells** meet, the shared corner is kept twice — once
+/// with each cell's hexagon — which is exactly the coincident-vertex convention the renderer's
+/// mitre pass already handles for neck corners (`render`'s `wall_band_layer`). Same-cell
+/// segments merge into a single vertex.
+///
+/// Endpoints are compared exactly: both sides come out of `quantize_pt`, and the corner of a
+/// lattice cell is computed identically by each cell that shares it. Walking order is by
+/// segment index, so the output is seed-stable.
+fn stitch_hex_edges(segs: Vec<WallRun>) -> Vec<WallRun> {
+    let key = |p: Point| (p.0.to_bits(), p.1.to_bits());
+    let mut used = vec![false; segs.len()];
+    // Endpoint -> (segment, which end). Vec-scanned; a map would be faster but the pool is a
+    // handful of edges per map.
+    let mut out = Vec::new();
+    for start in 0..segs.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        // The chain under construction, as (point, shape) with the start segment's direction.
+        let mut chain: Vec<(Point, ruins::RuinShape)> = segs[start].clone();
+        // Extend at the tail, then at the head, until neither end continues.
+        loop {
+            let mut grew = false;
+            for i in 0..segs.len() {
+                if used[i] {
+                    continue;
+                }
+                let (a, b) = (segs[i][0], segs[i][1]);
+                let head = chain[0];
+                let tail = chain[chain.len() - 1];
+                let (attach_tail, next) = if key(a.0) == key(tail.0) {
+                    (true, b)
+                } else if key(b.0) == key(tail.0) {
+                    (true, a)
+                } else if key(a.0) == key(head.0) {
+                    (false, b)
+                } else if key(b.0) == key(head.0) {
+                    (false, a)
+                } else {
+                    continue;
+                };
+                used[i] = true;
+                grew = true;
+                let joint = if attach_tail { tail } else { head };
+                // Different owning cells: keep the corner twice, once per shape, so the
+                // renderer mitres the inner offset there instead of drooping.
+                let seam = next.1 != joint.1;
+                if attach_tail {
+                    if seam {
+                        chain.push((joint.0, next.1));
+                    }
+                    chain.push(next);
+                } else {
+                    if seam {
+                        chain.insert(0, (joint.0, next.1));
+                    }
+                    chain.insert(0, next);
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        out.push(chain);
+    }
+    out
+}
+
 /// The wall of every room-to-room **link**: its own floor's boundary, as hex edges.
 ///
 /// Tile-exact by construction, and the reason a link needs no fitted geometry at all. An edge of a
@@ -653,7 +730,10 @@ fn hex_edge_walls(
 fn link_walls(areas: &Areas, connections: &[crate::topology::Connection], s: f64) -> Vec<WallRun> {
     let mut out = Vec::new();
     for conn in connections {
-        let own: std::collections::HashSet<grid::Hex> = conn
+        // A `BTreeSet`, not a `HashSet`: the cells are iterated to emit wall runs, and hash
+        // order varies per process — harmless while a link was one cell, byte-nondeterministic
+        // the moment the apron made it two.
+        let own: std::collections::BTreeSet<grid::Hex> = conn
             .along
             .iter()
             .copied()
@@ -2037,8 +2117,12 @@ impl Fusion {
             .chain(topology.merged_doors.iter().map(|&(_, _, p)| p.center(s)))
             .collect();
         splice_necks(walls, &necks, &door_cells);
-        walls.extend(link_walls(areas, &topology.connections, s));
-        walls.extend(junction_walls(areas, s));
+        // Links and junctions stitch as ONE pool: a link's chain continues across an adjacent
+        // junction cell, so the two sections' walls join where they meet instead of each
+        // stopping at its own boundary.
+        let mut hex_segs = link_walls(areas, &topology.connections, s);
+        hex_segs.extend(junction_walls(areas, s));
+        walls.extend(stitch_hex_edges(hex_segs));
         // Clip every wall against the rooms it runs into. A corridor is built from the tiles the
         // two rooms share — room tiles — so its walls start out running inside both rooms, and a
         // fused pair's two borders overlap by construction. Neither stretch is wall: it is open

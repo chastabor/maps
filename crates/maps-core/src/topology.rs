@@ -50,6 +50,12 @@ pub struct Connection {
     pub b: usize,
     /// Whether a door leaf is drawn across it. A corridor is a connection without one.
     pub doored: bool,
+    /// Where the **apron** starts in [`Self::along`]: cells before this index are the free-cell
+    /// run, cells from it on are protruding room tiles the passage crosses to reach a fitted
+    /// border (see `extend_to_border`). The boundary treats the two differently — a free link
+    /// cell breaks the wall band, an apron cell is half the room's and the band must flow
+    /// through it — so the split is recorded where it is decided.
+    pub apron_from: usize,
 }
 
 impl Connection {
@@ -79,6 +85,76 @@ pub struct Topology {
     /// `outline::floor_and_narrow` fills the pillar cell so the wide opening is
     /// backed by continuous floor.
     pub merged_doors: Vec<(usize, usize, Hex)>,
+}
+
+/// The apron a connection needs on a side whose fitted border its free cells never reach:
+/// the protruding room tiles the passage crosses before the border can cap it.
+///
+/// Decided **per side**. A side where the run already touches floor the fitted shape covers has
+/// its door on the border and needs nothing. A side reachable only through protruding tiles
+/// (a rect fitted to whole columns leaves stragglers outside it) gets exactly ONE ray — the
+/// shortest straight walk from a run cell through that side's protruding floor that ends at a
+/// covered cell. Straight and single on purpose: the passage is a line. The first attempt
+/// accepted every direction's ray, which absorbed the diagonal half-covered stragglers flanking
+/// the mouth at 39% of connections and tripled `si` — each became a locked join bulge the
+/// outline had to pinch around.
+fn extend_to_border(areas: &Areas, conn: &Connection, s: f64) -> Vec<Hex> {
+    let covered = |h: Hex, side: usize| {
+        areas.owner_of(h) == Some(side)
+            && !areas.is_join(h)
+            && areas
+                .shape(side)
+                // Covered means the border reaches at least the cell's centre. Shrink by half
+                // a pixel so a centre exactly ON the border (a tile-bounded fit puts them
+                // there) still reads as protruding.
+                .is_some_and(|sh| sh.shrink(0.5).contains(h.center(s)))
+    };
+    let protruding = |h: Hex, side: usize| {
+        areas.owner_of(h) == Some(side) && !areas.is_join(h) && !covered(h, side)
+    };
+    let mut ext: Vec<Hex> = Vec::new();
+    for side in [conn.a, conn.b] {
+        if areas.shape(side).is_none() {
+            continue; // no fitted border to reach
+        }
+        let has_door = conn
+            .along
+            .iter()
+            .any(|c| c.neighbors().into_iter().any(|nb| covered(nb, side)));
+        if has_door {
+            continue;
+        }
+        // Shortest accepted ray; ties broken by run order then neighbour order, so the choice
+        // is seed-stable.
+        let mut best: Option<Vec<Hex>> = None;
+        for &c in &conn.along {
+            for nb in c.neighbors() {
+                let (dq, dr) = (nb.q - c.q, nb.r - c.r);
+                let mut ray: Vec<Hex> = Vec::new();
+                let mut cur = nb;
+                for _ in 0..3 {
+                    if covered(cur, side) {
+                        if best.as_ref().is_none_or(|b| ray.len() < b.len()) && !ray.is_empty() {
+                            best = Some(ray);
+                        }
+                        break;
+                    }
+                    if !protruding(cur, side) {
+                        break;
+                    }
+                    ray.push(cur);
+                    cur = Hex {
+                        q: cur.q + dq,
+                        r: cur.r + dr,
+                    };
+                }
+            }
+        }
+        if let Some(ray) = best {
+            ext.extend(ray);
+        }
+    }
+    ext
 }
 
 pub fn build<R: Rng>(
@@ -141,12 +217,14 @@ pub fn build<R: Rng>(
                 };
                 along.push(next);
             }
+            let apron_from = along.len();
             Connection {
                 across,
                 along,
                 a,
                 b,
                 doored: true,
+                apron_from,
             }
         })
         .collect();
@@ -166,9 +244,22 @@ pub fn build<R: Rng>(
     // Last in `build` on purpose, so `shrink_corridors` and `merged_pillar_pairs` still see the free
     // cells they were written against. Claimed for `a` arbitrarily: `join` keeps the run out of
     // `room_cells`, so ownership only decides whose cell list carries it.
-    for c in &connections {
+    let mut connections = connections;
+    for c in &mut connections {
         if areas.kind(c.a) == AreaKind::Dungeon && areas.kind(c.b) == AreaKind::Dungeon {
             areas.claim_join(c.a, &c.along);
+            // Door-to-door: the free cells end at the first floor cell, but the passage
+            // geometrically continues through any room tiles that protrude beyond their fitted
+            // border (a rect fitted to whole tile columns leaves stragglers outside it). Those
+            // tiles are part of the section: demoted to join floor and appended, so the link's
+            // walls run through them and end ON the fitted border — the cap. Without this, the
+            // protruding stretch belonged to nobody's wall: one of its rock edges happened to be
+            // spliced into the room's run, the other stayed open (seed 10970555968995476422,
+            // 3D<->4D, the reported "blowline").
+            let ext = extend_to_border(areas, c, s);
+            areas.demote_to_join(&ext);
+            c.apron_from = c.along.len();
+            c.along.extend(ext);
         }
     }
 

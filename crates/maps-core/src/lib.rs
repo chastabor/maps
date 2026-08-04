@@ -440,7 +440,11 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         join_cells.insert(cell, outline::JoinKind::Junction);
     }
     for c in &topology.connections {
-        for &cell in &c.along {
+        // Free-run cells only, NOT the apron: an apron cell is a room tile half-covered by the
+        // fitted border, and locking it as a band-breaking `Link` pinched the outline there
+        // (measured: si tripled). It stays a `Seam` — splicable, the band flows through — while
+        // the link's walls still run through it, because `link_walls` reads `along` whole.
+        for &cell in &c.along[..c.apron_from] {
             // Only where the floor was actually claimed. A connection whose run was not reserved —
             // an organic one, which has no wall to build — is a plain free gap cell, not a join at
             // all, and marking it `Link` would lock an organic doorway onto the lattice.
@@ -469,8 +473,14 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
     // connector is a wall shape with no perimeter — rather than a list of hall variants to
     // keep in step with the enum. `clean_shapes` is only ever scanned linearly by
     // `decor::wall_clean`, so deduping into it directly needs no second vector.
+    // `HexCell` too, by name: a link's or junction's wall is drawn dungeon geometry exactly like
+    // a connector's, but it fails the no-perimeter test (`HexCell::perimeter()` is `Some` — the
+    // outline needs it to project). Every `HexCell` in the wall layer is dungeon-owned join
+    // geometry, so the hatching pass must treat it as clean; left out, a link's walls grew
+    // organic hatch fans while its floor and border drew as dungeon.
     for sh in dungeon_walls.iter().flatten().map(|&(_, sh)| sh) {
-        if sh.perimeter().is_none() && !clean_shapes.contains(&sh) {
+        let hall = sh.perimeter().is_none() || matches!(sh, ruins::RuinShape::HexCell { .. });
+        if hall && !clean_shapes.contains(&sh) {
             clean_shapes.push(sh);
         }
     }

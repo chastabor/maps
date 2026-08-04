@@ -2142,6 +2142,65 @@ impl Fusion {
             .iter()
             .flat_map(|run| crate::clip::split_outside(run, &rooms, 1.0))
             .collect();
+        // UNFUSED circle pairs whose fitted borders overlap (a rock tile keeps their floors
+        // apart, but each circle was fitted over its own tiles and the two disks intersect):
+        // the lens where they cross drew as two arcs crossing into an unreadable sliver. Their
+        // junction is a border crossing like any seam's — a point, not a chord — so each wall
+        // is cut where it runs inside the other circle and ends on the crossing. Margin 0.2,
+        // not the pass above's 1.0: the lens is often shallower than 1px so the arcs survived
+        // that pass, while 0.2 still clears quantization dust (±0.05px) so a circle's own wall
+        // and doorway ends exactly ON a border are never nicked.
+        let fused: std::collections::HashSet<(usize, usize)> = fuse_pairs(areas)
+            .iter()
+            .map(|&(a, b, _)| (a.min(b), a.max(b)))
+            .collect();
+        let circles: Vec<(usize, ruins::RuinShape)> = (0..areas.count())
+            .filter_map(|i| match areas.shape(i) {
+                Some(sh @ ruins::RuinShape::Circle { .. }) => Some((i, sh)),
+                _ => None,
+            })
+            .collect();
+        let mut lens: Vec<ruins::RuinShape> = Vec::new();
+        for i in 0..circles.len() {
+            for j in i + 1..circles.len() {
+                let (
+                    ia,
+                    ruins::RuinShape::Circle {
+                        cx: ax,
+                        cy: ay,
+                        r: ar,
+                    },
+                ) = circles[i]
+                else {
+                    continue;
+                };
+                let (
+                    ib,
+                    ruins::RuinShape::Circle {
+                        cx: bx,
+                        cy: by,
+                        r: br,
+                    },
+                ) = circles[j]
+                else {
+                    continue;
+                };
+                let overlap = (ax - bx).hypot(ay - by) < ar + br;
+                if overlap && !fused.contains(&(ia.min(ib), ia.max(ib))) {
+                    for sh in [circles[i].1, circles[j].1] {
+                        if !lens.contains(&sh) {
+                            lens.push(sh);
+                        }
+                    }
+                }
+            }
+        }
+        if !lens.is_empty() {
+            *walls = walls
+                .iter()
+                .flat_map(|run| crate::clip::split_outside(run, &lens, 0.2))
+                .collect();
+        }
         commit_join_floor(areas, walls, s);
     }
 }

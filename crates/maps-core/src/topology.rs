@@ -87,6 +87,33 @@ pub struct Topology {
     pub merged_doors: Vec<(usize, usize, Hex)>,
 }
 
+/// Whether this candidate's passage would land on a rectangle's corner.
+///
+/// Tested per side: the cell's centre projected onto the side's fitted border; if the landing
+/// point lies within half a mouth (one apothem) of a rect corner, the opening would span the
+/// arris. Circles have no corners and never reject.
+fn corner_bound(areas: &Areas, h: Hex, a: usize, b: usize, s: f64) -> bool {
+    let p = h.center(s);
+    [a, b].into_iter().any(|side| {
+        let Some(crate::ruins::RuinShape::Rect { cx, cy, hw, hh }) = areas.shape(side) else {
+            return false;
+        };
+        let land = (
+            cx + (p.0 - cx).clamp(-hw, hw),
+            cy + (p.1 - cy).clamp(-hh, hh),
+        );
+        let half_mouth = crate::grid::HEX_APOTHEM * s;
+        [
+            (cx - hw, cy - hh),
+            (cx + hw, cy - hh),
+            (cx - hw, cy + hh),
+            (cx + hw, cy + hh),
+        ]
+        .into_iter()
+        .any(|c| (land.0 - c.0).hypot(land.1 - c.1) < half_mouth)
+    })
+}
+
 /// The apron a connection needs on a side whose fitted border its free cells never reach:
 /// the protruding room tiles the passage crosses before the border can cap it.
 ///
@@ -174,8 +201,22 @@ pub fn build<R: Rng>(
         .iter()
         .map(|&(ga, gb)| {
             let cands = &pairs[&(ga, gb)];
-            // The RNG draw is unchanged and stays first: everything below is derived from the
-            // cell it picks, so the stream is untouched.
+            // A candidate whose passage lands on a rectangle's CORNER is dropped before the
+            // draw: the mouth spans the arris, and the wall band squeezed between the corner
+            // and the corridor is a sliver no one can walk or read (the width-2 gallery's red
+            // corrections, examples 1 and 3). A doorway close to a corner but flush on one
+            // wall — the slight endcap case — stays. If every candidate is corner-bound the
+            // least-bad one is kept, so a pair is never disconnected by the filter.
+            let filtered: Vec<(Hex, usize, usize)> = cands
+                .iter()
+                .copied()
+                .filter(|&(h, a, b)| !corner_bound(areas, h, a, b, s))
+                .collect();
+            let cands: &[(Hex, usize, usize)] = if filtered.is_empty() {
+                cands
+            } else {
+                &filtered
+            };
             let (cell, a, b) = cands[rng.random_range(0..cands.len())];
             // The connection's whole run, not just the cell the leaf spans: the contiguous stretch
             // of candidate cells joining these same two AREAS at this same place. A group pair can

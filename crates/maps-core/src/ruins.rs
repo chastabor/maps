@@ -436,6 +436,35 @@ impl RuinShape {
         }
     }
 
+    /// The wall point nearest `p` — the point form of [`wall_dist`](Self::wall_dist), kept
+    /// beside it so the two can never disagree about which wall a point belongs to.
+    ///
+    /// NOT [`project`](Self::project): project's interior-Rect case pushes along the centre
+    /// ray on purpose (outline tracing wants the diagonal cut), which can land far down the
+    /// wall from the nearest point — measured sliding a corridor landing 30px. `wall_dist`
+    /// stays closed-form rather than deferring here: its Rect arm is arithmetic the decor
+    /// thresholds compare against, and reordering float operations there would churn digests
+    /// for no functional change.
+    pub fn nearest_on_wall(&self, p: Point) -> Point {
+        match *self {
+            RuinShape::Rect { cx, cy, hw, hh } => {
+                let (dx, dy) = (p.0 - cx, p.1 - cy);
+                if dx.abs() > hw || dy.abs() > hh {
+                    // Exterior: same clamp as `project`.
+                    return self.project(p);
+                }
+                // Interior: snap the single coordinate whose edge is closest.
+                if hw - dx.abs() <= hh - dy.abs() {
+                    (cx + hw.copysign(dx), p.1)
+                } else {
+                    (p.0, cy + hh.copysign(dy))
+                }
+            }
+            // Every other wall is an equidistant locus: projection IS the nearest point.
+            _ => self.project(p),
+        }
+    }
+
     /// The room shape offset inward by `d`: the locus of points `d` inside
     /// the wall. Strokes of width `2d` centred on it span exactly from the
     /// wall to `2d` inside — the inward-thick dungeon wall band, whose outer

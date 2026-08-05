@@ -642,6 +642,21 @@ impl Areas {
     }
 
     /// Whether `c` is fusion-corridor floor rather than part of any room.
+    /// Whether `h` is **room floor** of area `i`: owned by it and not join floor. The
+    /// pointwise form of [`room_cells`](Self::room_cells) — join floor belongs to the
+    /// passage that claimed it, never to the room, and every geometric consumer of "the
+    /// room's own floor" means exactly this predicate.
+    pub fn is_room_floor(&self, i: usize, h: Hex) -> bool {
+        self.owner_of(h) == Some(i) && !self.is_join(h)
+    }
+
+    /// Area `i`'s fitted **room border**, if it has one: a shape with a perimeter. A
+    /// hall-shaped area (`perimeter()` is `None`) has connector geometry, not a wall a
+    /// passage could land on, and an organic area has no shape at all — both answer `None`.
+    pub fn room_border(&self, i: usize) -> Option<RuinShape> {
+        self.shape(i).filter(|sh| sh.perimeter().is_some())
+    }
+
     pub fn is_join(&self, c: Hex) -> bool {
         self.join.contains(&c)
     }

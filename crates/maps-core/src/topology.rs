@@ -131,7 +131,7 @@ fn widen_mouths(areas: &Areas, conn: &mut Connection, _s: f64) {
                 .filter(|cell| {
                     cell.neighbors()
                         .iter()
-                        .any(|n| areas.owner_of(*n) == Some(side) && !areas.is_join(*n))
+                        .any(|n| areas.is_room_floor(side, *n))
                 })
                 .count();
             if touching >= CONNECTION_WIDTH {
@@ -143,11 +143,7 @@ fn widen_mouths(areas: &Areas, conn: &mut Connection, _s: f64) {
                 .iter()
                 .flat_map(|cell| cell.neighbors())
                 .filter(|n| areas.owner_of(*n).is_none() && !conn.along.contains(n))
-                .filter(|n| {
-                    n.neighbors()
-                        .iter()
-                        .any(|m| areas.owner_of(*m) == Some(side) && !areas.is_join(*m))
-                })
+                .filter(|n| n.neighbors().iter().any(|m| areas.is_room_floor(side, *m)))
                 .min_by_key(|n| (n.distance(anchor), n.q, n.r));
             let Some(add) = cand else { break };
             conn.along.insert(conn.apron_from, add);
@@ -169,8 +165,7 @@ fn widen_mouths(areas: &Areas, conn: &mut Connection, _s: f64) {
 /// outline had to pinch around.
 fn extend_to_border(areas: &Areas, conn: &Connection, s: f64) -> Vec<Hex> {
     let covered = |h: Hex, side: usize| {
-        areas.owner_of(h) == Some(side)
-            && !areas.is_join(h)
+        areas.is_room_floor(side, h)
             && areas
                 .shape(side)
                 // Covered means the border reaches at least the cell's centre. Shrink by half
@@ -178,9 +173,7 @@ fn extend_to_border(areas: &Areas, conn: &Connection, s: f64) -> Vec<Hex> {
                 // there) still reads as protruding.
                 .is_some_and(|sh| sh.shrink(0.5).contains(h.center(s)))
     };
-    let protruding = |h: Hex, side: usize| {
-        areas.owner_of(h) == Some(side) && !areas.is_join(h) && !covered(h, side)
-    };
+    let protruding = |h: Hex, side: usize| areas.is_room_floor(side, h) && !covered(h, side);
     let mut ext: Vec<Hex> = Vec::new();
     for side in [conn.a, conn.b] {
         if areas.shape(side).is_none() {

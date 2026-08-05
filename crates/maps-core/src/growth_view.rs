@@ -126,11 +126,6 @@ fn shape_path(sh: RuinShape, stroke: &str, width: f64) -> String {
 /// Render growth's output: tiles, their owning area, and the shape derived from them.
 ///
 /// See the module docs for what each layer means. `labels` adds the per-area `5D/v4hf` tag.
-/// Room floor of `side` as the corridor overlay needs it: owned and not join.
-fn room_floor_view(map: &CaveMap, side: usize, h: Hex) -> bool {
-    map.areas.owner_of(h) == Some(side) && !map.areas.is_join(h)
-}
-
 pub fn growth_svg(map: &CaveMap, labels: bool) -> String {
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for &h in map.grid.cells() {
@@ -300,148 +295,7 @@ pub fn growth_svg(map: &CaveMap, labels: bool) -> String {
     }
     s.push_str("</g>");
 
-    // ------------------------------------------------------------------
-    // Corridor overlay — `plans/tile-corridor-render.md` phase 0.
-    //
-    // The acceptance test for `corridor::corridors`: drawn so the derivation can be compared
-    // arrow-for-arrow against the hand-annotated reference (`samples/grow-tile-render.png`).
-    // Per tile, one yellow double-headed arrow from the centre toward each side the passage
-    // uses; a tile whose contact with a room collapses (R3) aims those arrows at the shared
-    // corner instead. Red marks are the landings: bars along touched edges projected on the
-    // fitted border, dots where a tile's contact collapsed to a point.
-    {
-        let cors = crate::corridor::corridors(&map.areas, &map.topology.connections, S);
-        s.push_str(
-            r##"<g stroke="#ffd23f" stroke-width="1.4" fill="none" stroke-linecap="round">"##,
-        );
-        let mut marks = String::new();
-        // A head at `to`, aimed along from->to.
-        let head = |s: &mut String, from: (f64, f64), to: (f64, f64)| {
-            let d = (to.0 - from.0, to.1 - from.1);
-            let len = d.0.hypot(d.1).max(1e-6);
-            let (u, n) = ((d.0 / len, d.1 / len), (-d.1 / len, d.0 / len));
-            for sgn in [1.0, -1.0] {
-                let _ = write!(
-                    s,
-                    r##"<path d="M{} {}L{} {}"/>"##,
-                    d1(to.0 - u.0 * 3.0 + n.0 * 3.0 * sgn),
-                    d1(to.1 - u.1 * 3.0 + n.1 * 3.0 * sgn),
-                    d1(to.0),
-                    d1(to.1)
-                );
-            }
-        };
-        let arrow = |s: &mut String, from: (f64, f64), to: (f64, f64)| {
-            let _ = write!(
-                s,
-                r##"<path d="M{} {}L{} {}"/>"##,
-                d1(from.0),
-                d1(from.1),
-                d1(to.0),
-                d1(to.1)
-            );
-            head(s, from, to);
-            head(s, to, from);
-        };
-        for cor in &cors {
-            for ax in &cor.axes {
-                let c = ax.tile.center(S);
-                let corners = ax.tile.corners(S);
-                let mid = |k: usize| {
-                    (
-                        (corners[k].0 + corners[(k + 1) % 6].0) / 2.0,
-                        (corners[k].1 + corners[(k + 1) % 6].1) / 2.0,
-                    )
-                };
-                // Per-tile collapse corner toward one room (R3): two adjacent sides touching
-                // that room share it.
-                let collapse = |room: usize| {
-                    let touching: Vec<usize> = (0..6)
-                        .filter(|&k| room_floor_view(map, room, ax.tile.neighbors()[k]))
-                        .collect();
-                    touching
-                        .iter()
-                        .find(|&&k| touching.contains(&((k + 1) % 6)))
-                        .map(|&k| corners[(k + 1) % 6])
-                };
-                let (col_a, col_b) = (collapse(cor.a), collapse(cor.b));
-                let end = |k: usize, room: usize, col: Option<(f64, f64)>| {
-                    if room_floor_view(map, room, ax.tile.neighbors()[k]) {
-                        col.unwrap_or(mid(k))
-                    } else {
-                        mid(k)
-                    }
-                };
-                // R1: every opposite pairing gets a straight double arrow. R2: no opposite
-                // pairing exists, so ONE bent arrow through the centre, widest span wins.
-                let straights: Vec<(usize, usize)> = (0..6)
-                    .filter(|&k| ax.toward_a[k] && ax.toward_b[(k + 3) % 6])
-                    .map(|k| (k, (k + 3) % 6))
-                    .collect();
-                if straights.is_empty() {
-                    type Bend = ((f64, f64), (f64, f64), f64);
-                    let mut best: Option<Bend> = None;
-                    for k in (0..6).filter(|&k| ax.toward_a[k]) {
-                        for m in (0..6).filter(|&m| ax.toward_b[m]) {
-                            let pa = end(k, cor.a, col_a);
-                            let pb = end(m, cor.b, col_b);
-                            let d = (pa.0 - pb.0).hypot(pa.1 - pb.1);
-                            if best.is_none_or(|(_, _, bd)| d > bd) {
-                                best = Some((pa, pb, d));
-                            }
-                        }
-                    }
-                    if let Some((pa, pb, _)) = best {
-                        let _ = write!(
-                            s,
-                            r##"<path d="M{} {}L{} {}L{} {}"/>"##,
-                            d1(pa.0),
-                            d1(pa.1),
-                            d1(c.0),
-                            d1(c.1),
-                            d1(pb.0),
-                            d1(pb.1)
-                        );
-                        head(&mut s, c, pa);
-                        head(&mut s, c, pb);
-                    }
-                } else {
-                    // A through tile is a LANE: its arrows run across the flats at the edge
-                    // midpoints, even when the room contact is multi-side. The collapse
-                    // point only captures arrows that BEND into a multi-side contact.
-                    for (k, m) in straights {
-                        arrow(&mut s, mid(k), mid(m));
-                    }
-                }
-            }
-            for att in &cor.attach {
-                for m in &att.marks {
-                    match m {
-                        crate::corridor::Mark::Point(p) => {
-                            let _ = write!(
-                                marks,
-                                r##"<circle cx="{}" cy="{}" r="2.4" fill="#ff2d2d" stroke="none"/>"##,
-                                d1(p.0),
-                                d1(p.1)
-                            );
-                        }
-                        crate::corridor::Mark::Bar(p, q) => {
-                            let _ = write!(
-                                marks,
-                                r##"<path d="M{} {}L{} {}" stroke="#ff2d2d" stroke-width="2.2" fill="none"/>"##,
-                                d1(p.0),
-                                d1(p.1),
-                                d1(q.0),
-                                d1(q.1)
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        s.push_str("</g>");
-        s.push_str(&marks);
-    }
+    corridor_overlay(map, &mut s);
 
     if labels {
         let _ = write!(
@@ -486,4 +340,171 @@ pub fn growth_svg(map: &CaveMap, labels: bool) -> String {
 
     s.push_str("</svg>");
     s
+}
+
+/// A head at `to`, aimed along `from -> to`.
+fn arrow_head(s: &mut String, from: (f64, f64), to: (f64, f64)) {
+    let d = (to.0 - from.0, to.1 - from.1);
+    let len = d.0.hypot(d.1).max(1e-6);
+    let (u, n) = ((d.0 / len, d.1 / len), (-d.1 / len, d.0 / len));
+    for sgn in [1.0, -1.0] {
+        let _ = write!(
+            s,
+            r##"<path d="M{} {}L{} {}"/>"##,
+            d1(to.0 - u.0 * 3.0 + n.0 * 3.0 * sgn),
+            d1(to.1 - u.1 * 3.0 + n.1 * 3.0 * sgn),
+            d1(to.0),
+            d1(to.1)
+        );
+    }
+}
+
+/// A double-headed straight arrow.
+fn arrow(s: &mut String, from: (f64, f64), to: (f64, f64)) {
+    let _ = write!(
+        s,
+        r##"<path d="M{} {}L{} {}"/>"##,
+        d1(from.0),
+        d1(from.1),
+        d1(to.0),
+        d1(to.1)
+    );
+    arrow_head(s, from, to);
+    arrow_head(s, to, from);
+}
+
+/// Corridor overlay — `plans/tile-corridor-render.md` phases 0-1.
+///
+/// The acceptance surface for `corridor::corridors`, compared arrow-for-arrow against the
+/// hand-annotated reference (`samples/grow-tile-render.png`). Everything here is READ from
+/// the model — the overlay validates the derivation, so it must not re-derive any fact
+/// itself. Yellow double arrows are per-tile axes (straight lanes when an opposite pairing
+/// exists, one bent arrow otherwise, bending into a tile's collapse corner per R3); red
+/// marks are the landings; green is the phase-1 spine.
+fn corridor_overlay(map: &CaveMap, s: &mut String) {
+    use crate::corridor::{Mark, TileAxis, corridors};
+    let cors = corridors(&map.areas, &map.topology.connections, S);
+    s.push_str(r##"<g stroke="#ffd23f" stroke-width="1.4" fill="none" stroke-linecap="round">"##);
+    let mut marks = String::new();
+    for cor in &cors {
+        for (tile, ax) in cor.tiles.iter().zip(&cor.axes) {
+            let c = tile.center(S);
+            let corners = tile.corners(S);
+            let mid = |k: usize| {
+                (
+                    (corners[k].0 + corners[(k + 1) % 6].0) / 2.0,
+                    (corners[k].1 + corners[(k + 1) % 6].1) / 2.0,
+                )
+            };
+            let (col_a, col_b) = (
+                TileAxis::collapse(&ax.touch_a).map(|c| corners[c]),
+                TileAxis::collapse(&ax.touch_b).map(|c| corners[c]),
+            );
+            // A bent arrow's endpoint: the tile's collapse corner when this side touches
+            // the room and the contact collapsed, else the edge midpoint.
+            let end = |k: usize, touch: &[bool; 6], col: Option<(f64, f64)>| {
+                if touch[k] {
+                    col.unwrap_or(mid(k))
+                } else {
+                    mid(k)
+                }
+            };
+            // R1: every opposite pairing is a straight LANE at the edge midpoints, even
+            // when room contact is multi-side. R2: otherwise ONE bent arrow through the
+            // centre, widest span winning, bending into collapse corners (R3).
+            let straights: Vec<(usize, usize)> = (0..6)
+                .filter(|&k| ax.toward_a[k] && ax.toward_b[(k + 3) % 6])
+                .map(|k| (k, (k + 3) % 6))
+                .collect();
+            if straights.is_empty() {
+                type Bend = ((f64, f64), (f64, f64), f64);
+                let mut best: Option<Bend> = None;
+                for k in (0..6).filter(|&k| ax.toward_a[k]) {
+                    for m in (0..6).filter(|&m| ax.toward_b[m]) {
+                        let pa = end(k, &ax.touch_a, col_a);
+                        let pb = end(m, &ax.touch_b, col_b);
+                        let d = (pa.0 - pb.0).hypot(pa.1 - pb.1);
+                        if best.is_none_or(|(_, _, bd)| d > bd) {
+                            best = Some((pa, pb, d));
+                        }
+                    }
+                }
+                if let Some((pa, pb, _)) = best {
+                    let _ = write!(
+                        s,
+                        r##"<path d="M{} {}L{} {}L{} {}"/>"##,
+                        d1(pa.0),
+                        d1(pa.1),
+                        d1(c.0),
+                        d1(c.1),
+                        d1(pb.0),
+                        d1(pb.1)
+                    );
+                    arrow_head(s, c, pa);
+                    arrow_head(s, c, pb);
+                }
+            } else {
+                for (k, m) in straights {
+                    arrow(s, mid(k), mid(m));
+                }
+            }
+        }
+        for att in &cor.attach {
+            for (_, m) in att {
+                match m {
+                    Mark::Point(p) => {
+                        let _ = write!(
+                            marks,
+                            r##"<circle cx="{}" cy="{}" r="2.4" fill="#ff2d2d" stroke="none"/>"##,
+                            d1(p.0),
+                            d1(p.1)
+                        );
+                    }
+                    Mark::Bar(p, q) => {
+                        let _ = write!(
+                            marks,
+                            r##"<path d="M{} {}L{} {}" stroke="#ff2d2d" stroke-width="2.2" fill="none"/>"##,
+                            d1(p.0),
+                            d1(p.1),
+                            d1(q.0),
+                            d1(q.1)
+                        );
+                    }
+                }
+            }
+        }
+    }
+    s.push_str("</g>");
+    s.push_str(&marks);
+    // Phase 1: the corridor spine. Green so it reads over the yellow arrows; dots at the
+    // waypoints. Must be continuous, inside the corridor's tiles, and end on both fitted
+    // borders — judged by eye against the same reference.
+    s.push_str(r##"<g stroke="#37e6a0" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-opacity="0.95">"##);
+    for cor in &cors {
+        if cor.centerline.len() < 2 {
+            continue;
+        }
+        let mut d = String::new();
+        for (k, p) in cor.centerline.iter().enumerate() {
+            let _ = write!(
+                d,
+                "{}{} {}",
+                if k == 0 { "M" } else { "L" },
+                d1(p.0),
+                d1(p.1)
+            );
+        }
+        let _ = write!(s, r##"<path d="{d}"/>"##);
+    }
+    s.push_str("</g>");
+    for cor in &cors {
+        for p in &cor.centerline {
+            let _ = write!(
+                s,
+                r##"<circle cx="{}" cy="{}" r="1.6" fill="#37e6a0" stroke="none"/>"##,
+                d1(p.0),
+                d1(p.1)
+            );
+        }
+    }
 }

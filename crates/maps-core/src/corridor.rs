@@ -97,40 +97,43 @@ pub struct Corridor {
 }
 
 impl Corridor {
-    /// Phase 2: the corridor's two walls, `[a-side, b-side]` of the spine, as segments on the
-    /// **outer apothem lines of the tiles the corridor occupies** — a dungeon rectangle laid
-    /// over the joining tiles, not an offset from the spine.
+    /// Phase 2: the corridor's two walls, `[low, high]` across the passage, as straight
+    /// segments on **lattice lines through the tiles the corridor occupies** — a dungeon
+    /// rectangle laid over the joining tiles, not an offset from the spine.
     ///
     /// The lattice, not the spine, fixes where a wall may sit. Offsetting the centerline put
-    /// the wall wherever the arithmetic landed, off the tile edges entirely; following the
-    /// tile boundary instead chevrons, because perpendicular to travel a pointy-top hex
-    /// presents two edges meeting at a vertex. Both were wrong for the same reason: a
-    /// corridor wall belongs on a line the lattice already contains.
+    /// walls wherever the arithmetic landed, off the tile edges entirely; following the tile
+    /// boundary instead chevrons, because across travel a pointy-top hex presents two edges
+    /// meeting at a vertex. A pointy-top lattice offers a line every 30 degrees, because it has
+    /// three axis families 60 degrees apart and each contributes two perpendicular side
+    /// directions:
     ///
-    /// So the walls are two sides of the box the tiles inscribe, exactly as `derive_shape`
-    /// lays a dungeon rect — the vertical sides one **apothem** beyond the outermost tile
-    /// centres (those lines carry the tiles' own vertical edges), the horizontal sides half a
-    /// hex beyond the outermost row centres (the shoulder vertices, leaving the row peaks
-    /// out, which is R4's "slivers are left out"). Travel picks which pair is wall: the pair
-    /// running along the passage.
+    /// - `30 / 90 / 150` — lines carrying actual hex EDGES         -> pad one apothem
+    /// - `0 / 60 / 120`  — lines through the shoulder VERTEX pairs -> pad half a hex
     ///
-    /// Each wall is then trimmed to the two rooms' borders via
-    /// [`segment_crossings`](crate::ruins::RuinShape::segment_crossings), so it caps flush on
-    /// both by construction — no corner expansion, no stitching, no per-edge runs.
+    /// (The 0-degree case is the familiar dungeon rect: vertical sides on the tiles' own edge
+    /// lines, top and bottom at the shoulders with the row peaks left outside, per R4.)
+    ///
+    /// **Length comes from the two room borders, never from the tiles.** A corridor whose tiles
+    /// sit side by side *across* the wall has zero tile extent *along* it — measured on
+    /// 5D<->6D, where both tiles project to -36.0 — so deriving the span from the tiles
+    /// collapsed the wall to a point. Each wall runs from one room's border crossing to the
+    /// other's, which is also what makes the caps structural.
+    ///
+    /// **The caps are the exact crossing points, so wall and border meet at a sharp corner.**
+    /// Nothing here chamfers: a cut corner would leave no square jamb for a door to sit in.
     pub fn walls(&self, areas: &Areas, s: f64) -> [Vec<Point>; 2] {
         let c = &self.centerline;
         if c.len() < 2 || self.tiles.is_empty() {
             return [Vec::new(), Vec::new()];
         }
         let ap = crate::grid::HEX_APOTHEM * s;
-        // Travel comes from the AXES — the arrows — not from the spine's endpoints. A
-        // through tile pairs side `k` toward one room with side `k+3` toward the other (R1),
-        // and neighbour `k` lies at `-60k` degrees, so the pairing names the passage's lattice
-        // direction exactly. The spine's end-to-end vector only approximates it: on a two-tile
-        // corridor the entry and exit anchors sit on different tiles, tilting the vector off
-        // axis, which walled the horizontal 4D<->9D passage diagonally.
-        let axis_dir = {
-            let mut votes = [0usize; 6];
+        // Travel comes from the AXES — the arrows — not from the spine's endpoints. A through
+        // tile pairs side `k` toward one room with side `k+3` toward the other (R1), so the
+        // pairing names the passage's lattice direction exactly; the spine's end-to-end vector
+        // only approximates it, and on a two-tile corridor it tilts off axis.
+        let travel = {
+            let mut votes = [0usize; 3];
             for ax in &self.axes {
                 for k in 0..6 {
                     if ax.toward_a[k] && ax.toward_b[(k + 3) % 6] {
@@ -138,40 +141,52 @@ impl Corridor {
                     }
                 }
             }
-            (0..3)
-                .filter(|&k| votes[k] > 0)
-                .max_by_key(|&k| (votes[k], std::cmp::Reverse(k)))
-        };
-        let travel = match axis_dir {
-            Some(k) => {
-                // NEGATIVE k: `grid::HEX_DIRS` runs CLOCKWISE — `(+1,-1)` is at -60 degrees,
-                // not +60 — so neighbour `k` lies at `-60k`. Using `+60k` swapped the two
-                // diagonal families with each other, walling 100<->4D along 1D<->7D's axis
-                // and vice versa while leaving the axis-aligned passages looking right.
-                let ang = -(k as f64) * std::f64::consts::PI / 3.0;
-                (ang.cos(), ang.sin())
+            // Family `k` travels at `-60k` degrees: `grid::HEX_DIRS` runs CLOCKWISE, so
+            // neighbour `k` lies at `-60k`. (`+60k` swapped the two diagonal families with each
+            // other, walling 100<->4D along 1D<->7D's axis and vice versa.)
+            let dir = |k: usize| {
+                let a = -(k as f64) * std::f64::consts::PI / 3.0;
+                (a.cos(), a.sin())
+            };
+            let top = votes.iter().copied().max().unwrap_or(0);
+            let winners: Vec<usize> = (0..3).filter(|&k| votes[k] == top).collect();
+            match (top, winners.as_slice()) {
+                (_, [k]) if top > 0 => dir(*k),
+                // A TIE means the corridor bends: its tiles pair on two different axes. Take
+                // the AVERAGE of the two travel directions by summing the unit vectors, which
+                // bisects them. The bisector sits 30 degrees off each, so it lands on a
+                // tile-EDGE line rather than a shoulder line and pads by a full apothem —
+                // which is also the WIDEST lane the tiles contain. Measured on 5D<->6D, the tie
+                // this rule exists for: 30.0px on family 0, 38.8px on family 1, 12.0px on
+                // family 2, and 41.6px on the averaged edge line.
+                (_, [i, j]) if top > 0 => {
+                    let (a, b) = (dir(*i), dir(*j));
+                    (a.0 + b.0, a.1 + b.1)
+                }
+                // No opposite pairing, or all three tied: fall back to the spine's own
+                // direction and let the snap below pick the nearest lattice line.
+                _ => (c[c.len() - 1].0 - c[0].0, c[c.len() - 1].1 - c[0].1),
             }
-            // Pure bend: no opposite pairing anywhere, so fall back to the spine and let the
-            // snap below pick the nearest lattice line.
-            None => (c[c.len() - 1].0 - c[0].0, c[c.len() - 1].1 - c[0].1),
         };
-        // A pointy-top lattice offers wall lines every 30 degrees, because it has THREE axis
-        // families 60 degrees apart and each contributes two perpendicular side directions:
-        //
-        //   30 / 90 / 150  — lines carrying actual hex EDGES        -> pad one apothem
-        //    0 / 60 / 120  — lines through the shoulder VERTEX pairs -> pad half a hex
-        //
-        // (The 0-degree case is the familiar dungeon rect: vertical sides on the tiles' edge
-        // lines, top and bottom at the shoulders with the row peaks left outside, per R4.)
-        // Snapping travel to the nearest of the six puts every wall within 15 degrees of the
-        // passage — an axis-aligned box could only ever serve two of the three frames, which
-        // is why diagonal passages came out horizontal.
         let step = std::f64::consts::PI / 6.0;
         let k = (travel.1.atan2(travel.0) / step).round() as i64;
         let ang = k as f64 * step;
         let (u, n) = ((ang.cos(), ang.sin()), (-ang.sin(), ang.cos()));
         let pad = if k.rem_euclid(2) == 0 { 0.5 * s } else { ap };
-        // Tile extent in this frame.
+        // R4 BOUNDS THE LENGTH, measured ON THE WALL'S OWN LINE — not on the tile centre line.
+        // A wall sits `pad` off the centres, where the tile is narrower than its widest span:
+        //
+        // - `u` a neighbour direction (even `k`): the wall is a shoulder line, where the tile
+        //   spans the full across-flats width -> half-extent is the apothem;
+        // - `u` a vertex direction (odd `k`): the wall lies ON a tile edge, where the tile
+        //   spans just that edge -> half-extent is `s / 2`.
+        //
+        // Using the tile's MAXIMAL extent (`s`) overran both walls by 6px per end and sent them
+        // across unclaimed tiles — which then made the inward walk below "correct" a wall that
+        // was already exactly on its tile's edge.
+        let pad_along = if k.rem_euclid(2) == 0 { ap } else { 0.5 * s };
+        // Tile extent in this frame: `n` fixes where the two walls sit, `u` only seeds the
+        // fallback span and the mid-point that decides which room owns which end.
         let (mut lo_n, mut hi_n, mut lo_u, mut hi_u) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
         for t in &self.tiles {
             let p = t.center(s);
@@ -181,47 +196,156 @@ impl Corridor {
             lo_u = lo_u.min(pu);
             hi_u = hi_u.max(pu);
         }
-        let reach = 2.0 * s;
+        let mid_u = 0.5 * (lo_u + hi_u);
+        // The probe segment must reach PAST both rooms' floors, or a border crossing lands
+        // outside it and is never found — with a fixed 2-tile reach, 6D's crossing sat 18px
+        // beyond the probe's end.
+        let (mut far_lo, mut far_hi) = (lo_u, hi_u);
+        for side in [self.a, self.b] {
+            for h in areas.room_cells(side) {
+                let p = h.center(s);
+                let pu = p.0 * u.0 + p.1 * u.1;
+                far_lo = far_lo.min(pu);
+                far_hi = far_hi.max(pu);
+            }
+        }
+        let (far_lo, far_hi) = (far_lo - 2.0 * s, far_hi + 2.0 * s);
+        // The tile block's centroid, so a sample sitting exactly ON a tile edge — which is
+        // where a wall belongs — resolves to the corridor's side of that edge.
+        let centroid = {
+            let (mut cx, mut cy) = (0.0f64, 0.0f64);
+            for t in &self.tiles {
+                let p = t.center(s);
+                cx += p.0;
+                cy += p.1;
+            }
+            let m = self.tiles.len() as f64;
+            (cx / m, cy / m)
+        };
+        // Candidate wall lines: the lattice lines that bound each tile in this frame, i.e.
+        // every tile centre offset by `pad` either way. Exact rather than a guessed step —
+        // stepping by an apothem lands halfway, on a tile CENTRE line, which is not a wall.
+        let mut cands: Vec<f64> = Vec::new();
+        for t in &self.tiles {
+            let p = t.center(s);
+            let pn = p.0 * n.0 + p.1 * n.1;
+            for o in [pn - pad, pn + pad] {
+                if !cands.iter().any(|c| (c - o).abs() < 1e-6) {
+                    cands.push(o);
+                }
+            }
+        }
+        cands.sort_by(f64::total_cmp);
+        // Halve the walk step. Each tile contributes `centre ± pad`, and for adjacent tiles
+        // those coincide, so consecutive candidates sit a full 2*pad apart — one inward step
+        // therefore jumped clean over the line that actually bounds the passage. Inserting the
+        // midpoints puts every lattice line the walk needs on the list, and the acceptance test
+        // below still decides which one is a wall.
+        let mut mids: Vec<f64> = cands
+            .windows(2)
+            .map(|w| 0.5 * (w[0] + w[1]))
+            .filter(|m| !cands.iter().any(|c| (c - m).abs() < 1e-6))
+            .collect();
+        cands.append(&mut mids);
+        cands.sort_by(f64::total_cmp);
         let mut out = [Vec::new(), Vec::new()];
-        for (i, off) in [lo_n - pad, hi_n + pad].into_iter().enumerate() {
-            // The wall line in world coordinates, run well past the tiles so a border sitting
-            // outside the extent still crosses it.
-            let base = (n.0 * off, n.1 * off);
-            let fa = (base.0 + u.0 * (lo_u - reach), base.1 + u.1 * (lo_u - reach));
-            let fb = (base.0 + u.0 * (hi_u + reach), base.1 + u.1 * (hi_u + reach));
-            let full = (hi_u - lo_u) + 2.0 * reach;
-            // Trim to each room's border — the caps, by construction.
-            let mut lo = reach / full;
-            let mut hi = (full - reach) / full;
-            for side in [self.a, self.b] {
-                let Some(sh) = areas.room_border(side) else {
+        for (i, outermost_first) in [false, true].into_iter().enumerate() {
+            // Walk candidates from the OUTERMOST inward and take the first line that is a
+            // valid wall. Validity is all-or-nothing, never clipped:
+            //
+            //  1. it reaches BOTH room borders — a wall that stops short of a border is the
+            //     wrong path, not a shorter wall;
+            //  2. its whole border-to-border run lies within the corridor's claimed tiles (R4).
+            //
+            // Clipping a partial line to "what fits" instead produced walls that ended in open
+            // ground and let a wall sit on an outer line only a fragment of which had tile
+            // under it.
+            let order: Vec<f64> = if outermost_first {
+                cands.iter().rev().copied().collect()
+            } else {
+                cands.clone()
+            };
+            for off in order {
+                let base = (n.0 * off, n.1 * off);
+                let at = |t: f64| (base.0 + u.0 * t, base.1 + u.1 * t);
+                let (fa, fb) = (at(far_lo), at(far_hi));
+                let span = far_hi - far_lo;
+                // Border-to-border span. Both ends must come from a real border crossing;
+                // a side with no room border (organic or hall) falls back to the tile bound.
+                let (mut span_lo, mut span_hi) = (None, None);
+                for side in [self.a, self.b] {
+                    let Some(sh) = areas.room_border(side) else {
+                        // An organic or hall-shaped side has NO border to reach, so it cannot
+                        // be required to supply a cap: that end falls back to the tile bound
+                        // and still counts as satisfied. Demanding a crossing here erased the
+                        // 100<->4D wall, whose far side is organic.
+                        let (mut acc, mut cells) = (0.0f64, 0usize);
+                        for h in areas.room_cells(side) {
+                            let p = h.center(s);
+                            acc += p.0 * u.0 + p.1 * u.1;
+                            cells += 1;
+                        }
+                        if cells > 0 && (acc / cells as f64) < mid_u {
+                            span_lo = Some(lo_u - pad_along);
+                        } else {
+                            span_hi = Some(hi_u + pad_along);
+                        }
+                        continue;
+                    };
+                    // Which end this room owns, from its own floor — the same tile fact
+                    // everything else uses. Testing both ends per room collapses the span.
+                    let (mut acc, mut cells) = (0.0f64, 0usize);
+                    for h in areas.room_cells(side) {
+                        let p = h.center(s);
+                        acc += p.0 * u.0 + p.1 * u.1;
+                        cells += 1;
+                    }
+                    if cells == 0 {
+                        continue;
+                    }
+                    let low_end = (acc / cells as f64) < mid_u;
+                    let ts: Vec<f64> = sh
+                        .segment_crossings(fa, fb)
+                        .into_iter()
+                        .map(|t| far_lo + t * span)
+                        .collect();
+                    if low_end {
+                        span_lo = ts.iter().copied().filter(|&t| t <= mid_u).reduce(f64::max);
+                    } else {
+                        span_hi = ts.iter().copied().filter(|&t| t >= mid_u).reduce(f64::min);
+                    }
+                }
+                let lo = span_lo.unwrap_or(lo_u - pad_along);
+                let hi = span_hi.unwrap_or(hi_u + pad_along);
+                if hi - lo < 0.5 * s {
                     continue;
-                };
-                let ts = sh.segment_crossings(fa, fb);
-                let near_lo = ts
-                    .iter()
-                    .copied()
-                    .filter(|&t| t < 0.5)
-                    .fold(f64::MIN, f64::max);
-                let near_hi = ts
-                    .iter()
-                    .copied()
-                    .filter(|&t| t >= 0.5)
-                    .fold(f64::MAX, f64::min);
-                if near_lo > f64::MIN {
-                    lo = lo.max(near_lo);
                 }
-                if near_hi < f64::MAX {
-                    hi = hi.min(near_hi);
+                // Two conditions, both required, and the outermost candidate that meets them
+                // wins:
+                //
+                //  1. the line reaches both room borders (a line stopping short is the wrong
+                //     path, not a shorter wall);
+                //  2. it never crosses UNCLAIMED ground. It may run alongside either room's own
+                //     floor — the annotated reference shows exactly that — but a stretch over
+                //     rock is what "crosses unclaimed tiles" means, and walking one lattice row
+                //     inward is the fix.
+                //
+                // Testing containment against the corridor's OWN tiles instead was too strict
+                // and rejected every candidate here; ignoring the question entirely let the
+                // wall run over rock. Claimed-or-not is the discriminator.
+                let over_claimed = (0..=12).all(|q| {
+                    let t = lo + (hi - lo) * (q as f64 / 12.0);
+                    let p = at(t);
+                    let d = (centroid.0 - p.0, centroid.1 - p.1);
+                    let l = d.0.hypot(d.1).max(1e-9);
+                    let g = (p.0 + d.0 / l * 0.6, p.1 + d.1 / l * 0.6);
+                    areas.owner_of(Hex::at(g, s)).is_some()
+                });
+                if span_lo.is_some() && span_hi.is_some() && over_claimed {
+                    out[i] = vec![at(lo), at(hi)];
+                    break;
                 }
             }
-            if hi <= lo {
-                continue;
-            }
-            out[i] = vec![
-                (fa.0 + (fb.0 - fa.0) * lo, fa.1 + (fb.1 - fa.1) * lo),
-                (fa.0 + (fb.0 - fa.0) * hi, fa.1 + (fb.1 - fa.1) * hi),
-            ];
         }
         out
     }

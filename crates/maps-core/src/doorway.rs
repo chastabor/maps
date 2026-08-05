@@ -346,7 +346,23 @@ fn mouth(
     // A fusion connector replaces a stretch of this wall, so an opening cut
     // there would breach the corridor instead of the room. Slide it along the
     // wall to the nearest clear placement.
-    let center = slide_clear(anchor_shape, center, axis, out, opening / 2.0, blocked);
+    // Bounded by the mouth's own cell span: the mouth exists to close THIS passage, so a
+    // placement past the cells' extent is off-passage by definition. Unbounded (well,
+    // opening-width-bounded) sliding walked a blocked Midgap mouth 62px along its axis and
+    // stacked a triple gate against an unrelated room's wall (seed 171030574712681231, the
+    // three doors on 5D) — a Midgap anchor has no shape, so nothing re-clamped the walk. A
+    // span too blocked to clear within its own extent stays put and is subsumed by the
+    // connector, which is this function's documented honest outcome.
+    let max_slide = ((hi - lo) / 2.0 + ap - opening / 2.0).max(0.0);
+    let center = slide_clear(
+        anchor_shape,
+        center,
+        axis,
+        out,
+        opening / 2.0,
+        max_slide,
+        blocked,
+    );
     Some(Mouth {
         members,
         anchor,
@@ -370,6 +386,7 @@ fn slide_clear(
     axis: Point,
     out: Point,
     half: f64,
+    max_slide: f64,
     blocked: &dyn Fn(Point) -> bool,
 ) -> Point {
     // Sample the span's ends, quarters and centre: the blocked regions are
@@ -389,6 +406,7 @@ fn slide_clear(
     let step = (half / 2.0).max(1.0);
     (1..=4)
         .flat_map(|k| [-1.0, 1.0].map(|sgn| sgn * step * k as f64))
+        .filter(|t| t.abs() <= max_slide)
         .map(|t| {
             let p = (center.0 + axis.0 * t, center.1 + axis.1 * t);
             match shape {

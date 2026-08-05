@@ -415,36 +415,23 @@ impl RuinShape {
     /// for rooms, the two side walls for halls). Used to classify wall decor
     /// samples geometrically — a cell lookup misses e.g. a rectangle's
     /// corners, which no hex cell contains.
+    ///
+    /// Defined as the distance to [`nearest_on_wall`](Self::nearest_on_wall), so the two can
+    /// never disagree about which wall point is nearest. (This replaced a closed-form Rect
+    /// arm whose float rounding differed in the last bits — the derived form reordered the
+    /// arithmetic and moved the content digests once, deliberately: one wall locus beats
+    /// byte continuity with the old arithmetic.)
     pub fn wall_dist(&self, p: Point) -> f64 {
-        match *self {
-            // Nearest-edge inside, clamped-perimeter outside — distinct from
-            // `project`'s radial interior push, so it can't defer to it.
-            RuinShape::Rect { cx, cy, hw, hh } => {
-                let (ox, oy) = ((p.0 - cx).abs() - hw, (p.1 - cy).abs() - hh);
-                if ox > 0.0 || oy > 0.0 {
-                    ox.max(0.0).hypot(oy.max(0.0))
-                } else {
-                    (-ox).min(-oy)
-                }
-            }
-            // The other walls are equidistant loci, so the distance is just
-            // how far the point moved when projected onto them.
-            _ => {
-                let q = self.project(p);
-                (p.0 - q.0).hypot(p.1 - q.1)
-            }
-        }
+        let q = self.nearest_on_wall(p);
+        (p.0 - q.0).hypot(p.1 - q.1)
     }
 
-    /// The wall point nearest `p` — the point form of [`wall_dist`](Self::wall_dist), kept
-    /// beside it so the two can never disagree about which wall a point belongs to.
+    /// The wall point nearest `p` — the point form of [`wall_dist`](Self::wall_dist), and
+    /// the one definition of the wall locus both share.
     ///
     /// NOT [`project`](Self::project): project's interior-Rect case pushes along the centre
     /// ray on purpose (outline tracing wants the diagonal cut), which can land far down the
-    /// wall from the nearest point — measured sliding a corridor landing 30px. `wall_dist`
-    /// stays closed-form rather than deferring here: its Rect arm is arithmetic the decor
-    /// thresholds compare against, and reordering float operations there would churn digests
-    /// for no functional change.
+    /// wall from the nearest point — measured sliding a corridor landing 30px.
     pub fn nearest_on_wall(&self, p: Point) -> Point {
         match *self {
             RuinShape::Rect { cx, cy, hw, hh } => {

@@ -69,6 +69,21 @@ impl Hex {
         Hex::new(q as i32, r as i32)
     }
 
+    /// The two corner indices of the edge facing `neighbors()[k]`.
+    ///
+    /// **NOT `(k, k + 1)`.** `hex_corner` places corner `i` at `60i - 30` degrees, which
+    /// advances counter-clockwise, while [`HEX_DIRS`] advances CLOCKWISE — so edge `k`
+    /// (corners `k..k+1`) faces neighbour `(6 - k) % 6`. Measured on a unit hex: edge 1's
+    /// midpoint sits at +60 degrees, neighbour 1 at -60.
+    ///
+    /// Anything that pairs a neighbour with "its" edge must come through here. Assuming
+    /// `(k, k + 1)` mirrors the hexagon: the arrows drawn from a corridor tile pointed at the
+    /// reflected sides, and it is why a mirrored mouth set still looked plausible.
+    pub fn edge_corners(k: usize) -> (usize, usize) {
+        let e = (6 - k) % 6;
+        (e, (e + 1) % 6)
+    }
+
     pub fn corners(self, size: f64) -> [(f64, f64); 6] {
         let c = self.center(size);
         std::array::from_fn(|i| hex_corner(c, i, size))

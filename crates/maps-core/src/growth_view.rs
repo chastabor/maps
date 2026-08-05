@@ -390,10 +390,13 @@ fn corridor_overlay(map: &CaveMap, s: &mut String) {
         for (tile, ax) in cor.tiles.iter().zip(&cor.axes) {
             let c = tile.center(S);
             let corners = tile.corners(S);
+            // The midpoint of the edge facing neighbour `k` — via `edge_corners`, since edge
+            // `k` faces neighbour `(6-k)%6`, not `k`.
             let mid = |k: usize| {
+                let (e0, e1) = Hex::edge_corners(k);
                 (
-                    (corners[k].0 + corners[(k + 1) % 6].0) / 2.0,
-                    (corners[k].1 + corners[(k + 1) % 6].1) / 2.0,
+                    (corners[e0].0 + corners[e1].0) / 2.0,
+                    (corners[e0].1 + corners[e1].1) / 2.0,
                 )
             };
             let (col_a, col_b) = (
@@ -495,6 +498,30 @@ fn corridor_overlay(map: &CaveMap, s: &mut String) {
             );
         }
         let _ = write!(s, r##"<path d="{d}"/>"##);
+    }
+    s.push_str("</g>");
+    // Phase 2: the walls offset from each spine, straightened onto apothem lines and capped
+    // on the room borders. White (the compound-wall layer above already owns magenta), so a
+    // wall crossing a tile it should have cleared, or a cap missing its border, is obvious
+    // against the tiles underneath.
+    s.push_str(r##"<g stroke="#ffffff" stroke-width="2.2" fill="none" stroke-linejoin="round">"##);
+    for cor in &cors {
+        for side in cor.walls(&map.areas, S) {
+            if side.len() < 2 {
+                continue;
+            }
+            let mut d = String::new();
+            for (k, p) in side.iter().enumerate() {
+                let _ = write!(
+                    d,
+                    "{}{} {}",
+                    if k == 0 { "M" } else { "L" },
+                    d1(p.0),
+                    d1(p.1)
+                );
+            }
+            let _ = write!(s, r##"<path d="{d}"/>"##);
+        }
     }
     s.push_str("</g>");
     for cor in &cors {

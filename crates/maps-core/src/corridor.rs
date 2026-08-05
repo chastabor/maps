@@ -22,7 +22,8 @@ use crate::topology::Connection;
 
 /// One tile of a corridor and the direction(s) it carries the passage.
 ///
-/// Side `k` is the edge from corner `k` to corner `k+1`, neighbour `neighbors()[k]`.
+/// Side `k` means neighbour `neighbors()[k]`; its edge's corners come from
+/// [`Hex::edge_corners`] (edge `k` faces neighbour `(6-k)%6`, NOT `k`).
 /// `touch_*` is raw room contact — the side faces that room's floor directly. `toward_*`
 /// additionally includes sides stepping to a corridor tile strictly nearer that end, so it
 /// answers "which way does the passage run" while `touch_*` answers "where does it land".
@@ -38,13 +39,16 @@ pub struct TileAxis {
 }
 
 impl TileAxis {
-    /// R3: two adjacent sides touching the same room collapse that room's contact to their
-    /// shared corner — corner `k+1` of the first such side. `None` when contact is a single
-    /// side (or none), which stays an edge landing.
+    /// R3: two adjacent sides touching the same room collapse that room's contact to the
+    /// corner their two edges share. `None` when contact is a single side (or none), which
+    /// stays an edge landing.
     pub fn collapse(touch: &[bool; 6]) -> Option<usize> {
+        // Neighbour `k` faces edge `(6-k)%6` and neighbour `k+1` faces `(5-k)%6`; those two
+        // edges share corner `(6-k)%6`, which is `edge_corners(k).0`. Deriving it as `k+1`
+        // named a corner on the mirrored side of the tile.
         (0..6)
             .find(|&k| touch[k] && touch[(k + 1) % 6])
-            .map(|k| (k + 1) % 6)
+            .map(|k| Hex::edge_corners(k).0)
     }
 }
 
@@ -90,6 +94,137 @@ pub struct Corridor {
     /// between consecutive path tiles, so the polyline's interior stays inside the
     /// corridor's tiles (R4). Empty when either side is unreachable through the run.
     pub centerline: Vec<Point>,
+}
+
+impl Corridor {
+    /// Phase 2: the corridor's two walls, `[a-side, b-side]` of the spine, as segments on the
+    /// **outer apothem lines of the tiles the corridor occupies** — a dungeon rectangle laid
+    /// over the joining tiles, not an offset from the spine.
+    ///
+    /// The lattice, not the spine, fixes where a wall may sit. Offsetting the centerline put
+    /// the wall wherever the arithmetic landed, off the tile edges entirely; following the
+    /// tile boundary instead chevrons, because perpendicular to travel a pointy-top hex
+    /// presents two edges meeting at a vertex. Both were wrong for the same reason: a
+    /// corridor wall belongs on a line the lattice already contains.
+    ///
+    /// So the walls are two sides of the box the tiles inscribe, exactly as `derive_shape`
+    /// lays a dungeon rect — the vertical sides one **apothem** beyond the outermost tile
+    /// centres (those lines carry the tiles' own vertical edges), the horizontal sides half a
+    /// hex beyond the outermost row centres (the shoulder vertices, leaving the row peaks
+    /// out, which is R4's "slivers are left out"). Travel picks which pair is wall: the pair
+    /// running along the passage.
+    ///
+    /// Each wall is then trimmed to the two rooms' borders via
+    /// [`segment_crossings`](crate::ruins::RuinShape::segment_crossings), so it caps flush on
+    /// both by construction — no corner expansion, no stitching, no per-edge runs.
+    pub fn walls(&self, areas: &Areas, s: f64) -> [Vec<Point>; 2] {
+        let c = &self.centerline;
+        if c.len() < 2 || self.tiles.is_empty() {
+            return [Vec::new(), Vec::new()];
+        }
+        let ap = crate::grid::HEX_APOTHEM * s;
+        // Travel comes from the AXES — the arrows — not from the spine's endpoints. A
+        // through tile pairs side `k` toward one room with side `k+3` toward the other (R1),
+        // and neighbour `k` lies at `-60k` degrees, so the pairing names the passage's lattice
+        // direction exactly. The spine's end-to-end vector only approximates it: on a two-tile
+        // corridor the entry and exit anchors sit on different tiles, tilting the vector off
+        // axis, which walled the horizontal 4D<->9D passage diagonally.
+        let axis_dir = {
+            let mut votes = [0usize; 6];
+            for ax in &self.axes {
+                for k in 0..6 {
+                    if ax.toward_a[k] && ax.toward_b[(k + 3) % 6] {
+                        votes[k % 3] += 1;
+                    }
+                }
+            }
+            (0..3)
+                .filter(|&k| votes[k] > 0)
+                .max_by_key(|&k| (votes[k], std::cmp::Reverse(k)))
+        };
+        let travel = match axis_dir {
+            Some(k) => {
+                // NEGATIVE k: `grid::HEX_DIRS` runs CLOCKWISE — `(+1,-1)` is at -60 degrees,
+                // not +60 — so neighbour `k` lies at `-60k`. Using `+60k` swapped the two
+                // diagonal families with each other, walling 100<->4D along 1D<->7D's axis
+                // and vice versa while leaving the axis-aligned passages looking right.
+                let ang = -(k as f64) * std::f64::consts::PI / 3.0;
+                (ang.cos(), ang.sin())
+            }
+            // Pure bend: no opposite pairing anywhere, so fall back to the spine and let the
+            // snap below pick the nearest lattice line.
+            None => (c[c.len() - 1].0 - c[0].0, c[c.len() - 1].1 - c[0].1),
+        };
+        // A pointy-top lattice offers wall lines every 30 degrees, because it has THREE axis
+        // families 60 degrees apart and each contributes two perpendicular side directions:
+        //
+        //   30 / 90 / 150  — lines carrying actual hex EDGES        -> pad one apothem
+        //    0 / 60 / 120  — lines through the shoulder VERTEX pairs -> pad half a hex
+        //
+        // (The 0-degree case is the familiar dungeon rect: vertical sides on the tiles' edge
+        // lines, top and bottom at the shoulders with the row peaks left outside, per R4.)
+        // Snapping travel to the nearest of the six puts every wall within 15 degrees of the
+        // passage — an axis-aligned box could only ever serve two of the three frames, which
+        // is why diagonal passages came out horizontal.
+        let step = std::f64::consts::PI / 6.0;
+        let k = (travel.1.atan2(travel.0) / step).round() as i64;
+        let ang = k as f64 * step;
+        let (u, n) = ((ang.cos(), ang.sin()), (-ang.sin(), ang.cos()));
+        let pad = if k.rem_euclid(2) == 0 { 0.5 * s } else { ap };
+        // Tile extent in this frame.
+        let (mut lo_n, mut hi_n, mut lo_u, mut hi_u) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+        for t in &self.tiles {
+            let p = t.center(s);
+            let (pn, pu) = (p.0 * n.0 + p.1 * n.1, p.0 * u.0 + p.1 * u.1);
+            lo_n = lo_n.min(pn);
+            hi_n = hi_n.max(pn);
+            lo_u = lo_u.min(pu);
+            hi_u = hi_u.max(pu);
+        }
+        let reach = 2.0 * s;
+        let mut out = [Vec::new(), Vec::new()];
+        for (i, off) in [lo_n - pad, hi_n + pad].into_iter().enumerate() {
+            // The wall line in world coordinates, run well past the tiles so a border sitting
+            // outside the extent still crosses it.
+            let base = (n.0 * off, n.1 * off);
+            let fa = (base.0 + u.0 * (lo_u - reach), base.1 + u.1 * (lo_u - reach));
+            let fb = (base.0 + u.0 * (hi_u + reach), base.1 + u.1 * (hi_u + reach));
+            let full = (hi_u - lo_u) + 2.0 * reach;
+            // Trim to each room's border — the caps, by construction.
+            let mut lo = reach / full;
+            let mut hi = (full - reach) / full;
+            for side in [self.a, self.b] {
+                let Some(sh) = areas.room_border(side) else {
+                    continue;
+                };
+                let ts = sh.segment_crossings(fa, fb);
+                let near_lo = ts
+                    .iter()
+                    .copied()
+                    .filter(|&t| t < 0.5)
+                    .fold(f64::MIN, f64::max);
+                let near_hi = ts
+                    .iter()
+                    .copied()
+                    .filter(|&t| t >= 0.5)
+                    .fold(f64::MAX, f64::min);
+                if near_lo > f64::MIN {
+                    lo = lo.max(near_lo);
+                }
+                if near_hi < f64::MAX {
+                    hi = hi.min(near_hi);
+                }
+            }
+            if hi <= lo {
+                continue;
+            }
+            out[i] = vec![
+                (fa.0 + (fb.0 - fa.0) * lo, fa.1 + (fb.1 - fa.1) * lo),
+                (fa.0 + (fb.0 - fa.0) * hi, fa.1 + (fb.1 - fa.1) * hi),
+            ];
+        }
+        out
+    }
 }
 
 /// Per-tile raw room contact with `side`.
@@ -138,10 +273,8 @@ fn landing_anchor(
         cs[c]
     } else {
         let k = (0..6).find(|&k| touch[k])?;
-        (
-            (cs[k].0 + cs[(k + 1) % 6].0) / 2.0,
-            (cs[k].1 + cs[(k + 1) % 6].1) / 2.0,
-        )
+        let (e0, e1) = Hex::edge_corners(k);
+        ((cs[e0].0 + cs[e1].0) / 2.0, (cs[e0].1 + cs[e1].1) / 2.0)
     };
     Some(match areas.room_border(side) {
         Some(sh) => sh.nearest_on_wall(raw),
@@ -163,12 +296,10 @@ fn attachment(areas: &Areas, tiles: &[Hex], touches: &[[bool; 6]], side: usize, 
             marks.push((i, Mark::Point(sh.nearest_on_wall(cs[c]))));
         } else {
             for k in (0..6).filter(|&k| touch[k]) {
+                let (e0, e1) = Hex::edge_corners(k);
                 marks.push((
                     i,
-                    Mark::Bar(
-                        sh.nearest_on_wall(cs[k]),
-                        sh.nearest_on_wall(cs[(k + 1) % 6]),
-                    ),
+                    Mark::Bar(sh.nearest_on_wall(cs[e0]), sh.nearest_on_wall(cs[e1])),
                 ));
             }
         }

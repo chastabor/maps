@@ -614,7 +614,7 @@ fn connection_necks(
 
 /// One cell's hex-edge wall runs: an edge is wall unless `is_mouth` says it opens.
 ///
-/// Edge `k` spans corner `k` to corner `k+1` — see `outline`'s `D`. Each vertex carries the
+/// The edge facing neighbour `k` comes from [`grid::Hex::edge_corners`]. Each vertex carries the
 /// cell's own hexagon, so the renderer's inward offset follows the lattice. Shared by
 /// [`link_walls`] and [`junction_walls`], which differ only in their mouth rule — the
 /// edge-to-corner correspondence is load-bearing and lives here once.
@@ -635,9 +635,15 @@ fn hex_edge_walls(
         if is_mouth(nb) {
             continue;
         }
+        // `edge_corners`, NOT `(k, k+1)`: corner indices advance counter-clockwise while
+        // `HEX_DIRS` advances clockwise, so edge `k` faces neighbour `(6-k)%6`. Pairing them
+        // by index walled the MIRRORED edge of every link and junction cell — the mouths were
+        // reflected across the tile, which stayed plausible because the set was still six
+        // edges minus the mouth count.
+        let (e0, e1) = grid::Hex::edge_corners(k);
         out.push(vec![
-            (crate::outline::quantize_pt(corners[k]), hex),
-            (crate::outline::quantize_pt(corners[(k + 1) % 6]), hex),
+            (crate::outline::quantize_pt(corners[e0]), hex),
+            (crate::outline::quantize_pt(corners[e1]), hex),
         ]);
     }
 }

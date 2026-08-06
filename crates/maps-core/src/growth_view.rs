@@ -342,6 +342,22 @@ pub fn growth_svg(map: &CaveMap, labels: bool) -> String {
     s
 }
 
+/// An open polyline as SVG path commands. Shared by the spine and wall layers, which built the
+/// same three lines each.
+fn polyline_d(pts: &[(f64, f64)]) -> String {
+    let mut d = String::new();
+    for (k, p) in pts.iter().enumerate() {
+        let _ = write!(
+            d,
+            "{}{} {}",
+            if k == 0 { "M" } else { "L" },
+            d1(p.0),
+            d1(p.1)
+        );
+    }
+    d
+}
+
 /// A head at `to`, aimed along `from -> to`.
 fn arrow_head(s: &mut String, from: (f64, f64), to: (f64, f64)) {
     let d = (to.0 - from.0, to.1 - from.1);
@@ -487,21 +503,11 @@ fn corridor_overlay(map: &CaveMap, s: &mut String) {
         if cor.centerline.len() < 2 {
             continue;
         }
-        let mut d = String::new();
-        for (k, p) in cor.centerline.iter().enumerate() {
-            let _ = write!(
-                d,
-                "{}{} {}",
-                if k == 0 { "M" } else { "L" },
-                d1(p.0),
-                d1(p.1)
-            );
-        }
-        let _ = write!(s, r##"<path d="{d}"/>"##);
+        let _ = write!(s, r##"<path d="{}"/>"##, polyline_d(&cor.centerline));
     }
     s.push_str("</g>");
-    // Phase 2: the walls offset from each spine, straightened onto apothem lines and capped
-    // on the room borders. White (the compound-wall layer above already owns magenta), so a
+    // Phase 2: the walls, on the lattice lines bounding the corridor's tiles (edge lines in the
+    // odd families, shoulder lines in the even ones) and capped on the room borders. White (the compound-wall layer above already owns magenta), so a
     // wall crossing a tile it should have cleared, or a cap missing its border, is obvious
     // against the tiles underneath.
     s.push_str(r##"<g stroke="#ffffff" stroke-width="2.2" fill="none" stroke-linejoin="round">"##);
@@ -510,17 +516,7 @@ fn corridor_overlay(map: &CaveMap, s: &mut String) {
             if side.len() < 2 {
                 continue;
             }
-            let mut d = String::new();
-            for (k, p) in side.iter().enumerate() {
-                let _ = write!(
-                    d,
-                    "{}{} {}",
-                    if k == 0 { "M" } else { "L" },
-                    d1(p.0),
-                    d1(p.1)
-                );
-            }
-            let _ = write!(s, r##"<path d="{d}"/>"##);
+            let _ = write!(s, r##"<path d="{}"/>"##, polyline_d(&side));
         }
     }
     s.push_str("</g>");

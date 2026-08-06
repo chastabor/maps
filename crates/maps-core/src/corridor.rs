@@ -84,10 +84,6 @@ pub struct Corridor {
     pub axes: Vec<TileAxis>,
     /// Landing on `a`'s border, then on `b`'s.
     pub attach: [Landing; 2],
-    /// The spine's tile path, as indices into `tiles`, `a` end first. Phase 2 clamps each
-    /// offset wall segment to its host tile, so the association is kept here rather than
-    /// re-located later by point-in-hex tests.
-    pub path: Vec<usize>,
     /// Phase 1: the corridor's spine, `a`-landing to `b`-landing. Entry and exit are the
     /// landing anchors (a tile's collapse point, else its touched edge's midpoint, on the
     /// border when the side has one); interior waypoints are the shared-edge midpoints
@@ -118,13 +114,27 @@ impl Corridor {
     /// sit side by side *across* the wall has zero tile extent *along* it — measured on
     /// 5D<->6D, where both tiles project to -36.0 — so deriving the span from the tiles
     /// collapsed the wall to a point. Each wall runs from one room's border crossing to the
-    /// other's, which is also what makes the caps structural.
+    /// other's, which is also what makes the caps structural. (A side with no border — organic
+    /// or hall-shaped — is the one exception: that end takes the tile bound.)
+    ///
+    /// **Placement is a search, not a formula.** Candidates are the lattice lines bounding the
+    /// tiles; they are tried outermost-inward and the first one that reaches both borders
+    /// without crossing unclaimed ground wins. See the walk below for why each condition is
+    /// there and which cheaper rules it replaced.
     ///
     /// **The caps are the exact crossing points, so wall and border meet at a sharp corner.**
     /// Nothing here chamfers: a cut corner would leave no square jamb for a door to sit in.
     pub fn walls(&self, areas: &Areas, s: f64) -> [Vec<Point>; 2] {
         let c = &self.centerline;
         if c.len() < 2 || self.tiles.is_empty() {
+            return [Vec::new(), Vec::new()];
+        }
+        // No CLAIMED floor, no corridor to wall. `topology::build` reserves join floor for
+        // dungeon-to-dungeon connections only — an organic area has no fitted wall to build, so
+        // its connections stay free cells the outline traces organically, and walling them would
+        // put dungeon masonry across a cave passage. Such a connection still contributes its
+        // dungeon-side landing (`attach`) for the door; it just has no walls of its own.
+        if !self.tiles.iter().any(|&t| areas.is_join(t)) {
             return [Vec::new(), Vec::new()];
         }
         let ap = crate::grid::HEX_APOTHEM * s;
@@ -172,27 +182,30 @@ impl Corridor {
         let k = (travel.1.atan2(travel.0) / step).round() as i64;
         let ang = k as f64 * step;
         let (u, n) = ((ang.cos(), ang.sin()), (-ang.sin(), ang.cos()));
-        let pad = if k.rem_euclid(2) == 0 { 0.5 * s } else { ap };
-        // R4 BOUNDS THE LENGTH, measured ON THE WALL'S OWN LINE — not on the tile centre line.
-        // A wall sits `pad` off the centres, where the tile is narrower than its widest span:
+        // The two lattice pads, one parity rule stated once. Across the wall (`pad`) and along
+        // it (`pad_along`) are exact complements, because a wall sits `pad` off the tile centres
+        // where the tile is only `pad_along` wide:
         //
-        // - `u` a neighbour direction (even `k`): the wall is a shoulder line, where the tile
-        //   spans the full across-flats width -> half-extent is the apothem;
-        // - `u` a vertex direction (odd `k`): the wall lies ON a tile edge, where the tile
-        //   spans just that edge -> half-extent is `s / 2`.
+        // - `u` a neighbour direction (even `k`): wall on a shoulder line, tile at full
+        //   across-flats width -> `pad = s/2` across, `pad_along = apothem`;
+        // - `u` a vertex direction (odd `k`): wall ON a tile edge, tile spans just that edge
+        //   -> `pad = apothem` across, `pad_along = s/2`.
         //
-        // Using the tile's MAXIMAL extent (`s`) overran both walls by 6px per end and sent them
-        // across unclaimed tiles — which then made the inward walk below "correct" a wall that
-        // was already exactly on its tile's edge.
-        let pad_along = if k.rem_euclid(2) == 0 { ap } else { 0.5 * s };
+        // Using the tile's MAXIMAL extent along the wall instead of its on-line extent overran
+        // each end by 6px.
+        let (pad, pad_along) = if k.rem_euclid(2) == 0 {
+            (0.5 * s, ap)
+        } else {
+            (ap, 0.5 * s)
+        };
         // Tile extent in this frame: `n` fixes where the two walls sit, `u` only seeds the
         // fallback span and the mid-point that decides which room owns which end.
-        let (mut lo_n, mut hi_n, mut lo_u, mut hi_u) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+        // Only the `u` extent is needed: the candidate walk below derives each wall's `n`
+        // offset from the tiles itself.
+        let (mut lo_u, mut hi_u) = (f64::MAX, f64::MIN);
         for t in &self.tiles {
             let p = t.center(s);
-            let (pn, pu) = (p.0 * n.0 + p.1 * n.1, p.0 * u.0 + p.1 * u.1);
-            lo_n = lo_n.min(pn);
-            hi_n = hi_n.max(pn);
+            let pu = p.0 * u.0 + p.1 * u.1;
             lo_u = lo_u.min(pu);
             hi_u = hi_u.max(pu);
         }
@@ -210,18 +223,20 @@ impl Corridor {
             }
         }
         let (far_lo, far_hi) = (far_lo - 2.0 * s, far_hi + 2.0 * s);
-        // The tile block's centroid, so a sample sitting exactly ON a tile edge — which is
-        // where a wall belongs — resolves to the corridor's side of that edge.
-        let centroid = {
-            let (mut cx, mut cy) = (0.0f64, 0.0f64);
-            for t in &self.tiles {
-                let p = t.center(s);
-                cx += p.0;
-                cy += p.1;
+        let span = far_hi - far_lo;
+        // Each room's mean position along the wall — which end it owns. Loop-invariant, so it is
+        // computed once here rather than per candidate: the two inline copies this replaces ran
+        // a full `room_cells` scan per candidate per side per wall pass, and had already drifted
+        // (one treated an empty side as `continue`, the other silently took the high end).
+        let mean_u: [Option<f64>; 2] = [self.a, self.b].map(|side| {
+            let (mut acc, mut cells) = (0.0f64, 0usize);
+            for h in areas.room_cells(side) {
+                let p = h.center(s);
+                acc += p.0 * u.0 + p.1 * u.1;
+                cells += 1;
             }
-            let m = self.tiles.len() as f64;
-            (cx / m, cy / m)
-        };
+            (cells > 0).then(|| acc / cells as f64)
+        });
         // Candidate wall lines: the lattice lines that bound each tile in this frame, i.e.
         // every tile centre offset by `pad` either way. Exact rather than a guessed step —
         // stepping by an apothem lands halfway, on a tile CENTRE line, which is not a wall.
@@ -236,19 +251,34 @@ impl Corridor {
             }
         }
         cands.sort_by(f64::total_cmp);
-        // Halve the walk step. Each tile contributes `centre ± pad`, and for adjacent tiles
-        // those coincide, so consecutive candidates sit a full 2*pad apart — one inward step
-        // therefore jumped clean over the line that actually bounds the passage. Inserting the
-        // midpoints puts every lattice line the walk needs on the list, and the acceptance test
-        // below still decides which one is a wall.
-        let mut mids: Vec<f64> = cands
-            .windows(2)
-            .map(|w| 0.5 * (w[0] + w[1]))
-            .filter(|m| !cands.iter().any(|c| (c - m).abs() < 1e-6))
-            .collect();
-        cands.append(&mut mids);
-        cands.sort_by(f64::total_cmp);
+        // Halve the walk step — but ONLY in the edge families. The two families differ, and
+        // conflating them admits walls on lines that carry no hex edge:
+        //
+        // - odd `k` (`n` an edge normal): centre projections are multiples of the apothem, so
+        //   `centre ± ap` lands on the true line set and the midpoints between consecutive
+        //   candidates are themselves genuine edge lines — in a honeycomb an edge's extension
+        //   passes through the offset neighbour's centre. Without these the walk stepped a full
+        //   `2*ap` and jumped over the line that bounds the passage (5D<->6D).
+        // - even `k` (`n` a vertex direction): centre projections are multiples of `1.5s` and
+        //   candidates are `1.5s*r ± s/2`, so consecutive gaps already alternate `s` and `s/2`
+        //   — every real line is present. A midpoint here is `1.5s*r`, a tile CENTRE line, or
+        //   `1.5s*r + 0.75s`, which is no line at all. The acceptance test cannot reject either:
+        //   a centre line lies over claimed ground and reaches both borders just as readily.
+        if k.rem_euclid(2) == 1 {
+            let mut mids: Vec<f64> = cands
+                .windows(2)
+                .map(|w| 0.5 * (w[0] + w[1]))
+                .filter(|m| !cands.iter().any(|c| (c - m).abs() < 1e-6))
+                .collect();
+            cands.append(&mut mids);
+            cands.sort_by(f64::total_cmp);
+        }
         let mut out = [Vec::new(), Vec::new()];
+        // The two walls are chosen in sequence, not independently: the second must stay at
+        // least a tile's width from the first. Searching each side alone let both walk inward
+        // onto the same or adjacent lines — measured over 120 maps, 9 corridors came out with a
+        // sub-tile lane and one with the two walls exactly coincident.
+        let mut picked: Option<f64> = None;
         for (i, outermost_first) in [false, true].into_iter().enumerate() {
             // Walk candidates from the OUTERMOST inward and take the first line that is a
             // valid wall. Validity is all-or-nothing, never clipped:
@@ -266,44 +296,33 @@ impl Corridor {
                 cands.clone()
             };
             for off in order {
+                // Keep the pair apart: a lane narrower than one tile is not a passage.
+                if picked.is_some_and(|p| (off - p).abs() < s - 0.01) {
+                    continue;
+                }
                 let base = (n.0 * off, n.1 * off);
                 let at = |t: f64| (base.0 + u.0 * t, base.1 + u.1 * t);
                 let (fa, fb) = (at(far_lo), at(far_hi));
-                let span = far_hi - far_lo;
                 // Border-to-border span. Both ends must come from a real border crossing;
                 // a side with no room border (organic or hall) falls back to the tile bound.
                 let (mut span_lo, mut span_hi) = (None, None);
-                for side in [self.a, self.b] {
+                for (si, side) in [self.a, self.b].into_iter().enumerate() {
+                    // Which end this room owns, from its own floor — the same tile fact
+                    // everything else uses. Testing both ends per room collapses the span.
+                    let Some(mu) = mean_u[si] else { continue };
+                    let low_end = mu < mid_u;
                     let Some(sh) = areas.room_border(side) else {
                         // An organic or hall-shaped side has NO border to reach, so it cannot
                         // be required to supply a cap: that end falls back to the tile bound
                         // and still counts as satisfied. Demanding a crossing here erased the
                         // 100<->4D wall, whose far side is organic.
-                        let (mut acc, mut cells) = (0.0f64, 0usize);
-                        for h in areas.room_cells(side) {
-                            let p = h.center(s);
-                            acc += p.0 * u.0 + p.1 * u.1;
-                            cells += 1;
-                        }
-                        if cells > 0 && (acc / cells as f64) < mid_u {
+                        if low_end {
                             span_lo = Some(lo_u - pad_along);
                         } else {
                             span_hi = Some(hi_u + pad_along);
                         }
                         continue;
                     };
-                    // Which end this room owns, from its own floor — the same tile fact
-                    // everything else uses. Testing both ends per room collapses the span.
-                    let (mut acc, mut cells) = (0.0f64, 0usize);
-                    for h in areas.room_cells(side) {
-                        let p = h.center(s);
-                        acc += p.0 * u.0 + p.1 * u.1;
-                        cells += 1;
-                    }
-                    if cells == 0 {
-                        continue;
-                    }
-                    let low_end = (acc / cells as f64) < mid_u;
                     let ts: Vec<f64> = sh
                         .segment_crossings(fa, fb)
                         .into_iter()
@@ -315,8 +334,13 @@ impl Corridor {
                         span_hi = ts.iter().copied().filter(|&t| t >= mid_u).reduce(f64::min);
                     }
                 }
-                let lo = span_lo.unwrap_or(lo_u - pad_along);
-                let hi = span_hi.unwrap_or(hi_u + pad_along);
+                // Both ends must be real: a border crossing, or a borderless side's tile bound.
+                // (Previously an `unwrap_or` supplied a fallback here that the acceptance test
+                // 25 lines below then rejected anyway — dead by construction.)
+                let (Some(lo), Some(hi)) = (span_lo, span_hi) else {
+                    continue;
+                };
+                // Two crossings landing within half a hex of each other is a graze, not a wall.
                 if hi - lo < 0.5 * s {
                     continue;
                 }
@@ -333,16 +357,22 @@ impl Corridor {
                 // Testing containment against the corridor's OWN tiles instead was too strict
                 // and rejected every candidate here; ignoring the question entirely let the
                 // wall run over rock. Claimed-or-not is the discriminator.
+                // Step off the wall along its OWN inward normal — `+n` for the low wall, `-n`
+                // for the high one — by half a cell, the same nudge `decor::wall_over` uses to
+                // ask which cell a wall sample backs onto. Aiming at the tile centroid instead
+                // ran nearly PARALLEL to the wall near its ends, so the sample barely left the
+                // edge it was meant to disambiguate; and the offset was 0.6px absolute where
+                // the established primitive uses `0.6 * s`.
+                let inward = if i == 0 { (n.0, n.1) } else { (-n.0, -n.1) };
                 let over_claimed = (0..=12).all(|q| {
                     let t = lo + (hi - lo) * (q as f64 / 12.0);
                     let p = at(t);
-                    let d = (centroid.0 - p.0, centroid.1 - p.1);
-                    let l = d.0.hypot(d.1).max(1e-9);
-                    let g = (p.0 + d.0 / l * 0.6, p.1 + d.1 / l * 0.6);
+                    let g = (p.0 + inward.0 * 0.6 * s, p.1 + inward.1 * 0.6 * s);
                     areas.owner_of(Hex::at(g, s)).is_some()
                 });
-                if span_lo.is_some() && span_hi.is_some() && over_claimed {
+                if over_claimed {
                     out[i] = vec![at(lo), at(hi)];
+                    picked = Some(off);
                     break;
                 }
             }
@@ -525,7 +555,6 @@ pub fn corridors(areas: &Areas, connections: &[Connection], s: f64) -> Vec<Corri
                     attachment(areas, &tiles, &touch_a, c.a, s),
                     attachment(areas, &tiles, &touch_b, c.b, s),
                 ],
-                path,
                 centerline,
                 tiles,
                 axes,

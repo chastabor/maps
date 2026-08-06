@@ -144,6 +144,18 @@ fn widen_mouths(areas: &Areas, conn: &mut Connection, _s: f64) {
                 .flat_map(|cell| cell.neighbors())
                 .filter(|n| areas.owner_of(*n).is_none() && !conn.along.contains(n))
                 .filter(|n| n.neighbors().iter().any(|m| areas.is_room_floor(side, *m)))
+                // ONE TILE OF ROCK BETWEEN CORRIDORS, the same rule that keeps unfused areas
+                // apart during growth. Widening is greedy — it takes any free cell touching the
+                // room — so where several connections meet, each one's mouth crept into the
+                // others until the whole gap between the rooms was one blob of claimed floor
+                // with no barrier left (seed 128: five dungeon areas, and the corridor filled
+                // the space between them). Earlier connections have already claimed, so their
+                // floor is `is_join` by now; a candidate touching it would close the gap.
+                .filter(|n| {
+                    !n.neighbors()
+                        .iter()
+                        .any(|m| areas.is_join(*m) && !conn.along.contains(m))
+                })
                 .min_by_key(|n| (n.distance(anchor), n.q, n.r));
             let Some(add) = cand else { break };
             conn.along.insert(conn.apron_from, add);

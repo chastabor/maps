@@ -41,15 +41,14 @@ fn corridor_invariants() {
                         );
                     }
                 }
-                for (land, side) in cor.attach.iter().zip([cor.a, cor.b]) {
-                    let Some(sh) = m.areas.room_border(side) else {
+                for (land, side) in cor.landings() {
+                    let Some((sh, per)) = m.areas.room_border_per(side) else {
                         assert!(
                             land.marks.is_empty() && land.gaps.is_empty(),
                             "seed {seed}: landing on a borderless side"
                         );
                         continue;
                     };
-                    let per = sh.perimeter().unwrap();
                     for (tile_idx, mark) in &land.marks {
                         assert!(*tile_idx < cor.tiles.len());
                         n_marks += 1;
@@ -63,66 +62,9 @@ fn corridor_invariants() {
                                 "seed {seed}: landing mark {p:?} is {:.2}px off its border",
                                 sh.wall_dist(p)
                             );
-                        }
-                    }
-                    // Phase 3a: the gap is a wall-parameter interval, so these are properties of
-                    // the interval and of the chord it steps out to.
-                    for g in &land.gaps {
-                        n_gaps += 1;
-                        // A gap is a real stretch of border, never the whole ring: a corridor
-                        // attaches along part of a room, and a full-perimeter span would mean the
-                        // merge bridged the long way round.
-                        assert!(
-                            g.span.len > 1e-6 && g.span.len < per - 1e-6,
-                            "seed {seed} [{tags}]: gap span len {:.3} of perimeter {per:.3}",
-                            g.span.len
-                        );
-                        // Walking the span stays ON the border by construction — this catches a
-                        // `from`/`len` that names a stretch the shape cannot walk.
-                        for i in 0..=8 {
-                            let t = (g.span.from + g.span.len * i as f64 / 8.0).rem_euclid(per);
-                            let p = sh.wall_point(t);
-                            assert!(
-                                sh.wall_dist(p) < 1e-6,
-                                "seed {seed} [{tags}]: gap walk left the border by {:.4}px",
-                                sh.wall_dist(p)
-                            );
-                        }
-                        // The chord is in TILE space: each end must BE a corner of one of the
-                        // corridor's own tiles, exactly. Stated this way rather than as "outside
-                        // the room", which is not true — a circle fitted with slack encloses tile
-                        // vertices — and would have to be a tolerance instead of an identity.
-                        // What this catches is the chord silently becoming a projected point,
-                        // which is the one confusion the field exists to prevent.
-                        for c in [g.chord.0, g.chord.1] {
-                            assert!(
-                                cor.tiles.iter().any(|t| t
-                                    .corners(s)
-                                    .iter()
-                                    .any(|v| (v.0 - c.0).hypot(v.1 - c.1) < 1e-9)),
-                                "seed {seed} [{tags}]: porch chord end {c:?} is not a tile corner \
-                                 — the chord must be the unprojected tile vertex"
-                            );
-                        }
-                        let chord_len =
-                            (g.chord.0.0 - g.chord.1.0).hypot(g.chord.0.1 - g.chord.1.1);
-                        // The lattice classes: s, √3·s, 2s and the multi-tile runs above them.
-                        // Bounded below by one edge, above by the tiles that touch.
-                        assert!(
-                            chord_len > 0.9 * s,
-                            "seed {seed} [{tags}]: porch chord {chord_len:.2}px is shorter than \
-                             one tile edge ({s:.2}px)"
-                        );
-                    }
-                    // Every mark must fall in some gap: the gaps ARE the contact, so a mark
-                    // outside them means the two derivations disagree about where the corridor
-                    // meets the room — which is the whole risk of carrying both.
-                    for (_, mark) in &land.marks {
-                        let pts = match mark {
-                            Mark::Point(p) => vec![*p],
-                            Mark::Bar(p, q) => vec![*p, *q],
-                        };
-                        for p in pts {
+                            // Every mark must fall in some gap: the gaps ARE the contact, so a
+                            // mark outside them means the two derivations disagree about where
+                            // the corridor meets the room — the whole risk of carrying both.
                             let t = sh.wall_param(p);
                             assert!(
                                 land.gaps.iter().any(|g| g.span.contains(t, per)),
@@ -131,6 +73,7 @@ fn corridor_invariants() {
                             );
                         }
                     }
+                    n_gaps += land.gaps.len();
                 }
             }
         }
@@ -140,6 +83,100 @@ fn corridor_invariants() {
     assert!(n_cor > 100, "only {n_cor} corridors derived");
     assert!(n_marks > 100, "only {n_marks} landing marks derived");
     assert!(n_gaps > 100, "only {n_gaps} landing gaps derived");
+}
+
+/// Invariants of the phase-3 ring gaps and doors (`plans/tile-corridor-render.md`, 3a-3b), in
+/// their own test per this file's one-fn-per-phase convention — a door regression and a phase-0
+/// arrow regression should not share one red name.
+///
+/// Only the assertions with something to fail are here. Two earlier ones were tautologies and
+/// are recorded so they are not re-added: `wall_dist(wall_point(t))` is zero for every `t` by
+/// `wall_point`'s definition (both the gap-walk and leaf-on-wall variants tested nothing), and
+/// the opening-inside-contact family restated `door_opening`'s own centring arithmetic.
+#[test]
+fn door_invariants() {
+    let seeds: u64 = std::env::var("SEEDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    let s = maps_core::grid::HEX_SIZE;
+    let (mut n_gaps, mut n_bent) = (0usize, 0usize);
+    for tags in ["large,ruins,dungeon,separate", "large,ruins,dungeon,fused"] {
+        for seed in 1..=seeds {
+            let m = generate_with(
+                seed,
+                &GenOptions {
+                    tags: Tags::parse(tags).ok(),
+                    ..GenOptions::default()
+                },
+            );
+            for cor in corridors(&m.areas, &m.topology.connections, s) {
+                for (land, side) in cor.landings() {
+                    let Some((sh, per)) = m.areas.room_border_per(side) else {
+                        continue;
+                    };
+                    for g in &land.gaps {
+                        n_gaps += 1;
+                        // A gap is a real stretch of border, never the whole ring: a corridor
+                        // attaches along part of a room, and a full-perimeter span would mean
+                        // the merge bridged the long way round.
+                        assert!(
+                            g.span.len > 1e-6 && g.span.len < per - 1e-6,
+                            "seed {seed} [{tags}]: gap span len {:.3} of perimeter {per:.3}",
+                            g.span.len
+                        );
+                        // The chord is in TILE space: each end must BE a corner of one of the
+                        // corridor's own tiles, exactly. Stated this way rather than as "outside
+                        // the room", which is not true — a circle fitted with slack encloses
+                        // tile vertices — and would have to be a tolerance instead of an
+                        // identity. What this catches is the chord silently becoming a
+                        // projected point, the one confusion the field exists to prevent.
+                        for c in [g.chord.0, g.chord.1] {
+                            assert!(
+                                cor.tiles.iter().any(|t| t
+                                    .corners(s)
+                                    .iter()
+                                    .any(|v| (v.0 - c.0).hypot(v.1 - c.1) < 1e-9)),
+                                "seed {seed} [{tags}]: chord end {c:?} is not a tile corner — \
+                                 the chord must be the unprojected tile vertex"
+                            );
+                        }
+                        // The lattice classes: s, √3·s, 2s and the multi-tile runs above them.
+                        let chord_len =
+                            (g.chord.0.0 - g.chord.1.0).hypot(g.chord.0.1 - g.chord.1.1);
+                        assert!(
+                            chord_len > 0.9 * s,
+                            "seed {seed} [{tags}]: contact chord {chord_len:.2}px is shorter \
+                             than one tile edge ({s:.2}px)"
+                        );
+                        // The door: never longer than the arc it subtends. Equality means a
+                        // straight stretch of wall; shorter means the leaf cuts a corner or an
+                        // arc, which is the intended angled/flat door.
+                        let o = g.opening(per, s);
+                        let (l0, l1) = g.leaf(&sh, per, s);
+                        let leaf_len = (l0.0 - l1.0).hypot(l0.1 - l1.1);
+                        assert!(
+                            leaf_len > 1e-6 && leaf_len <= o.len + 1e-9,
+                            "seed {seed} [{tags}]: leaf {leaf_len:.3}px against a {:.3}px \
+                             opening — a straight chord cannot exceed its arc",
+                            o.len
+                        );
+                        if leaf_len < o.len - 0.5 {
+                            n_bent += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // A leaf shorter than its arc is a door cutting a corner or a circle's curve — the intended
+    // outcome, counted so the chord rule is known to be exercised at all.
+    println!("{n_gaps} doors, {n_bent} of them chords across a curve or corner");
+    assert!(n_gaps > 100, "only {n_gaps} doors derived");
+    assert!(
+        n_bent > 10,
+        "only {n_bent} angled/flat leaves — the chord rule is barely exercised"
+    );
 }
 
 #[test]

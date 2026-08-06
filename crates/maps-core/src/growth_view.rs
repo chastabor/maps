@@ -353,14 +353,21 @@ fn arrow(s: &mut String, from: (f64, f64), to: (f64, f64)) {
     arrow_head(s, to, from);
 }
 
-/// Corridor overlay — `plans/tile-corridor-render.md` phases 0-1.
+/// Corridor overlay — `plans/tile-corridor-render.md` phases 0-3, one layer per phase.
 ///
-/// The acceptance surface for `corridor::corridors`, compared arrow-for-arrow against the
-/// hand-annotated reference (`samples/grow-tile-render.png`). Everything here is READ from
-/// the model — the overlay validates the derivation, so it must not re-derive any fact
-/// itself. Yellow double arrows are per-tile axes (straight lanes when an opposite pairing
-/// exists, one bent arrow otherwise, bending into a tile's collapse corner per R3); red
-/// marks are the landings; green is the phase-1 spine.
+/// The acceptance surface for `corridor::corridors`, compared against the hand-annotated
+/// reference (`samples/grow-tile-render.png`) and the user's door annotations. Everything here
+/// is READ from the model — the overlay validates the derivation, so it must not re-derive any
+/// fact itself. The legend, one colour per phase:
+///
+/// - **yellow** double arrows — phase 0, per-tile axes (straight lanes when an opposite pairing
+///   exists, one bent arrow otherwise, bending into a tile's collapse corner per R3);
+/// - **red** marks — phase 0, the landings on the borders;
+/// - **spring green** (`#37e6a0`) polyline + dots — phase 1, the spine;
+/// - **white** segments — phase 2, the walls on their lattice lines;
+/// - **orange** — phase 3a, each landing's ring gap walked along the border (thick) and its
+///   tile-space chord (thin dashed);
+/// - **leaf green** (`#2fa84f`) segments — phase 3b, the doors: each opening's straight chord.
 fn corridor_overlay(map: &CaveMap, s: &mut String) {
     use crate::corridor::{Mark, TileAxis, corridors};
     let cors = corridors(&map.areas, &map.topology.connections, S);
@@ -485,39 +492,41 @@ fn corridor_overlay(map: &CaveMap, s: &mut String) {
     }
     s.push_str("</g>");
     // Phase 3a: the ring GAP each landing claims, walked along the room's own border in wall
-    // parameter (thick orange), and the PORCH CHORD it steps out to in tile space (thin orange).
-    // Drawn as a walk rather than a chord on purpose: that is the whole point of the span space —
-    // where the attachment straddles a rect corner the gap turns the corner instead of cutting
-    // it, and only walking the border shows whether it does.
+    // parameter (thick orange), and its tile-space chord (thin dashed). Walked corner-EXACTLY
+    // via `wall_walk`, which emits every `wall_corners()` seam inside the span — the first cut
+    // used 16 uniform steps, which can step clean over the very corner the walk exists to show
+    // turning. Phase 3b: the DOOR (leaf green), each opening's straight chord — angled across a
+    // rect corner, flat across a circle's arc, and visibly so only because it is drawn straight.
+    // Deferred to its own group so the leaves draw over the gaps they sit inside.
+    let mut leaves = String::new();
     s.push_str(r##"<g fill="none" stroke="#ff8c42" stroke-linecap="round">"##);
     for cor in &cors {
-        for (land, side) in cor.attach.iter().zip([cor.a, cor.b]) {
-            let Some(sh) = map.areas.room_border(side) else {
+        for (land, side) in cor.landings() {
+            let Some((sh, per)) = map.areas.room_border_per(side) else {
                 continue;
             };
-            let Some(per) = sh.perimeter() else { continue };
             for g in &land.gaps {
-                // 16 steps: enough that a corner inside the span reads as a corner.
-                let pts: Vec<(f64, f64)> = (0..=16)
-                    .map(|i| sh.wall_point((g.span.from + g.span.len * i as f64 / 16.0) % per))
-                    .collect();
+                let walk = crate::outline::wall_walk(&sh, g.span.from, 1.0, g.span.len, S, false);
                 let _ = write!(
                     s,
                     r##"<path d="{}" stroke-width="3.4" stroke-opacity="0.9"/>"##,
-                    polyline_d(&pts)
+                    polyline_d(&walk)
                 );
                 let _ = write!(
                     s,
-                    r##"<path d="M{} {}L{} {}" stroke-width="1.2" stroke-dasharray="3 2"/>"##,
-                    d1(g.chord.0.0),
-                    d1(g.chord.0.1),
-                    d1(g.chord.1.0),
-                    d1(g.chord.1.1)
+                    r##"<path d="{}" stroke-width="1.2" stroke-dasharray="3 2"/>"##,
+                    polyline_d(&[g.chord.0, g.chord.1])
                 );
+                let (l0, l1) = g.leaf(&sh, per, S);
+                let _ = write!(leaves, r##"<path d="{}"/>"##, polyline_d(&[l0, l1]));
             }
         }
     }
     s.push_str("</g>");
+    let _ = write!(
+        s,
+        r##"<g fill="none" stroke="#2fa84f" stroke-width="3.0">{leaves}</g>"##
+    );
     for cor in &cors {
         for p in &cor.centerline {
             let _ = write!(

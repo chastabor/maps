@@ -14,6 +14,27 @@ pub(crate) fn lerp(a: Point, b: Point, t: f64) -> Point {
     (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
 }
 
+/// The two points of `pts` farthest apart — the diameter chord of a small point set. `None`
+/// when fewer than two distinct points exist.
+///
+/// First strict maximum wins, scanning pairs in slice order, so the result is deterministic
+/// and — kept deliberately on `hypot`, not squared distance — bit-compatible with the two
+/// hand-written loops this replaces (`doorway::porch_chord`, digest-bearing, and the corridor
+/// landing chord): near-equal distances can order differently under the two arithmetics.
+/// O(n²), which is fine at the ≤ 20 points every caller has.
+pub(crate) fn farthest_pair(pts: &[Point]) -> Option<(Point, Point)> {
+    let mut best: Option<((Point, Point), f64)> = None;
+    for (i, &p) in pts.iter().enumerate() {
+        for &q in &pts[i + 1..] {
+            let d = (p.0 - q.0).hypot(p.1 - q.1);
+            if best.is_none_or(|(_, bd)| d > bd) {
+                best = Some(((p, q), d));
+            }
+        }
+    }
+    best.filter(|&(_, d)| d > 0.0).map(|(pair, _)| pair)
+}
+
 /// The nearest point on segment `a → b` to `p`, with its parameter along the
 /// segment: `0` at `a`, `1` at `b`.
 ///

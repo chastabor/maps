@@ -964,7 +964,19 @@ fn square_seams(items: &mut [Item], s: f64) {
 /// corners, plus circle arc samples about every half-cell), and the end
 /// point. With `closed` the walk covers the whole perimeter and skips the
 /// duplicate endpoint.
-fn wall_walk(shape: &RuinShape, ta: f64, dir: f64, len: f64, s: f64, closed: bool) -> Vec<Point> {
+///
+/// Public because it is the one CORRECT span-to-polyline walk: it emits every
+/// `wall_corners()` seam that falls inside the span, where the uniform sampling
+/// the growth view and the examples first rolled for themselves can step clean
+/// over the corner a walk exists to show.
+pub fn wall_walk(
+    shape: &RuinShape,
+    ta: f64,
+    dir: f64,
+    len: f64,
+    s: f64,
+    closed: bool,
+) -> Vec<Point> {
     let per = shape.perimeter().unwrap_or(0.0);
     let mut out = vec![shape.wall_point(ta)];
     // Corner seams that fall within the walked span...

@@ -36,9 +36,36 @@ pub struct Span {
 }
 
 impl Span {
+    /// The span between parameters `a` and `b`, the **shorter way round** a perimeter of
+    /// length `per`.
+    ///
+    /// The one rule for turning two wall parameters into an interval: anything a span is cut
+    /// for (a doorway, a tile edge's contact) covers a small fraction of the border, so the
+    /// short arc is never the ambiguous choice — and both `corridor` and `doorway` derived
+    /// this independently before it had a home here.
+    pub fn shorter(a: f64, b: f64, per: f64) -> Span {
+        let fwd = (b - a).rem_euclid(per);
+        if fwd <= per - fwd {
+            Span { from: a, len: fwd }
+        } else {
+            Span {
+                from: b,
+                len: per - fwd,
+            }
+        }
+    }
+
     /// Whether parameter `t` falls inside this span, on a perimeter of length `per`.
     pub fn contains(&self, t: f64, per: f64) -> bool {
         (t - self.from).rem_euclid(per) <= self.len + 1e-9
+    }
+
+    /// Whether `t` falls **strictly** inside — inside, and not at either end. The question a
+    /// corner is asked: a span *ending* on a corner parameter does not turn it.
+    pub fn strictly_contains(&self, t: f64, per: f64) -> bool {
+        self.contains(t, per)
+            && (t - self.from).rem_euclid(per) > 1e-6
+            && (t - self.end(per)).rem_euclid(per) > 1e-6
     }
 
     /// The parameter this span ends at.
@@ -107,61 +134,102 @@ pub fn opening_span(shape: &RuinShape, other: &RuinShape) -> Option<Span> {
 /// `tol` closes gaps narrower than itself: two openings a hair apart would otherwise leave a
 /// slither of wall between them that is shorter than a rendered line join.
 pub fn merge(spans: &[Span], per: f64, tol: f64) -> Vec<Span> {
+    merge_groups(spans, per, tol)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect()
+}
+
+/// [`merge`], keeping provenance: each merged span comes with the indices (into `spans`) of the
+/// spans it absorbed.
+///
+/// The merge is the one place that *knows* which inputs joined which output; a caller that
+/// re-derives the grouping afterwards (span containment tests against the merged result) is
+/// making a second, independent decision about the same fact — the exact drift hazard this
+/// crate keeps finding. Phase 3's ring gaps need the grouping to size each door from its own
+/// contributing tile edges, per landing today and per room when the cross-corridor merge lands.
+pub fn merge_groups(spans: &[Span], per: f64, tol: f64) -> Vec<(Span, Vec<usize>)> {
     if per <= 0.0 {
         return Vec::new();
     }
-    // Flatten to linear intervals in [0, 2·per), splitting wrapped spans.
-    let mut iv: Vec<(f64, f64)> = Vec::new();
-    for s in spans {
+    // Flatten to linear intervals in [0, 2·per), splitting wrapped spans (both halves keep the
+    // source index, and the rejoin below unions their groups back together).
+    let mut iv: Vec<(f64, f64, usize)> = Vec::new();
+    let mut whole: Vec<usize> = Vec::new();
+    for (k, s) in spans.iter().enumerate() {
         if s.len <= 0.0 {
             continue;
         }
         if s.len >= per - 1e-9 {
-            return vec![Span {
-                from: 0.0,
-                len: per,
-            }];
+            whole.push(k);
+            continue;
         }
         let a = s.from.rem_euclid(per);
         let b = a + s.len;
         if b <= per {
-            iv.push((a, b));
+            iv.push((a, b, k));
         } else {
-            iv.push((a, per));
-            iv.push((0.0, b - per));
+            iv.push((a, per, k));
+            iv.push((0.0, b - per, k));
         }
+    }
+    if !whole.is_empty() {
+        // A whole-perimeter input absorbs everything.
+        return vec![(
+            Span {
+                from: 0.0,
+                len: per,
+            },
+            (0..spans.len()).filter(|&k| spans[k].len > 0.0).collect(),
+        )];
     }
     if iv.is_empty() {
         return Vec::new();
     }
     iv.sort_by(|x, y| x.0.total_cmp(&y.0));
-    let mut out: Vec<(f64, f64)> = vec![iv[0]];
-    for &(a, b) in &iv[1..] {
+    let mut out: Vec<(f64, f64, Vec<usize>)> = vec![(iv[0].0, iv[0].1, vec![iv[0].2])];
+    for &(a, b, k) in &iv[1..] {
         let last = out.last_mut().unwrap();
         if a <= last.1 + tol {
             last.1 = last.1.max(b);
+            last.2.push(k);
         } else {
-            out.push((a, b));
+            out.push((a, b, vec![k]));
         }
     }
     // Rejoin across the origin if the first and last intervals touch there.
     if out.len() > 1 {
-        let (first, last) = (out[0], *out.last().unwrap());
-        if first.0 <= tol && last.1 >= per - tol {
-            out.pop();
-            out[0] = (last.0 - per, first.1);
+        let (first_end, last_start) = (out[0].1, out.last().unwrap().0);
+        if out[0].0 <= tol && out.last().unwrap().1 >= per - tol {
+            let (_, _, mut members) = out.pop().unwrap();
+            members.append(&mut out[0].2);
+            out[0] = (last_start - per, first_end, members);
         }
     }
     if out.len() == 1 && out[0].1 - out[0].0 >= per - tol {
-        return vec![Span {
-            from: 0.0,
-            len: per,
-        }];
+        let mut members = std::mem::take(&mut out[0].2);
+        members.sort_unstable();
+        members.dedup();
+        return vec![(
+            Span {
+                from: 0.0,
+                len: per,
+            },
+            members,
+        )];
     }
     out.into_iter()
-        .map(|(a, b)| Span {
-            from: a.rem_euclid(per),
-            len: b - a,
+        .map(|(a, b, mut members)| {
+            // A wrapped input contributed both halves; one membership is enough.
+            members.sort_unstable();
+            members.dedup();
+            (
+                Span {
+                    from: a.rem_euclid(per),
+                    len: b - a,
+                },
+                members,
+            )
         })
         .collect()
 }

@@ -19,6 +19,24 @@ pub fn env<T: std::str::FromStr>(k: &str, d: T) -> T {
         .unwrap_or(d)
 }
 
+/// The dungeon-heavy sweep configurations the measurement examples run over.
+pub const CONFIGS: [&str; 3] = [
+    "large,ruins,dungeon,separate",
+    "large,ruins,dungeon,fused",
+    "large,chamber,connected,ruins,dungeon,truchet",
+];
+
+/// The bounding box of a point set, as `((lo_x, lo_y), (hi_x, hi_y))`.
+pub fn bounds(pts: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
+    let (lo_x, hi_x) = pts
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(l, h), p| (l.min(p.0), h.max(p.0)));
+    let (lo_y, hi_y) = pts
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(l, h), p| (l.min(p.1), h.max(p.1)));
+    ((lo_x, lo_y), (hi_x, hi_y))
+}
+
 /// The `TAGS` knob, defaulting to the configuration most of the corridor work is measured on.
 pub fn tags_env() -> String {
     std::env::var("TAGS").unwrap_or_else(|_| "large,ruins,dungeon,separate".to_string())

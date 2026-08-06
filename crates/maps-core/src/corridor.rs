@@ -15,8 +15,8 @@
 //! this yet, and the growth view is excluded from every content digest by design.
 
 use crate::AreaKind;
-use crate::clip::{Span, merge};
-use crate::geom::Point;
+use crate::clip::{Span, merge_groups};
+use crate::geom::{Point, farthest_pair};
 use crate::grid::Hex;
 use crate::growth::Areas;
 use crate::ruins::RuinShape;
@@ -69,8 +69,8 @@ pub enum Mark {
     Bar(Point, Point),
 }
 
-/// One contiguous stretch of a room's border a corridor's contact covers — phase 3's **ring
-/// gap**, together with the porch it stands on.
+/// One contiguous stretch of a room's border a corridor's contact covers, and the door that
+/// closes it — phase 3's **ring gap**.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gap {
     /// The stretch in the room's own wall parameter ([`RuinShape::wall_param`]), wrap-safe.
@@ -81,18 +81,69 @@ pub struct Gap {
     /// perpendicular walls does not follow the wall. A parameter interval follows the border by
     /// construction, corner or no corner, and [`crate::clip::merge`] already makes the wrap safe.
     pub span: Span,
-    /// The **porch chord**, in TILE space (unprojected): the two farthest-apart vertices of the
-    /// touched tile edges.
+    /// The contact **measured in tile space** (unprojected): the two farthest-apart vertices of
+    /// the touched tile edges.
     ///
-    /// A room's border does not run along the tiles a passage attaches through — a rect's sits an
-    /// apothem inside its outer tile column — so the wall steps OUT to this chord to carry the
-    /// door leaf, and [`Self::span`] is the stretch of border it steps out from. Both are needed
-    /// and neither derives the other, which is why the pre-projection vertex is kept.
+    /// The width the passage presents to the room before the border has any say, and a lattice
+    /// constant: `s` across one shared edge, `√3·s` across two, `2s` across three (12 / 20.78 /
+    /// 24px at `s = 12`). Kept because [`Self::span`] is not that measure — a span is arc length on
+    /// the border, which stretches with whatever shape the contact happens to land on.
     ///
-    /// Its length is a lattice constant: `s` across one shared edge, `√3·s` across two, `2s`
-    /// across three — 12 / 20.78 / 24px at `s = 12`, the classes `doorway::porch_chord` measures
-    /// today from cells.
+    /// **Not where the door goes.** An earlier draft had the wall step OUT to this chord to carry
+    /// the leaf — the "porch". A rect's border sits an apothem inside its outer tile column, so a
+    /// leaf out here floats an apothem clear of the wall it is meant to close, which is exactly
+    /// what the user rejected on sight (`plans/wip/phase3-leaf-on-wall.png`). The door is
+    /// [`Self::leaf`], on the wall. Nothing load-bearing reads this today — the width rule reads
+    /// [`Self::edges`] — it is the *measurement* field, what the overlay draws dashed and the
+    /// invariant tests and `examples/corridor_gaps.rs` measure the lattice classes off.
     pub chord: (Point, Point),
+    /// How many tile edges the contact spans — the input to the door-width rule, [`Self::opening`].
+    /// At least 1: a gap exists only where some edge touched.
+    pub edges: usize,
+}
+
+/// The **door opening** for a contact of `span` covering `edges` tile edges: one apothem per
+/// PAIR of touched edges, centred on the contact and never wider than it.
+///
+/// The user's policy, chosen over opening the whole contact. Measured against that alternative
+/// in `examples/gap_policy.rs`: full contact draws 5.8x less wall across passage floor but
+/// removes 60% more wall, and a small circular room loses a third of its ring. Corner loss is
+/// identical either way, so it did not enter the decision.
+///
+/// A free function over `(span, edges)` rather than only a [`Gap`] method, because phase 3c's
+/// cross-corridor merge produces exactly such a pair (the union span, the summed edges) with no
+/// `Gap` to call through — and a policy reachable only via one struct would get re-derived there.
+pub fn door_opening(span: Span, edges: usize, per: f64, s: f64) -> Span {
+    let want = (crate::grid::HEX_APOTHEM * s * edges.div_ceil(2) as f64).min(span.len);
+    Span {
+        from: (span.from + (span.len - want) / 2.0).rem_euclid(per),
+        len: want,
+    }
+}
+
+/// The **leaf** closing `opening`: a straight segment joining the two points where the wall
+/// stops.
+///
+/// One rule for every shape, with no clamping and no arc:
+/// - a circle's door is a **flat** leaf across its opening, not a curved one;
+/// - an opening that turns a rect corner gets one **angled** leaf across the corner, never an
+///   L. That is what retires `doorway::clamp_opening`, whose whole job was sliding an opening
+///   off a corner so that a straight bar could close it — take the leaf as the opening's chord
+///   and a corner opening closes itself.
+pub fn door_leaf(sh: &RuinShape, opening: Span, per: f64) -> (Point, Point) {
+    (sh.wall_point(opening.from), sh.wall_point(opening.end(per)))
+}
+
+impl Gap {
+    /// [`door_opening`] for this gap's own contact.
+    pub fn opening(&self, per: f64, s: f64) -> Span {
+        door_opening(self.span, self.edges, per, s)
+    }
+
+    /// [`door_leaf`] for this gap's own opening.
+    pub fn leaf(&self, sh: &RuinShape, per: f64, s: f64) -> (Point, Point) {
+        door_leaf(sh, self.opening(per, s), per)
+    }
 }
 
 /// Where the corridor lands on one room's fitted border.
@@ -133,6 +184,12 @@ pub struct Corridor {
 }
 
 impl Corridor {
+    /// Each landing with the area it lands on: `attach[0]` with `a`, `attach[1]` with `b` — the
+    /// zip every consumer wrote out by hand (the overlay, the tests, both measurement examples).
+    pub fn landings(&self) -> impl Iterator<Item = (&Landing, usize)> {
+        self.attach.iter().zip([self.a, self.b])
+    }
+
     /// Phase 2: the corridor's two walls, `[low, high]` across the passage, as straight
     /// segments on **lattice lines through the tiles the corridor occupies** — a dungeon
     /// rectangle laid over the joining tiles, not an offset from the spine.
@@ -476,26 +533,6 @@ fn landing_anchor(
     })
 }
 
-/// The stretch of `sh`'s border one tile edge covers: its two corners projected onto the wall,
-/// joined the **shorter way round**.
-///
-/// A hex edge is a small fraction of any room's perimeter, so the short arc is never the
-/// ambiguous choice — and taking it is what keeps the span *on* the contact rather than running
-/// the long way round the room.
-fn edge_span(sh: &RuinShape, p: Point, q: Point, per: f64) -> Span {
-    let tp = sh.wall_param(sh.nearest_on_wall(p));
-    let tq = sh.wall_param(sh.nearest_on_wall(q));
-    let fwd = (tq - tp).rem_euclid(per);
-    if fwd <= per - fwd {
-        Span { from: tp, len: fwd }
-    } else {
-        Span {
-            from: tq,
-            len: per - fwd,
-        }
-    }
-}
-
 /// The landing of `tiles` on `side`'s fitted border: the per-tile arrow marks (R3) through the
 /// same `nearest_on_wall` locus the spine anchors use — the marks and the spine ends must never
 /// pick different border points for the same contact — plus the contact as merged [`Gap`]s.
@@ -504,59 +541,53 @@ fn edge_span(sh: &RuinShape, p: Point, q: Point, per: f64) -> Span {
 /// arrows converge, not how wide its contact is; a gap derived from collapse points alone would
 /// be a gap of zero width on exactly the tiles that present the most wall.
 fn attachment(areas: &Areas, tiles: &[Hex], touches: &[[bool; 6]], side: usize, s: f64) -> Landing {
-    let Some(sh) = areas.room_border(side) else {
-        return Landing::default();
-    };
-    // `room_border` already guarantees a perimeter; the bind is for the value, not the check.
-    let Some(per) = sh.perimeter() else {
+    let Some((sh, per)) = areas.room_border_per(side) else {
         return Landing::default();
     };
     let mut marks: Vec<(usize, Mark)> = Vec::new();
-    let mut edges: Vec<((Point, Point), Span)> = Vec::new();
+    let mut verts: Vec<(Point, Point)> = Vec::new();
+    let mut spans: Vec<Span> = Vec::new();
     for (i, (t, touch)) in tiles.iter().zip(touches).enumerate() {
         let cs = t.corners(s);
-        if let Some(c) = TileAxis::collapse(touch) {
+        let collapse = TileAxis::collapse(touch);
+        if let Some(c) = collapse {
             marks.push((i, Mark::Point(sh.nearest_on_wall(cs[c]))));
-        } else {
-            for k in (0..6).filter(|&k| touch[k]) {
-                let (e0, e1) = Hex::edge_corners(k);
-                marks.push((
-                    i,
-                    Mark::Bar(sh.nearest_on_wall(cs[e0]), sh.nearest_on_wall(cs[e1])),
-                ));
-            }
         }
         for k in (0..6).filter(|&k| touch[k]) {
             let (e0, e1) = Hex::edge_corners(k);
-            edges.push(((cs[e0], cs[e1]), edge_span(&sh, cs[e0], cs[e1], per)));
+            // The same `nearest_on_wall` locus the marks and the spine anchors use — the span
+            // and the arrows must never pick different border points for the same contact.
+            let (a, b) = (sh.nearest_on_wall(cs[e0]), sh.nearest_on_wall(cs[e1]));
+            if collapse.is_none() {
+                marks.push((i, Mark::Bar(a, b)));
+            }
+            verts.push((cs[e0], cs[e1]));
+            // The shorter way round: a hex edge is a small fraction of any room's perimeter,
+            // so the short arc is never the ambiguous choice — and taking it is what keeps the
+            // span ON the contact rather than running the long way round the room.
+            spans.push(Span::shorter(sh.wall_param(a), sh.wall_param(b), per));
         }
     }
     // Two edges of the contact share a vertex EXACTLY — same input point, same projection — so
     // their spans abut and merge into one. The tolerance therefore only has to absorb float
-    // noise; it is never bridging a real stretch of surviving wall.
-    let raw: Vec<Span> = edges.iter().map(|&(_, sp)| sp).collect();
-    let gaps = merge(&raw, per, 1e-6)
+    // noise; it is never bridging a real stretch of surviving wall. `merge_groups` rather than
+    // `merge`, so which edges joined which stretch is the merge's own answer — a landing that
+    // does come out as two stretches sizes each door from its own contact.
+    let gaps = merge_groups(&spans, per, 1e-6)
         .into_iter()
-        .filter_map(|span| {
-            // This stretch's chord: the two farthest-apart tile vertices whose own projection
-            // falls in it. Farthest-apart rather than first-and-last, because the vertices arrive
-            // in tile order and a bending run can revisit a parameter.
-            let pts: Vec<Point> = edges
+        .filter_map(|(span, members)| {
+            // This stretch's chord: the two farthest-apart of its own edges' tile vertices.
+            // Farthest-apart rather than first-and-last, because the vertices arrive in tile
+            // order and a bending run can revisit a parameter.
+            let pts: Vec<Point> = members
                 .iter()
-                .flat_map(|&((p, q), _)| [p, q])
-                .filter(|&p| span.contains(sh.wall_param(sh.nearest_on_wall(p)), per))
+                .flat_map(|&k| [verts[k].0, verts[k].1])
                 .collect();
-            let mut best: Option<((Point, Point), f64)> = None;
-            for &p in &pts {
-                for &q in &pts {
-                    let d = (p.0 - q.0).hypot(p.1 - q.1);
-                    if best.is_none_or(|(_, bd)| d > bd) {
-                        best = Some(((p, q), d));
-                    }
-                }
-            }
-            best.filter(|&(_, d)| d > 1e-9)
-                .map(|(chord, _)| Gap { span, chord })
+            farthest_pair(&pts).map(|chord| Gap {
+                span,
+                chord,
+                edges: members.len(),
+            })
         })
         .collect();
     Landing { marks, gaps }

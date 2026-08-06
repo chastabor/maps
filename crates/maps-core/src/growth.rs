@@ -657,6 +657,16 @@ impl Areas {
         self.shape(i).filter(|sh| sh.perimeter().is_some())
     }
 
+    /// [`room_border`](Self::room_border) with its perimeter — the pair every span-space
+    /// consumer needs together, so none of them re-asks a question the filter already answered
+    /// (six sites carried their own `perimeter()` unwrap dance before this existed).
+    pub fn room_border_per(&self, i: usize) -> Option<(RuinShape, f64)> {
+        self.room_border(i).map(|sh| {
+            let per = sh.perimeter().expect("room_border guarantees a perimeter");
+            (sh, per)
+        })
+    }
+
     pub fn is_join(&self, c: Hex) -> bool {
         self.join.contains(&c)
     }

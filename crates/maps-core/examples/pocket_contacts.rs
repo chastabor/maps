@@ -16,15 +16,9 @@ mod common;
 
 use maps_core::growth::components;
 
-const CONFIGS: [&str; 3] = [
-    "large,ruins,dungeon,separate",
-    "large,ruins,dungeon,fused",
-    "large,chamber,connected,ruins,dungeon,truchet",
-];
-
 fn main() {
     let seeds: u64 = common::env("SEEDS", 200);
-    for tag_str in CONFIGS {
+    for tag_str in common::CONFIGS {
         let (mut contacts, mut conns, mut widths) = (0usize, 0usize, 0usize);
         let (mut split_maps, mut split_areas) = (0usize, 0usize);
         let mut contact_seeds: Vec<u64> = Vec::new();

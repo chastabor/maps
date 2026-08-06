@@ -20,24 +20,6 @@ mod common;
 use maps_core::corridor::corridors;
 use maps_core::doorway::jambs;
 use maps_core::grid::HEX_SIZE as S;
-use maps_core::ruins::RuinShape;
-
-const CONFIGS: [&str; 3] = [
-    "large,ruins,dungeon,separate",
-    "large,ruins,dungeon,fused",
-    "large,chamber,connected,ruins,dungeon,truchet",
-];
-
-/// A rect's four corner parameters, so a span can be asked whether it turns one.
-fn corner_params(sh: &RuinShape) -> Vec<f64> {
-    match *sh {
-        RuinShape::Rect { hw, hh, .. } => {
-            let (w, h) = (2.0 * hw, 2.0 * hh);
-            vec![0.0, w, w + h, 2.0 * w + h]
-        }
-        _ => Vec::new(),
-    }
-}
 
 /// Which lattice class a length falls in, to 1px.
 fn class(len: f64) -> String {
@@ -52,7 +34,7 @@ fn class(len: f64) -> String {
 
 fn main() {
     let seeds: u64 = common::env("SEEDS", 200);
-    for tags in CONFIGS {
+    for tags in common::CONFIGS {
         let (mut n_land, mut n_gaps, mut multi, mut straddle) = (0usize, 0usize, 0usize, 0usize);
         let mut widths: std::collections::BTreeMap<String, usize> = Default::default();
         let mut chords: std::collections::BTreeMap<String, usize> = Default::default();
@@ -81,12 +63,12 @@ fn main() {
                         *widths.entry(class(g.span.len)).or_default() += 1;
                         let cl = (g.chord.0.0 - g.chord.1.0).hypot(g.chord.0.1 - g.chord.1.1);
                         *chords.entry(class(cl)).or_default() += 1;
-                        // A gap that turns a rect corner: a corner parameter strictly inside it.
-                        if corner_params(&sh).iter().any(|&t| {
-                            g.span.contains(t, per)
-                                && (t - g.span.from).rem_euclid(per) > 1e-6
-                                && (t - g.span.end(per)).rem_euclid(per) > 1e-6
-                        }) {
+                        // A gap that turns a corner: a corner parameter strictly inside it.
+                        if sh
+                            .wall_corners()
+                            .into_iter()
+                            .any(|t| g.span.strictly_contains(t, per))
+                        {
                             straddle += 1;
                             if straddle_seeds.len() < 8 {
                                 straddle_seeds.push((seed, side));

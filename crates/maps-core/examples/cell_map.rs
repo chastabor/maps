@@ -23,19 +23,14 @@
 //!     cargo run -p maps-core --release --example cell_map
 //! ```
 
-use maps_core::grid::Hex;
-use maps_core::growth_view::{PALETTE, S, hex_points};
-use maps_core::tags::Tags;
-use maps_core::{AreaKind, CaveMap, GenOptions, generate_with};
+mod common;
+
+use common::env;
+use maps_core::grid::{HEX_SIZE as S, Hex};
+use maps_core::render::{PALETTE, hex_points};
+use maps_core::{AreaKind, CaveMap};
 use std::collections::HashMap;
 use std::fmt::Write as _;
-
-fn env<T: std::str::FromStr>(k: &str, d: T) -> T {
-    std::env::var(k)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(d)
-}
 
 /// What occupies a cell: an area's floor, one connection's run or apron, or an exit stub.
 enum Role {
@@ -173,18 +168,11 @@ fn svg(roles: &HashMap<Hex, Role>, x0: i32, x1: i32, r0: i32, r1: i32) -> String
 
 fn main() {
     let seed: u64 = env("SEED", 82);
-    let tag_str =
-        std::env::var("TAGS").unwrap_or_else(|_| "large,ruins,dungeon,separate".to_string());
+    let tag_str = common::tags_env();
     let (r0, r1): (i32, i32) = (env("R0", -12), env("R1", -4));
     let (x0, x1): (i32, i32) = (env("X0", -14), env("X1", 6));
     let out = std::env::var("OUT").unwrap_or_else(|_| "cell_map.svg".to_string());
-    let m = generate_with(
-        seed,
-        &GenOptions {
-            tags: Tags::parse(&tag_str).ok(),
-            ..GenOptions::default()
-        },
-    );
+    let m = common::generate(seed, &tag_str);
     let roles = roles(&m);
     println!("seed {seed}  tags {tag_str}   <i> = connection i run, (i) = its apron, ### = exit");
     ascii(&roles, x0, x1, r0, r1);

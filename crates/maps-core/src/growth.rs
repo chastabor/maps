@@ -1142,6 +1142,39 @@ pub fn find(root: &mut [usize], mut i: usize) -> usize {
     i
 }
 
+/// Union the given index pairs over `0..n` and return each index's component **root** — the raw
+/// union-find representative, whose value depends on the order the pairs arrive in (each union
+/// re-roots onto the second root). Right for callers that only group by equality *within one
+/// result* (`topology::fuse_groups`, `doorway::mouths`' clustering); comparing two of these is
+/// wrong — that is what [`components`] canonicalizes for.
+pub fn union_roots(n: usize, pairs: impl IntoIterator<Item = (usize, usize)>) -> Vec<usize> {
+    let mut parent: Vec<usize> = (0..n).collect();
+    for (a, b) in pairs {
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        parent[ra] = rb;
+    }
+    (0..n).map(|i| find(&mut parent, i)).collect()
+}
+
+/// [`union_roots`], canonicalized: every root relabelled to its component's lowest member, so
+/// two of these compare equal exactly when the two pair sets join the same indices, regardless
+/// of the order the unions happened in.
+pub fn components(n: usize, pairs: impl IntoIterator<Item = (usize, usize)>) -> Vec<usize> {
+    let roots = union_roots(n, pairs);
+    // Ascending, so the first index to reach a root is that component's lowest member.
+    let mut canon = vec![usize::MAX; n];
+    roots
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            if canon[r] == usize::MAX {
+                canon[r] = i;
+            }
+            canon[r]
+        })
+        .collect()
+}
+
 /// Two areas are connected if a free cell touches both. Keep only the areas in
 /// the largest such connected component (by cell count).
 fn keep_largest_component(grid: &HexGrid, areas: Areas) -> Areas {

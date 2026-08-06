@@ -10,49 +10,28 @@
 //! SEED=82 TAGS=large,ruins,dungeon,separate cargo run -p maps-core --release --example dump_conns
 //! ```
 
+mod common;
+
 use maps_core::grid::Hex;
-use maps_core::growth_view::area_hash;
-use maps_core::tags::Tags;
-use maps_core::{GenOptions, generate_with};
-use std::collections::HashSet;
+use maps_core::render::area_hash;
 
 fn main() {
-    let seed: u64 = std::env::var("SEED")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(82);
-    let tag_str =
-        std::env::var("TAGS").unwrap_or_else(|_| "large,ruins,dungeon,separate".to_string());
-    let m = generate_with(
-        seed,
-        &GenOptions {
-            tags: Some(Tags::parse(&tag_str).unwrap()),
-            ..GenOptions::default()
-        },
-    );
+    let seed: u64 = common::env("SEED", 82);
+    let tag_str = common::tags_env();
+    let m = common::generate(seed, &tag_str);
     let labels: Vec<String> = (0..m.areas.count())
         .map(|i| {
             let cells: Vec<Hex> = m.areas.floor_cells(i).collect();
             format!("{i}{}/{}", m.areas.kind(i).letter(), area_hash(&cells))
         })
         .collect();
-    let runs: Vec<HashSet<Hex>> = m
-        .topology
-        .connections
-        .iter()
-        .map(|c| c.run().iter().copied().collect())
-        .collect();
+    let runs = common::run_sets(&m.topology.connections);
     println!("seed {seed}  tags {tag_str}  areas {}", m.areas.count());
     for (i, c) in m.topology.connections.iter().enumerate() {
         let touch: Vec<usize> = runs
             .iter()
             .enumerate()
-            .filter(|&(j, other)| {
-                j != i
-                    && runs[i]
-                        .iter()
-                        .any(|h| h.neighbors().iter().any(|n| other.contains(n)))
-            })
+            .filter(|&(j, other)| j != i && common::runs_touch(&runs[i], other))
             .map(|(j, _)| j)
             .collect();
         println!(

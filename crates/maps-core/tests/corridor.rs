@@ -15,7 +15,7 @@ fn corridor_invariants() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(40);
-    let s = 12.0;
+    let s = maps_core::grid::HEX_SIZE;
     let (mut n_cor, mut n_marks) = (0usize, 0usize);
     for tags in ["large,ruins,dungeon,separate", "large,ruins,dungeon,fused"] {
         for seed in 1..=seeds {
@@ -80,7 +80,7 @@ fn centerline_invariants() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(40);
-    let s = 12.0;
+    let s = maps_core::grid::HEX_SIZE;
     let mut n_lines = 0usize;
     for tags in ["large,ruins,dungeon,separate", "large,ruins,dungeon,fused"] {
         for seed in 1..=seeds {
@@ -165,7 +165,7 @@ fn wall_invariants() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(40);
-    let s = 12.0;
+    let s = maps_core::grid::HEX_SIZE;
     let (mut walled, mut caps, mut samples) = (0usize, 0usize, 0usize);
     // Collected rather than asserted one at a time, so a run reports the whole set.
     let mut narrow: Vec<(u64, &str, f64)> = Vec::new();

@@ -3,7 +3,7 @@
 
 use crate::AreaKind;
 use crate::grid::{Hex, HexGrid};
-use crate::growth::{Areas, find, weighted_index};
+use crate::growth::{Areas, components, find, union_roots, weighted_index};
 use crate::ruins::RuinShape;
 use crate::tags::{ConnectTag, ExitTag, LayoutTag, Tags};
 use rand::Rng;
@@ -254,7 +254,7 @@ fn prune_pockets(n_areas: usize, conns: Vec<Connection>) -> Vec<Connection> {
     // would drop both halves of a two-edge bridge and pass every test above.
     debug_assert_eq!(
         components(n_areas, survivors(&conns, &kept, None)),
-        components(n_areas, conns.iter()),
+        components(n_areas, conns.iter().map(|c| (c.a, c.b))),
         "pruning a pocket split the connection graph"
     );
     conns
@@ -264,40 +264,19 @@ fn prune_pockets(n_areas: usize, conns: Vec<Connection>) -> Vec<Connection> {
         .collect()
 }
 
-/// The connections still kept, optionally excluding one under test.
+/// The `(a, b)` pairs of the connections still kept, optionally excluding one under test —
+/// `prune_pockets`' edge set, in the pair form [`components`] takes.
 fn survivors<'a>(
     conns: &'a [Connection],
     kept: &'a [bool],
     except: Option<usize>,
-) -> impl Iterator<Item = &'a Connection> {
+) -> impl Iterator<Item = (usize, usize)> {
     conns
         .iter()
         .zip(kept)
         .enumerate()
         .filter(move |&(j, (_, &k))| k && Some(j) != except)
-        .map(|(_, (c, _))| c)
-}
-
-/// Each area's component root under the given connections, as the canonical partition — every
-/// root relabelled to its component's lowest member, so two of these compare equal exactly when
-/// the two edge sets join the same areas, regardless of union order.
-fn components<'a>(n_areas: usize, conns: impl Iterator<Item = &'a Connection>) -> Vec<usize> {
-    let mut parent: Vec<usize> = (0..n_areas).collect();
-    for c in conns {
-        let (ra, rb) = (find(&mut parent, c.a), find(&mut parent, c.b));
-        parent[ra] = rb;
-    }
-    // Ascending, so the first index to reach a root is that component's lowest member.
-    let mut canon = vec![usize::MAX; n_areas];
-    (0..n_areas)
-        .map(|i| {
-            let r = find(&mut parent, i);
-            if canon[r] == usize::MAX {
-                canon[r] = i;
-            }
-            canon[r]
-        })
-        .collect()
+        .map(|(_, (c, _))| (c.a, c.b))
 }
 
 /// Widen a connection's mouth at each room until it presents [`CONNECTION_WIDTH`] cells to
@@ -562,21 +541,17 @@ pub(crate) fn shared_dungeon_room(areas: &Areas, a: &Connection, b: &Connection)
 /// keeps a rock gap) — and return each area's compound root. A non-fused area
 /// is its own singleton group, so this leaves non-fused maps unchanged.
 fn fuse_groups(areas: &Areas) -> Vec<usize> {
-    let n = areas.count();
-    let mut parent: Vec<usize> = (0..n).collect();
-    for i in 0..areas.count() {
-        for c in areas.floor_cells(i) {
-            for nb in c.neighbors() {
-                if let Some(o) = areas.owner_of(nb).filter(|&o| o != i) {
-                    let (ri, ro) = (find(&mut parent, i), find(&mut parent, o));
-                    if ri != ro {
-                        parent[ri] = ro;
-                    }
-                }
-            }
-        }
-    }
-    (0..n).map(|i| find(&mut parent, i)).collect()
+    // Raw `union_roots`, not canonical `components`: the root VALUES feed `CandidatesByPair`'s
+    // BTreeMap keys and from there the order connections are drawn in, so relabelling them
+    // would reshuffle the RNG stream on every fused map.
+    let pairs = (0..areas.count()).flat_map(|i| {
+        areas.floor_cells(i).flat_map(move |c| {
+            c.neighbors()
+                .into_iter()
+                .filter_map(move |nb| areas.owner_of(nb).filter(|&o| o != i).map(|o| (i, o)))
+        })
+    });
+    union_roots(areas.count(), pairs)
 }
 
 /// Distance-2 door pairs that share a dungeon room, both on the **same** rect

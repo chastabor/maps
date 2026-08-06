@@ -31,7 +31,7 @@
 use maps_core::ruins::RuinShape;
 
 /// The hex size every map here is generated at.
-const HEX: f64 = 12.0;
+const HEX: f64 = maps_core::grid::HEX_SIZE;
 use maps_core::tags::Tags;
 use maps_core::{GenOptions, generate_with};
 

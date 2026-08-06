@@ -4,6 +4,12 @@ pub(crate) const SQRT3: f64 = 1.732_050_807_568_877_2;
 /// A pointy-top hex cell's apothem (flat-edge distance) per unit of size.
 pub(crate) const HEX_APOTHEM: f64 = SQRT3 / 2.0;
 
+/// The hex tile size (px) everything is generated and drawn at by default:
+/// `OutlineParams::hex_size`'s default, the render's scale, and the `s` the geometry tests and
+/// debug examples pass. One home — this value used to be written out in six places, and a
+/// consumer that drifted would compute geometry at a scale nothing else was drawn at.
+pub const HEX_SIZE: f64 = 12.0;
+
 /// Corner `i` of a pointy-top hex around `center` — angle `60i − 30°`. The one
 /// definition of the corner convention: [`Hex::corners`], the outline's raster
 /// corners and `RuinShape::HexCell` all delegate here, and the HexCell design

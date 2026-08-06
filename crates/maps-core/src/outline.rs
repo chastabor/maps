@@ -154,7 +154,7 @@ pub struct OutlineParams {
 impl Default for OutlineParams {
     fn default() -> Self {
         OutlineParams {
-            hex_size: 12.0,
+            hex_size: crate::grid::HEX_SIZE,
             bumpiness: 0.55,
             smooth_passes: 1,
             irregularity: 0.16,

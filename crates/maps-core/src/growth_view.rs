@@ -27,52 +27,16 @@ use crate::ruins::RuinShape;
 use crate::{AreaKind, CaveMap};
 use std::fmt::Write;
 
-/// Hex size the view draws at. Matches `render`'s so coordinates line up between views.
-/// Public because the debug examples (`cell_map` et al.) draw in the same coordinates.
-pub const S: f64 = 12.0;
-const MARGIN: f64 = 20.0;
+/// Hex size the view draws at — the crate-wide default, so coordinates line up between views.
+use crate::grid::HEX_SIZE as S;
+/// The debug palette, the area-label hash and the hex-polygon formatter are the finished
+/// render's, so the two views can never drift apart on any of them.
+use crate::render::{PALETTE, area_hash, hex_points};
 
-/// Distinct fills per area, reused from the debug palette's spirit: enough hues that
-/// neighbours rarely collide, and stable under the area index. Public so the debug
-/// examples colour a room the same way this view does.
-pub const PALETTE: [&str; 12] = [
-    "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6",
-    "#bfef45", "#fabed4", "#469990", "#dcbeff",
-];
+const MARGIN: f64 = 20.0;
 
 fn d1(v: f64) -> String {
     format!("{:.1}", v)
-}
-
-/// A hex's six corners as an SVG `points` attribute, at this view's scale.
-pub fn hex_points(h: Hex) -> String {
-    h.corners(S)
-        .iter()
-        .map(|(x, y)| format!("{:.2},{:.2}", x, y))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// A stable 4-char code for an area, hashed from its sorted cells — the same scheme the
-/// finished render labels with, so `5D/v4hf` means the same room in both views. Public so
-/// the debug examples print labels that cross-reference both.
-pub fn area_hash(cells: &[Hex]) -> String {
-    let mut v: Vec<(i32, i32)> = cells.iter().map(|c| (c.q, c.r)).collect();
-    v.sort_unstable();
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for (q, r) in v {
-        for b in q.to_le_bytes().iter().chain(r.to_le_bytes().iter()) {
-            h ^= *b as u64;
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut out = [0u8; 4];
-    for slot in out.iter_mut().rev() {
-        *slot = ALPHABET[(h % 36) as usize];
-        h /= 36;
-    }
-    String::from_utf8(out.to_vec()).unwrap()
 }
 
 /// The shape's outline as an SVG element, in its own coordinates — no offsetting, no band.

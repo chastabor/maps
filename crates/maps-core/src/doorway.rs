@@ -163,34 +163,27 @@ pub fn mouths(
     s: f64,
     blocked: &dyn Fn(Point) -> bool,
 ) -> Vec<Mouth> {
-    let find = crate::growth::find;
     let doors = &topology.connections;
     let dungeon = |i: usize| areas.kind(i) == AreaKind::Dungeon;
-    let mut root: Vec<usize> = (0..doors.len()).collect();
     // Two doors merge into one mouth only when they carve one opening in one
     // room's wall: cells hex-adjacent AND sharing a dungeon room. (Adjacent
     // cells serving unrelated rooms pierce different walls — merging them
     // would hang one long door bar across open floor between the openings.)
-    for i in 0..doors.len() {
-        for j in i + 1..doors.len() {
-            if doors[i].cell().distance(doors[j].cell()) <= 1
-                && crate::topology::shared_dungeon_room(areas, &doors[i], &doors[j]).is_some()
-            {
-                let (a, b) = (find(&mut root, i), find(&mut root, j));
-                root[a] = b;
-            }
-        }
-    }
     // Also merge distance-2 pairs whose lone pillar the floor fills in — one
     // wide opening across the pillar (computed once on `Topology`).
-    for &(i, j, _) in &topology.merged_doors {
-        let (a, b) = (find(&mut root, i), find(&mut root, j));
-        root[a] = b;
-    }
+    let pairs = (0..doors.len())
+        .flat_map(|i| {
+            (i + 1..doors.len()).filter_map(move |j| {
+                (doors[i].cell().distance(doors[j].cell()) <= 1
+                    && crate::topology::shared_dungeon_room(areas, &doors[i], &doors[j]).is_some())
+                .then_some((i, j))
+            })
+        })
+        .chain(topology.merged_doors.iter().map(|&(i, j, _)| (i, j)));
+    let root = crate::growth::union_roots(doors.len(), pairs);
     let mut clusters: std::collections::BTreeMap<usize, Vec<usize>> =
         std::collections::BTreeMap::new();
-    for i in 0..doors.len() {
-        let r = find(&mut root, i);
+    for (i, &r) in root.iter().enumerate() {
         clusters.entry(r).or_default().push(i);
     }
     clusters

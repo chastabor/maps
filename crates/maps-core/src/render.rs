@@ -75,7 +75,8 @@ const FOREST_STYLE: Style = Style {
     mud: "#adaf78",
 };
 
-const HEX_SIZE: f64 = 12.0;
+use crate::grid::HEX_SIZE;
+
 const MARGIN: f64 = 16.0;
 
 /// Waterline translucency: mud and pools let the floor (and any ruin tile
@@ -115,7 +116,10 @@ impl fmt::Display for D2 {
     }
 }
 
-const PALETTE: [&str; 12] = [
+/// Distinct fills per area for the debug render — stable under the area index. Public because
+/// the growth view and the debug examples colour rooms with the same palette, so a room keeps
+/// its colour across every view.
+pub const PALETTE: [&str; 12] = [
     "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6",
     "#bfef45", "#fabed4", "#469990", "#dcbeff",
 ];
@@ -728,8 +732,10 @@ fn area_label_layer(map: &CaveMap) -> String {
 }
 
 /// A stable 4-char base-36 code for an area, hashed (FNV-1a) from its sorted
-/// cell coordinates. Depends only on the cells, never on the area's index.
-fn area_hash(cells: &[Hex]) -> String {
+/// cell coordinates. Depends only on the cells, never on the area's index. Public because the
+/// growth view and the debug examples label rooms with the same code, which is the whole point
+/// of the code: `5D/v4hf` names the same room in every view.
+pub fn area_hash(cells: &[Hex]) -> String {
     let mut v: Vec<(i32, i32)> = cells.iter().map(|c| (c.q, c.r)).collect();
     v.sort_unstable();
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1058,7 +1064,12 @@ pub fn debug_svg(map: &CaveMap) -> String {
     s
 }
 
-fn hex_points(h: Hex) -> String {
+/// A hex's six corners as an SVG `points` attribute, at the default scale. Public because the
+/// growth view and the debug examples draw the same polygons. Formats via [`D2`], which is
+/// digest-bearing here — the growth view once had a `{:.2}` twin of this, and folding it onto
+/// D2 was the cheap direction to unify (the growth view is digest-free by design, so only its
+/// own bytes shifted, by at most half a hundredth of a pixel).
+pub fn hex_points(h: Hex) -> String {
     h.corners(HEX_SIZE)
         .iter()
         .map(|(x, y)| format!("{},{}", D2(*x), D2(*y)))

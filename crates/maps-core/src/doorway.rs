@@ -220,7 +220,7 @@ fn mouth(
     let cells: Vec<crate::grid::Hex> = {
         let mut v: Vec<crate::grid::Hex> = members
             .iter()
-            .flat_map(|&i| doors[i].along[..doors[i].apron_from].iter().copied())
+            .flat_map(|&i| doors[i].run().iter().copied())
             .collect();
         v.sort_unstable();
         v.dedup();

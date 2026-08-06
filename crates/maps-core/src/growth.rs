@@ -1131,7 +1131,10 @@ fn claim_join_floor(
 
 /// Union-find root lookup with path halving, over a parent-index slice.
 /// Union by re-rooting: `root[find(a)] = find(b)`.
-pub(crate) fn find(root: &mut [usize], mut i: usize) -> usize {
+///
+/// `pub` rather than `pub(crate)` so tests and examples use this one home instead of
+/// carrying their own copies — the crate had four before this was exported.
+pub fn find(root: &mut [usize], mut i: usize) -> usize {
     while root[i] != i {
         root[i] = root[root[i]];
         i = root[i];

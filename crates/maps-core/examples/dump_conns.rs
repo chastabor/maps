@@ -11,28 +11,10 @@
 //! ```
 
 use maps_core::grid::Hex;
+use maps_core::growth_view::area_hash;
 use maps_core::tags::Tags;
-use maps_core::{AreaKind, GenOptions, generate_with};
+use maps_core::{GenOptions, generate_with};
 use std::collections::HashSet;
-
-fn area_hash(cells: &[Hex]) -> String {
-    let mut v: Vec<(i32, i32)> = cells.iter().map(|c| (c.q, c.r)).collect();
-    v.sort_unstable();
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for (q, r) in v {
-        for b in q.to_le_bytes().iter().chain(r.to_le_bytes().iter()) {
-            h ^= *b as u64;
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut out = [0u8; 4];
-    for slot in out.iter_mut().rev() {
-        *slot = ALPHABET[(h % 36) as usize];
-        h /= 36;
-    }
-    String::from_utf8(out.to_vec()).unwrap()
-}
 
 fn main() {
     let seed: u64 = std::env::var("SEED")
@@ -48,20 +30,17 @@ fn main() {
             ..GenOptions::default()
         },
     );
-    let label = |i: usize| {
-        let cells: Vec<Hex> = m.areas.floor_cells(i).collect();
-        let k = match m.areas.kind(i) {
-            AreaKind::Dungeon => "D",
-            AreaKind::Ruin => "R",
-            AreaKind::Organic => "O",
-        };
-        format!("{i}{k}/{}", area_hash(&cells))
-    };
+    let labels: Vec<String> = (0..m.areas.count())
+        .map(|i| {
+            let cells: Vec<Hex> = m.areas.floor_cells(i).collect();
+            format!("{i}{}/{}", m.areas.kind(i).letter(), area_hash(&cells))
+        })
+        .collect();
     let runs: Vec<HashSet<Hex>> = m
         .topology
         .connections
         .iter()
-        .map(|c| c.along[..c.apron_from].iter().copied().collect())
+        .map(|c| c.run().iter().copied().collect())
         .collect();
     println!("seed {seed}  tags {tag_str}  areas {}", m.areas.count());
     for (i, c) in m.topology.connections.iter().enumerate() {
@@ -78,16 +57,10 @@ fn main() {
             .collect();
         println!(
             "  {i:2} {:>10} <-> {:<10} run {:?} apron {:?}{}",
-            label(c.a),
-            label(c.b),
-            &c.along[..c.apron_from]
-                .iter()
-                .map(|h| (h.q, h.r))
-                .collect::<Vec<_>>(),
-            &c.along[c.apron_from..]
-                .iter()
-                .map(|h| (h.q, h.r))
-                .collect::<Vec<_>>(),
+            labels[c.a],
+            labels[c.b],
+            c.run().iter().map(|h| (h.q, h.r)).collect::<Vec<_>>(),
+            c.apron().iter().map(|h| (h.q, h.r)).collect::<Vec<_>>(),
             if touch.is_empty() {
                 String::new()
             } else {

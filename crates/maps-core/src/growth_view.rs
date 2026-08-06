@@ -28,12 +28,14 @@ use crate::{AreaKind, CaveMap};
 use std::fmt::Write;
 
 /// Hex size the view draws at. Matches `render`'s so coordinates line up between views.
-const S: f64 = 12.0;
+/// Public because the debug examples (`cell_map` et al.) draw in the same coordinates.
+pub const S: f64 = 12.0;
 const MARGIN: f64 = 20.0;
 
 /// Distinct fills per area, reused from the debug palette's spirit: enough hues that
-/// neighbours rarely collide, and stable under the area index.
-const PALETTE: [&str; 12] = [
+/// neighbours rarely collide, and stable under the area index. Public so the debug
+/// examples colour a room the same way this view does.
+pub const PALETTE: [&str; 12] = [
     "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6",
     "#bfef45", "#fabed4", "#469990", "#dcbeff",
 ];
@@ -42,7 +44,8 @@ fn d1(v: f64) -> String {
     format!("{:.1}", v)
 }
 
-fn hex_points(h: Hex) -> String {
+/// A hex's six corners as an SVG `points` attribute, at this view's scale.
+pub fn hex_points(h: Hex) -> String {
     h.corners(S)
         .iter()
         .map(|(x, y)| format!("{:.2},{:.2}", x, y))
@@ -51,8 +54,9 @@ fn hex_points(h: Hex) -> String {
 }
 
 /// A stable 4-char code for an area, hashed from its sorted cells — the same scheme the
-/// finished render labels with, so `5D/v4hf` means the same room in both views.
-fn area_hash(cells: &[Hex]) -> String {
+/// finished render labels with, so `5D/v4hf` means the same room in both views. Public so
+/// the debug examples print labels that cross-reference both.
+pub fn area_hash(cells: &[Hex]) -> String {
     let mut v: Vec<(i32, i32)> = cells.iter().map(|c| (c.q, c.r)).collect();
     v.sort_unstable();
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -315,11 +319,7 @@ pub fn growth_svg(map: &CaveMap, labels: bool) -> String {
             }
             let n = cells.len() as f64;
             let (cx, cy) = (cx / n, cy / n);
-            let kind = match map.areas.kind(i) {
-                AreaKind::Organic => 'O',
-                AreaKind::Ruin => 'R',
-                AreaKind::Dungeon => 'D',
-            };
+            let kind = map.areas.kind(i).letter();
             let _ = write!(
                 s,
                 r##"<text x="{}" y="{}" font-size="14" font-weight="bold" fill="#ffffff">{}{kind}</text>"##,

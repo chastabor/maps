@@ -706,11 +706,7 @@ fn area_label_layer(map: &CaveMap) -> String {
             cy += y;
         }
         let n = cells.len() as f64;
-        let kind = match map.areas.kind(i) {
-            AreaKind::Organic => 'O',
-            AreaKind::Ruin => 'R',
-            AreaKind::Dungeon => 'D',
-        };
+        let kind = map.areas.kind(i).letter();
         label(
             cx / n,
             cy / n,

@@ -76,6 +76,16 @@ impl AreaKind {
     pub fn may_fuse(self, other: AreaKind) -> bool {
         self == other && matches!(self, AreaKind::Dungeon | AreaKind::Ruin)
     }
+
+    /// The one-letter tag area labels carry (`5D`, `13R`, `11O`) — one home, so the finished
+    /// render, the growth view and the debug examples can never disagree about it.
+    pub fn letter(self) -> char {
+        match self {
+            AreaKind::Organic => 'O',
+            AreaKind::Ruin => 'R',
+            AreaKind::Dungeon => 'D',
+        }
+    }
 }
 
 /// How one door onto a dungeon room is drawn. The three leaf styles are a
@@ -445,7 +455,7 @@ pub fn generate_with(seed: u64, opts: &GenOptions) -> CaveMap {
         // fitted border, and locking it as a band-breaking `Link` pinched the outline there
         // (measured: si tripled). It stays a `Seam` — splicable, the band flows through — while
         // the link's walls still run through it, because `link_walls` reads `along` whole.
-        for &cell in &c.along[..c.apron_from] {
+        for &cell in c.run() {
             // Only where the floor was actually claimed. A connection whose run was not reserved —
             // an organic one, which has no wall to build — is a plain free gap cell, not a join at
             // all, and marking it `Link` would lock an organic doorway onto the lattice.

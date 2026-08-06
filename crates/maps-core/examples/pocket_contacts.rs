@@ -13,6 +13,7 @@
 //! ```
 
 use maps_core::grid::Hex;
+use maps_core::growth::find;
 use maps_core::tags::Tags;
 use maps_core::{GenOptions, generate_with};
 use std::collections::HashSet;
@@ -32,7 +33,7 @@ fn main() {
         let tags = Tags::parse(tag_str).unwrap();
         let (mut contacts, mut conns, mut widths) = (0usize, 0usize, 0usize);
         let (mut split_maps, mut split_areas) = (0usize, 0usize);
-        let mut worst: Vec<u64> = Vec::new();
+        let mut contact_seeds: Vec<u64> = Vec::new();
         for seed in 1..=seeds {
             let m = generate_with(
                 seed,
@@ -41,28 +42,21 @@ fn main() {
                     ..GenOptions::default()
                 },
             );
-            let joined: Vec<bool> = m
-                .topology
-                .connections
-                .iter()
-                .map(|c| c.along[..c.apron_from].iter().any(|h| m.areas.is_join(*h)))
-                .collect();
+            // Claimed corridors only: an unclaimed passage is a free gap with no wall, so it
+            // has no barrier to lose.
             let runs: Vec<HashSet<Hex>> = m
                 .topology
                 .connections
                 .iter()
-                .map(|c| c.along[..c.apron_from].iter().copied().collect())
+                .filter(|c| c.claimed)
+                .map(|c| c.run().iter().copied().collect())
                 .collect();
             let mut hit = false;
             for (i, run) in runs.iter().enumerate() {
-                if !joined[i] {
-                    continue;
-                }
                 conns += 1;
                 widths += run.len();
                 let touch = runs.iter().enumerate().any(|(j, other)| {
                     j != i
-                        && joined[j]
                         && run
                             .iter()
                             .any(|c| c.neighbors().iter().any(|n| other.contains(n)))
@@ -73,18 +67,11 @@ fn main() {
                 }
             }
             if hit {
-                worst.push(seed);
+                contact_seeds.push(seed);
             }
             // Areas the connection graph plus the fusion seams do not reach.
             let n = m.areas.count();
             let mut parent: Vec<usize> = (0..n).collect();
-            fn find(p: &mut Vec<usize>, x: usize) -> usize {
-                if p[x] != x {
-                    let r = find(p, p[x]);
-                    p[x] = r;
-                }
-                p[x]
-            }
             for i in 0..n {
                 for c in m.areas.floor_cells(i) {
                     for nb in c.neighbors() {
@@ -108,12 +95,12 @@ fn main() {
         }
         println!(
             "{tag_str:>46}  contacts {contacts:4}  conns {conns:5}  mean_width {:.2}  \
-             seeds {}  split_maps {split_maps}  split_areas {split_areas}",
+             contact_maps {}  split_maps {split_maps}  split_areas {split_areas}",
             widths as f64 / conns as f64,
-            worst.len()
+            contact_seeds.len()
         );
         print!("    seeds:");
-        for s in worst.iter().take(24) {
+        for s in contact_seeds.iter().take(24) {
             print!(" {s}");
         }
         println!();

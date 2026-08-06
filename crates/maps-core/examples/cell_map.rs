@@ -24,19 +24,11 @@
 //! ```
 
 use maps_core::grid::Hex;
+use maps_core::growth_view::{PALETTE, S, hex_points};
 use maps_core::tags::Tags;
 use maps_core::{AreaKind, CaveMap, GenOptions, generate_with};
 use std::collections::HashMap;
 use std::fmt::Write as _;
-
-/// Hex size the SVG draws at, matching `render`'s so coordinates line up with the other views.
-const S: f64 = 12.0;
-
-/// The same palette `growth_view` labels areas with, so a room is the same colour in both.
-const PALETTE: [&str; 12] = [
-    "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6",
-    "#bfef45", "#fabed4", "#469990", "#dcbeff",
-];
 
 fn env<T: std::str::FromStr>(k: &str, d: T) -> T {
     std::env::var(k)
@@ -46,7 +38,6 @@ fn env<T: std::str::FromStr>(k: &str, d: T) -> T {
 }
 
 /// What occupies a cell: an area's floor, one connection's run or apron, or an exit stub.
-#[derive(Clone)]
 enum Role {
     Area(usize, AreaKind),
     Run(usize),
@@ -58,14 +49,7 @@ impl Role {
     /// The ASCII tag: `5D` an area, `<3>` a connection's run, `(3)` its apron, `###` an exit.
     fn tag(&self) -> String {
         match *self {
-            Role::Area(i, kind) => format!(
-                "{i}{}",
-                match kind {
-                    AreaKind::Dungeon => 'D',
-                    AreaKind::Ruin => 'R',
-                    AreaKind::Organic => 'o',
-                }
-            ),
+            Role::Area(i, kind) => format!("{i}{}", kind.letter()),
             Role::Run(i) => format!("<{i}>"),
             Role::Apron(i) => format!("({i})"),
             Role::Exit => "###".into(),
@@ -82,6 +66,12 @@ impl Role {
             Role::Exit => "#ff8c42",
         }
     }
+}
+
+/// The column-layout convention shared by both views: only cells whose parity matches exist
+/// (`x` and `r` move together), and `x = 2q + r` inverts to `q`.
+fn hex_at(x: i32, r: i32) -> Option<Hex> {
+    ((x - r).rem_euclid(2) == 0).then(|| Hex { q: (x - r) / 2, r })
 }
 
 /// Every occupied cell in the map, connections and exits taking precedence over ownership — a
@@ -122,13 +112,9 @@ fn ascii(roles: &HashMap<Hex, Role>, x0: i32, x1: i32, r0: i32, r1: i32) {
     for r in r0..=r1 {
         print!("r{r:<4} ");
         for x in x0..=x1 {
-            // Only cells whose parity matches exist in this layout: x and r move together.
-            let cell = if (x - r).rem_euclid(2) == 0 {
-                let h = Hex { q: (x - r) / 2, r };
+            let cell = hex_at(x, r).map_or_else(String::new, |h| {
                 roles.get(&h).map_or_else(|| ".".into(), |v| v.tag())
-            } else {
-                String::new()
-            };
+            });
             print!("{:^4}", cell);
         }
         println!();
@@ -138,45 +124,33 @@ fn ascii(roles: &HashMap<Hex, Role>, x0: i32, x1: i32, r0: i32, r1: i32) {
 fn svg(roles: &HashMap<Hex, Role>, x0: i32, x1: i32, r0: i32, r1: i32) -> String {
     let cells: Vec<Hex> = (r0..=r1)
         .flat_map(|r| (x0..=x1).map(move |x| (x, r)))
-        .filter(|&(x, r)| (x - r).rem_euclid(2) == 0)
-        .map(|(x, r)| Hex { q: (x - r) / 2, r })
+        .filter_map(|(x, r)| hex_at(x, r))
         .collect();
-    let pts: Vec<(f64, f64)> = cells.iter().flat_map(|h| h.corners(S)).collect();
-    let (lo_x, hi_x) = (
-        pts.iter().map(|p| p.0).fold(f64::MAX, f64::min) - 8.0,
-        pts.iter().map(|p| p.0).fold(f64::MIN, f64::max) + 8.0,
-    );
-    let (lo_y, hi_y) = (
-        pts.iter().map(|p| p.1).fold(f64::MAX, f64::min) - 8.0,
-        pts.iter().map(|p| p.1).fold(f64::MIN, f64::max) + 8.0,
-    );
+    let corners: Vec<(f64, f64)> = cells.iter().flat_map(|h| h.corners(S)).collect();
+    let (lo_x, hi_x) = corners
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(l, h), p| (l.min(p.0), h.max(p.0)));
+    let (lo_y, hi_y) = corners
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(l, h), p| (l.min(p.1), h.max(p.1)));
+    let (lo_x, lo_y) = (lo_x - 8.0, lo_y - 8.0);
+    let (w, hgt) = (hi_x + 8.0 - lo_x, hi_y + 8.0 - lo_y);
     let mut s = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{:.1} {:.1} {:.1} {:.1}" width="{:.0}" height="{:.0}">"##,
-        lo_x,
-        lo_y,
-        hi_x - lo_x,
-        hi_y - lo_y,
-        (hi_x - lo_x) * 3.0,
-        (hi_y - lo_y) * 3.0,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{lo_x:.1} {lo_y:.1} {w:.1} {hgt:.1}" width="{:.0}" height="{:.0}">"##,
+        w * 3.0,
+        hgt * 3.0,
     );
     let _ = write!(
         s,
-        r##"<rect x="{lo_x:.1}" y="{lo_y:.1}" width="{:.1}" height="{:.1}" fill="#14161c"/>"##,
-        hi_x - lo_x,
-        hi_y - lo_y
+        r##"<rect x="{lo_x:.1}" y="{lo_y:.1}" width="{w:.1}" height="{hgt:.1}" fill="#14161c"/>"##
     );
     for h in &cells {
-        let pts = h
-            .corners(S)
-            .iter()
-            .map(|(x, y)| format!("{x:.2},{y:.2}"))
-            .collect::<Vec<_>>()
-            .join(" ");
         let role = roles.get(h);
         let fill = role.map_or("#20232b", |v| v.fill());
         let _ = write!(
             s,
-            r##"<polygon points="{pts}" fill="{fill}" stroke="#0b0c10" stroke-width="0.4"/>"##
+            r##"<polygon points="{}" fill="{fill}" stroke="#0b0c10" stroke-width="0.4"/>"##,
+            hex_points(*h)
         );
         let (cx, cy) = h.center(S);
         // Rock cells carry their coordinates, occupied ones their role — the coordinates are what

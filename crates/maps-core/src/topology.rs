@@ -8,6 +8,8 @@ use crate::ruins::RuinShape;
 use crate::tags::{ConnectTag, ExitTag, LayoutTag, Tags};
 use rand::Rng;
 use rand::seq::SliceRandom;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashSet};
 
 /// How many cells wide a connection's floor may be, at most.
 ///
@@ -15,8 +17,6 @@ use rand::seq::SliceRandom;
 /// possible and matches what a doorway has always occupied, so it is where this starts; widening it
 /// widens every corridor in the map, which is a look decision rather than a correctness one.
 const CONNECTION_WIDTH: usize = 2;
-use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashSet};
 
 /// One link between areas `a` and `b`, and the floor it occupies.
 ///
@@ -47,12 +47,12 @@ pub struct Connection {
     /// cell touches *both* areas, so there is nothing between the two borders but it. The bound is
     /// therefore on width, and `CONNECTION_WIDTH` sets it.
     ///
-    /// **Only a claimed link is wider than its anchor.** The width is taken in the same sequenced
-    /// pass that claims the floor (dungeon-to-dungeon only), because it has to see what the other
+    /// **Only a claimed link is wider than its anchor** ([`Self::claimed`]). The width is taken
+    /// in the same sequenced pass that claims the floor, because it has to see what the other
     /// passages occupy to keep a cell of rock between them. An unclaimed link keeps just its
     /// anchor — which is exactly the floor it gets: `outline::floor_and_narrow` opens `cell()` and
     /// nothing else for a connection whose run was never reserved, so a wider `along` there was
-    /// floor no part of the map ever laid.
+    /// floor no part of the map ever laid. Pinned by `tests/pockets.rs`.
     pub along: Vec<Hex>,
     pub a: usize,
     pub b: usize,
@@ -64,12 +64,29 @@ pub struct Connection {
     /// cell breaks the wall band, an apron cell is half the room's and the band must flow
     /// through it — so the split is recorded where it is decided.
     pub apron_from: usize,
+    /// Whether this link **claims floor and builds walls**: both sides are dungeon rooms. The
+    /// fact used to be re-derived from `areas.kind` at every consumer (the plan's cleanup review
+    /// counted four drifting copies); it is written once here, where the connection is built —
+    /// kinds are final by then — and read everywhere else. An unclaimed link is a free gap the
+    /// outline traces, with no floor reservation and no wall of its own.
+    pub claimed: bool,
 }
 
 impl Connection {
     /// The anchor: the cell the leaf spans, and the cell the run was grown from.
     pub fn cell(&self) -> Hex {
         self.along[0]
+    }
+
+    /// The free-cell **run**: the floor the link occupies before any apron
+    /// (see [`Self::apron_from`] for the split).
+    pub fn run(&self) -> &[Hex] {
+        &self.along[..self.apron_from]
+    }
+
+    /// The **apron**: protruding room tiles the passage crosses to reach a fitted border.
+    pub fn apron(&self) -> &[Hex] {
+        &self.along[self.apron_from..]
     }
 }
 
@@ -132,15 +149,20 @@ fn corner_bound(areas: &Areas, h: Hex, a: usize, b: usize, s: f64) -> bool {
 /// organic-sided, so the gap between all three closed while the all-dungeon pockets on the same
 /// seed kept theirs.
 ///
-/// Free-run cells only ([`Connection::apron_from`] bounds them). An apron cell is room floor the
-/// passage crosses, so every candidate near a room border is adjacent to one and including them
-/// would refuse the widening that reaching a border is *for*.
+/// Free-run cells only ([`Connection::run`]). An apron cell is room floor the passage crosses,
+/// so every candidate near a room border is adjacent to one and including them would refuse the
+/// widening that reaching a border is *for*.
+///
+/// The set is **order-dependent by construction**: the claim loop widens connections in
+/// sequence, so an earlier connection sees later ones as anchors only, while a later one sees
+/// the earlier ones' full runs. That asymmetry is what makes the widening safe — each cell is
+/// tested against everything already taken — and it is why the set is recomputed per
+/// connection rather than built once.
 fn other_runs(conns: &[Connection], skip: usize) -> HashSet<Hex> {
-    conns
+    conns[..skip]
         .iter()
-        .enumerate()
-        .filter(|&(j, _)| j != skip)
-        .flat_map(|(_, c)| c.along[..c.apron_from].iter().copied())
+        .chain(&conns[skip + 1..])
+        .flat_map(|c| c.run().iter().copied())
         .collect()
 }
 
@@ -170,6 +192,9 @@ fn keeps_barrier(cell: Hex, others: &HashSet<Hex>) -> bool {
 fn grow_width(conn: &mut Connection, others: &HashSet<Hex>) {
     let anchor = conn.cell();
     while conn.along.len() < CONNECTION_WIDTH {
+        // Ties in the distance key fall back to `across`'s order, which is the deterministic
+        // ring-growth order `build` pushed cells in — sorting or re-hashing `across` would
+        // silently move every map.
         let next = conn
             .across
             .iter()
@@ -194,51 +219,42 @@ fn grow_width(conn: &mut Connection, others: &HashSet<Hex>) {
 /// their *widening* had to be refused.
 ///
 /// A pathway is removed only when all three hold:
-/// - **it is dungeon-to-dungeon**, so its floor is claimed and its walls need a cell of rock to
-///   press against. An organic-sided passage is a free gap the outline traces with no wall of its
+/// - **it claims floor** ([`Connection::claimed`]), so its walls need a cell of rock to press
+///   against. An organic-sided passage is a free gap the outline traces with no wall of its
 ///   own, and only its anchor ever becomes floor (`outline::floor_and_narrow`), so it crowds a
 ///   pocket without being crowded out of one;
-/// - **its anchor already touches another surviving connection's**, so it can take no width at
-///   all — not even its own one cell — without closing the gap;
+/// - **its anchor already touches another surviving connection's** — the same one-cell rule as
+///   [`keeps_barrier`] — so it can take no width at all, not even its own one cell, without
+///   closing the gap;
 /// - **its two areas are still joined without it.** Re-checked against the survivors each time,
 ///   so the kept set always spans exactly the components the full set does and no room is ever
 ///   cut off. In the 11O/1D/3D pocket the two organic-sided passages keep 11O reachable from
 ///   both rooms, and the dungeon-to-dungeon third is the one that goes.
-fn prune_pockets(kinds: &[AreaKind], conns: Vec<Connection>) -> Vec<Connection> {
+fn prune_pockets(n_areas: usize, conns: Vec<Connection>) -> Vec<Connection> {
     let mut kept = vec![true; conns.len()];
     for i in 0..conns.len() {
-        if kinds[conns[i].a] != AreaKind::Dungeon || kinds[conns[i].b] != AreaKind::Dungeon {
+        if !conns[i].claimed {
             continue;
         }
-        let anchor = conns[i].cell();
-        let crowded = conns
+        let anchors: HashSet<Hex> = conns
             .iter()
             .enumerate()
-            .any(|(j, c)| j != i && kept[j] && anchor.distance(c.cell()) <= 1);
-        if !crowded {
+            .filter(|&(j, _)| j != i && kept[j])
+            .map(|(_, c)| c.cell())
+            .collect();
+        if keeps_barrier(conns[i].cell(), &anchors) {
             continue;
         }
-        let mut parent: Vec<usize> = (0..kinds.len()).collect();
-        for (j, c) in conns.iter().enumerate() {
-            if j == i || !kept[j] {
-                continue;
-            }
-            let (ra, rb) = (find(&mut parent, c.a), find(&mut parent, c.b));
-            parent[ra] = rb;
-        }
-        let (ra, rb) = (find(&mut parent, conns[i].a), find(&mut parent, conns[i].b));
-        kept[i] = ra != rb;
+        let comp = components(n_areas, survivors(&conns, &kept, Some(i)));
+        kept[i] = comp[conns[i].a] != comp[conns[i].b];
     }
     // The consequence, checked rather than argued: removing only redundant pathways must leave the
     // components of the connection graph exactly as they were. A future edit that batches the
     // redundancy checks — deciding every drop against the full set and then applying them all —
     // would drop both halves of a two-edge bridge and pass every test above.
     debug_assert_eq!(
-        components(
-            kinds.len(),
-            conns.iter().zip(&kept).filter_map(|(c, &k)| k.then_some(c)),
-        ),
-        components(kinds.len(), conns.iter()),
+        components(n_areas, survivors(&conns, &kept, None)),
+        components(n_areas, conns.iter()),
         "pruning a pocket split the connection graph"
     );
     conns
@@ -248,22 +264,40 @@ fn prune_pockets(kinds: &[AreaKind], conns: Vec<Connection>) -> Vec<Connection> 
         .collect()
 }
 
-/// Each area's component root under the given connections, as the canonical partition — two of
-/// these compare equal exactly when the two edge sets join the same areas.
+/// The connections still kept, optionally excluding one under test.
+fn survivors<'a>(
+    conns: &'a [Connection],
+    kept: &'a [bool],
+    except: Option<usize>,
+) -> impl Iterator<Item = &'a Connection> {
+    conns
+        .iter()
+        .zip(kept)
+        .enumerate()
+        .filter(move |&(j, (_, &k))| k && Some(j) != except)
+        .map(|(_, (c, _))| c)
+}
+
+/// Each area's component root under the given connections, as the canonical partition — every
+/// root relabelled to its component's lowest member, so two of these compare equal exactly when
+/// the two edge sets join the same areas, regardless of union order.
 fn components<'a>(n_areas: usize, conns: impl Iterator<Item = &'a Connection>) -> Vec<usize> {
     let mut parent: Vec<usize> = (0..n_areas).collect();
     for c in conns {
         let (ra, rb) = (find(&mut parent, c.a), find(&mut parent, c.b));
         parent[ra] = rb;
     }
-    // Relabel each root by the lowest area it holds, so the partition has one representation
-    // regardless of the order the unions happened in.
-    let roots: Vec<usize> = (0..n_areas).map(|i| find(&mut parent, i)).collect();
-    let mut lowest = vec![usize::MAX; n_areas];
-    for (i, &r) in roots.iter().enumerate() {
-        lowest[r] = lowest[r].min(i);
-    }
-    roots.into_iter().map(|r| lowest[r]).collect()
+    // Ascending, so the first index to reach a root is that component's lowest member.
+    let mut canon = vec![usize::MAX; n_areas];
+    (0..n_areas)
+        .map(|i| {
+            let r = find(&mut parent, i);
+            if canon[r] == usize::MAX {
+                canon[r] = i;
+            }
+            canon[r]
+        })
+        .collect()
 }
 
 /// Widen a connection's mouth at each room until it presents [`CONNECTION_WIDTH`] cells to
@@ -280,38 +314,32 @@ fn components<'a>(n_areas: usize, conns: impl Iterator<Item = &'a Connection>) -
 /// blocks the next connection out of its own width. Nearest-to-anchor then cell order break
 /// ties, so the choice stays seed-stable.
 fn widen_mouths(areas: &Areas, conn: &mut Connection, others: &HashSet<Hex>) {
+    let anchor = conn.cell();
     for side in [conn.a, conn.b] {
-        loop {
-            let touching = conn
-                .along
+        // How many of this side's room cells a candidate touches: 0 means it cannot widen this
+        // mouth at all, and more means it hugs the wall rather than poking into the pocket.
+        let hug = |n: &Hex| {
+            n.neighbors()
                 .iter()
-                .filter(|cell| {
-                    cell.neighbors()
-                        .iter()
-                        .any(|n| areas.is_room_floor(side, *n))
-                })
-                .count();
-            if touching >= CONNECTION_WIDTH {
-                break;
-            }
-            let anchor = conn.cell();
-            let hug = |n: &Hex| {
-                n.neighbors()
-                    .iter()
-                    .filter(|m| areas.is_room_floor(side, **m))
-                    .count()
-            };
+                .filter(|m| areas.is_room_floor(side, **m))
+                .count()
+        };
+        // Every accepted candidate touches the room, so the count just increments.
+        let mut touching = conn.along.iter().filter(|c| hug(c) > 0).count();
+        while touching < CONNECTION_WIDTH {
             let cand = conn
                 .along
                 .iter()
                 .flat_map(|cell| cell.neighbors())
                 .filter(|n| areas.owner_of(*n).is_none() && !conn.along.contains(n))
-                .filter(|n| hug(n) > 0)
                 .filter(|n| keeps_barrier(*n, others))
-                .min_by_key(|n| (Reverse(hug(n)), n.distance(anchor), n.q, n.r));
-            let Some(add) = cand else { break };
+                .map(|n| (hug(&n), n))
+                .filter(|&(h, _)| h > 0)
+                .min_by_key(|&(h, n)| (Reverse(h), n.distance(anchor), n.q, n.r));
+            let Some((_, add)) = cand else { break };
             conn.along.insert(conn.apron_from, add);
             conn.apron_from += 1;
+            touching += 1;
         }
     }
 }
@@ -441,8 +469,9 @@ pub fn build<R: Rng>(
                     }
                 }
             }
-            // The width the link takes from that frontage is not decided here: it has to be able
-            // to see what the other connections take, and `grow_widths` is where that is known.
+            // The width the link takes from that frontage is not decided here: it has to be
+            // able to see what the other connections take, and the claim loop below is where
+            // that is known.
             Connection {
                 across,
                 along: vec![cell],
@@ -450,6 +479,7 @@ pub fn build<R: Rng>(
                 b,
                 doored: true,
                 apron_from: 1,
+                claimed: areas.kind(a) == AreaKind::Dungeon && areas.kind(b) == AreaKind::Dungeon,
             }
         })
         .collect();
@@ -457,7 +487,7 @@ pub fn build<R: Rng>(
     // The pathways a shared pocket has no room for, dropped here — before the exits and the
     // shrinking, so both of those see the connection set the map actually ends up with, and
     // before `merged_pillar_pairs`, whose result is a list of connection indices.
-    let connections = prune_pockets(areas.kinds(), connections);
+    let connections = prune_pockets(areas.count(), connections);
 
     let exits = place_exits(grid, areas, tags, rng);
     let is_corridor = shrink_corridors(areas, &connections, &exits, tags, rng);
@@ -476,40 +506,41 @@ pub fn build<R: Rng>(
     // `room_cells`, so ownership only decides whose cell list carries it.
     let mut connections = connections;
     for i in 0..connections.len() {
-        if areas.kind(connections[i].a) == AreaKind::Dungeon
-            && areas.kind(connections[i].b) == AreaKind::Dungeon
-        {
-            // What the other passages occupy, read before this one is widened. Claiming is
-            // sequenced, so an earlier connection's floor is already `is_join` — but a later
-            // one's is not, and an organic-sided one never will be, so occupancy is taken from
-            // the connections themselves.
-            let others = other_runs(&connections, i);
-            let c = &mut connections[i];
-            // The bounded width, taken from the frontage now that the other passages' floor is
-            // known.
-            grow_width(c, &others);
-            // The run is CONNECTION_WIDTH wide mid-span, but nothing yet guaranteed that width
-            // where it meets each room: the two cells often sit one-behind-the-other relative
-            // to a border, presenting a single cell there — so the passage necked to a one-door
-            // gap at the wall while being two cells wide in between (measured: 405 of 926 mouth
-            // sides). The wall gaps are cell-driven, so the fix is cells: widen each END with
-            // free cells beside the run that touch that side's floor, until the mouth is as
-            // wide as the run.
-            widen_mouths(areas, c, &others);
-            areas.claim_join(c.a, &c.along);
-            // Door-to-door: the free cells end at the first floor cell, but the passage
-            // geometrically continues through any room tiles that protrude beyond their fitted
-            // border (a rect fitted to whole tile columns leaves stragglers outside it). Those
-            // tiles are part of the section: demoted to join floor and appended, so the link's
-            // walls run through them and end ON the fitted border — the cap. Without this, the
-            // protruding stretch belonged to nobody's wall: one of its rock edges happened to be
-            // spliced into the room's run, the other stayed open (seed 10970555968995476422,
-            // 3D<->4D, the reported "blowline").
-            let ext = extend_to_border(areas, c, s);
-            areas.demote_to_join(&ext);
-            c.apron_from = c.along.len();
-            c.along.extend(ext);
+        if !connections[i].claimed {
+            continue;
         }
+        // What the other passages occupy, read before this one is widened. Claiming is
+        // sequenced, so an earlier connection's floor is already `is_join` — but a later
+        // one's is not, and an organic-sided one never will be, so occupancy is taken from
+        // the connections themselves.
+        let others = other_runs(&connections, i);
+        let c = &mut connections[i];
+        // The bounded width, taken from the frontage now that the other passages' floor is
+        // known.
+        grow_width(c, &others);
+        // The run is CONNECTION_WIDTH wide mid-span, but nothing yet guaranteed that width
+        // where it meets each room: the two cells often sit one-behind-the-other relative
+        // to a border, presenting a single cell there — so the passage necked to a one-door
+        // gap at the wall while being two cells wide in between (measured: 405 of 926 mouth
+        // sides). The wall gaps are cell-driven, so the fix is cells: widen each END with
+        // free cells beside the run that touch that side's floor, until the mouth is as
+        // wide as the run.
+        widen_mouths(areas, c, &others);
+        areas.claim_join(c.a, &c.along);
+        // Door-to-door: the free cells end at the first floor cell, but the passage
+        // geometrically continues through any room tiles that protrude beyond their fitted
+        // border (a rect fitted to whole tile columns leaves stragglers outside it). Those
+        // tiles are part of the section: demoted to join floor and appended, so the link's
+        // walls run through them and end ON the fitted border — the cap. Without this, the
+        // protruding stretch belonged to nobody's wall: one of its rock edges happened to be
+        // spliced into the room's run, the other stayed open (seed 10970555968995476422,
+        // 3D<->4D, the reported "blowline").
+        let ext = extend_to_border(areas, c, s);
+        areas.demote_to_join(&ext);
+        // `grow_width` and `widen_mouths` both maintain `apron_from == along.len()`, so the
+        // apron starts exactly where the run ends.
+        debug_assert_eq!(c.apron_from, c.along.len());
+        c.along.extend(ext);
     }
 
     Topology {
@@ -659,12 +690,6 @@ fn cull_edges<R: Rng>(
         Some(ConnectTag::Tree) => {
             edges.shuffle(rng);
             let mut parent: Vec<usize> = (0..n_areas).collect();
-            fn find(parent: &mut Vec<usize>, x: usize) -> usize {
-                if parent[x] != x {
-                    parent[x] = find(parent, parent[x]);
-                }
-                parent[x]
-            }
             edges
                 .into_iter()
                 .filter(|&(a, b)| {

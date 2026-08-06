@@ -15,9 +15,11 @@
 //! this yet, and the growth view is excluded from every content digest by design.
 
 use crate::AreaKind;
+use crate::clip::{Span, merge};
 use crate::geom::Point;
 use crate::grid::Hex;
 use crate::growth::Areas;
+use crate::ruins::RuinShape;
 use crate::topology::Connection;
 
 /// One tile of a corridor and the direction(s) it carries the passage.
@@ -67,10 +69,48 @@ pub enum Mark {
     Bar(Point, Point),
 }
 
-/// Where the corridor lands on one room's fitted border: `(tile index, mark)` per touching
-/// tile, in tile order. Empty when the side has no room border to land on — an organic
-/// partner, or a hall-shaped one (`Areas::room_border`).
-pub type Landing = Vec<(usize, Mark)>;
+/// One contiguous stretch of a room's border a corridor's contact covers — phase 3's **ring
+/// gap**, together with the porch it stands on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gap {
+    /// The stretch in the room's own wall parameter ([`RuinShape::wall_param`]), wrap-safe.
+    ///
+    /// This is the space the gap has to be expressed in, not point space. Projecting a chord's
+    /// two ends and joining them straight cuts a rect corner clean off whenever the attachment
+    /// straddles one — the 2D<->3D acceptance case — because the segment between two points on
+    /// perpendicular walls does not follow the wall. A parameter interval follows the border by
+    /// construction, corner or no corner, and [`crate::clip::merge`] already makes the wrap safe.
+    pub span: Span,
+    /// The **porch chord**, in TILE space (unprojected): the two farthest-apart vertices of the
+    /// touched tile edges.
+    ///
+    /// A room's border does not run along the tiles a passage attaches through — a rect's sits an
+    /// apothem inside its outer tile column — so the wall steps OUT to this chord to carry the
+    /// door leaf, and [`Self::span`] is the stretch of border it steps out from. Both are needed
+    /// and neither derives the other, which is why the pre-projection vertex is kept.
+    ///
+    /// Its length is a lattice constant: `s` across one shared edge, `√3·s` across two, `2s`
+    /// across three — 12 / 20.78 / 24px at `s = 12`, the classes `doorway::porch_chord` measures
+    /// today from cells.
+    pub chord: (Point, Point),
+}
+
+/// Where the corridor lands on one room's fitted border.
+///
+/// Two views of one contact, because phase 3's consumers need different ones: the arrows are
+/// per tile and live on the border, while the gap to cut is an interval and the leaf stands on
+/// the tile boundary. Empty when the side has no room border to land on — an organic partner,
+/// or a hall-shaped one (`Areas::room_border`).
+#[derive(Clone, Debug, Default)]
+pub struct Landing {
+    /// Per touching tile, in tile order — the phase-0 deliverable, verified arrow-for-arrow
+    /// against the annotated reference, and projected onto the border for that reason.
+    pub marks: Vec<(usize, Mark)>,
+    /// The contact as border stretches, merged. Normally one; two means the corridor touches
+    /// this room at two separated places, which the merge keeps apart rather than bridging into
+    /// a gap that spans intact wall.
+    pub gaps: Vec<Gap>,
+}
 
 /// One connection, realized as tiles + directions + landings.
 #[derive(Clone, Debug)]
@@ -436,14 +476,43 @@ fn landing_anchor(
     })
 }
 
-/// The landing of `tiles` on `side`'s fitted border: per-tile marks (R3), through the same
-/// `nearest_on_wall` locus the anchors use — the marks and the spine ends must never pick
-/// different border points for the same contact.
+/// The stretch of `sh`'s border one tile edge covers: its two corners projected onto the wall,
+/// joined the **shorter way round**.
+///
+/// A hex edge is a small fraction of any room's perimeter, so the short arc is never the
+/// ambiguous choice — and taking it is what keeps the span *on* the contact rather than running
+/// the long way round the room.
+fn edge_span(sh: &RuinShape, p: Point, q: Point, per: f64) -> Span {
+    let tp = sh.wall_param(sh.nearest_on_wall(p));
+    let tq = sh.wall_param(sh.nearest_on_wall(q));
+    let fwd = (tq - tp).rem_euclid(per);
+    if fwd <= per - fwd {
+        Span { from: tp, len: fwd }
+    } else {
+        Span {
+            from: tq,
+            len: per - fwd,
+        }
+    }
+}
+
+/// The landing of `tiles` on `side`'s fitted border: the per-tile arrow marks (R3) through the
+/// same `nearest_on_wall` locus the spine anchors use — the marks and the spine ends must never
+/// pick different border points for the same contact — plus the contact as merged [`Gap`]s.
+///
+/// **Every touched edge feeds the gap, collapsed tile or not.** R3's collapse says where a tile's
+/// arrows converge, not how wide its contact is; a gap derived from collapse points alone would
+/// be a gap of zero width on exactly the tiles that present the most wall.
 fn attachment(areas: &Areas, tiles: &[Hex], touches: &[[bool; 6]], side: usize, s: f64) -> Landing {
     let Some(sh) = areas.room_border(side) else {
         return Landing::default();
     };
-    let mut marks: Landing = Vec::new();
+    // `room_border` already guarantees a perimeter; the bind is for the value, not the check.
+    let Some(per) = sh.perimeter() else {
+        return Landing::default();
+    };
+    let mut marks: Vec<(usize, Mark)> = Vec::new();
+    let mut edges: Vec<((Point, Point), Span)> = Vec::new();
     for (i, (t, touch)) in tiles.iter().zip(touches).enumerate() {
         let cs = t.corners(s);
         if let Some(c) = TileAxis::collapse(touch) {
@@ -457,8 +526,40 @@ fn attachment(areas: &Areas, tiles: &[Hex], touches: &[[bool; 6]], side: usize, 
                 ));
             }
         }
+        for k in (0..6).filter(|&k| touch[k]) {
+            let (e0, e1) = Hex::edge_corners(k);
+            edges.push(((cs[e0], cs[e1]), edge_span(&sh, cs[e0], cs[e1], per)));
+        }
     }
-    marks
+    // Two edges of the contact share a vertex EXACTLY — same input point, same projection — so
+    // their spans abut and merge into one. The tolerance therefore only has to absorb float
+    // noise; it is never bridging a real stretch of surviving wall.
+    let raw: Vec<Span> = edges.iter().map(|&(_, sp)| sp).collect();
+    let gaps = merge(&raw, per, 1e-6)
+        .into_iter()
+        .filter_map(|span| {
+            // This stretch's chord: the two farthest-apart tile vertices whose own projection
+            // falls in it. Farthest-apart rather than first-and-last, because the vertices arrive
+            // in tile order and a bending run can revisit a parameter.
+            let pts: Vec<Point> = edges
+                .iter()
+                .flat_map(|&((p, q), _)| [p, q])
+                .filter(|&p| span.contains(sh.wall_param(sh.nearest_on_wall(p)), per))
+                .collect();
+            let mut best: Option<((Point, Point), f64)> = None;
+            for &p in &pts {
+                for &q in &pts {
+                    let d = (p.0 - q.0).hypot(p.1 - q.1);
+                    if best.is_none_or(|(_, bd)| d > bd) {
+                        best = Some(((p, q), d));
+                    }
+                }
+            }
+            best.filter(|&(_, d)| d > 1e-9)
+                .map(|(chord, _)| Gap { span, chord })
+        })
+        .collect();
+    Landing { marks, gaps }
 }
 
 /// The spine's tile path: from the `a`-touching tile nearest `b`, stepping to a neighbour

@@ -433,7 +433,7 @@ fn corridor_overlay(map: &CaveMap, s: &mut String) {
             }
         }
         for att in &cor.attach {
-            for (_, m) in att {
+            for (_, m) in &att.marks {
                 match m {
                     Mark::Point(p) => {
                         let _ = write!(
@@ -481,6 +481,40 @@ fn corridor_overlay(map: &CaveMap, s: &mut String) {
                 continue;
             }
             let _ = write!(s, r##"<path d="{}"/>"##, polyline_d(&side));
+        }
+    }
+    s.push_str("</g>");
+    // Phase 3a: the ring GAP each landing claims, walked along the room's own border in wall
+    // parameter (thick orange), and the PORCH CHORD it steps out to in tile space (thin orange).
+    // Drawn as a walk rather than a chord on purpose: that is the whole point of the span space —
+    // where the attachment straddles a rect corner the gap turns the corner instead of cutting
+    // it, and only walking the border shows whether it does.
+    s.push_str(r##"<g fill="none" stroke="#ff8c42" stroke-linecap="round">"##);
+    for cor in &cors {
+        for (land, side) in cor.attach.iter().zip([cor.a, cor.b]) {
+            let Some(sh) = map.areas.room_border(side) else {
+                continue;
+            };
+            let Some(per) = sh.perimeter() else { continue };
+            for g in &land.gaps {
+                // 16 steps: enough that a corner inside the span reads as a corner.
+                let pts: Vec<(f64, f64)> = (0..=16)
+                    .map(|i| sh.wall_point((g.span.from + g.span.len * i as f64 / 16.0) % per))
+                    .collect();
+                let _ = write!(
+                    s,
+                    r##"<path d="{}" stroke-width="3.4" stroke-opacity="0.9"/>"##,
+                    polyline_d(&pts)
+                );
+                let _ = write!(
+                    s,
+                    r##"<path d="M{} {}L{} {}" stroke-width="1.2" stroke-dasharray="3 2"/>"##,
+                    d1(g.chord.0.0),
+                    d1(g.chord.0.1),
+                    d1(g.chord.1.0),
+                    d1(g.chord.1.1)
+                );
+            }
         }
     }
     s.push_str("</g>");

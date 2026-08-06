@@ -1065,7 +1065,7 @@ pub fn debug_svg(map: &CaveMap) -> String {
 }
 
 /// A hex's six corners as an SVG `points` attribute, at the default scale. Public because the
-/// growth view and the debug examples draw the same polygons. Formats via [`D2`], which is
+/// growth view and the debug examples draw the same polygons. Formats via `D2`, which is
 /// digest-bearing here — the growth view once had a `{:.2}` twin of this, and folding it onto
 /// D2 was the cheap direction to unify (the growth view is digest-free by design, so only its
 /// own bytes shifted, by at most half a hundredth of a pixel).
